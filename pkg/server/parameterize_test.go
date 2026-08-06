@@ -88,6 +88,29 @@ func TestDefaultPackageName(t *testing.T) {
 	}
 }
 
+func TestPackageNamespace(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		source string
+		want   string
+	}{
+		{"terraform-aws-modules/vpc/aws", "terraform-aws-modules"},
+		{"terraform-aws-modules/vpc/aws//modules/subnets", "terraform-aws-modules"},
+		{"app.terraform.io/acme/widget/aws", "acme"},
+		{"registry.opentofu.org/acme/widget/aws", "acme"},
+		{"registry.terraform.io/acme/widget/aws", "acme"},
+		{"github.com/org/my-repo", ""},
+		{"git::https://github.com/org/repo.git//subdir", ""},
+		{"./local/path", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.source, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, packageNamespace(tc.source))
+		})
+	}
+}
+
 func TestParameterizeArgsRejected(t *testing.T) {
 	t.Parallel()
 

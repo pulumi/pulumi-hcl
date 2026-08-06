@@ -1,0 +1,6 @@
+kind: Improvements
+body: Set Namespace when generating HCL Module Packages
+time: 2026-08-06T12:54:54.669791+02:00
+custom:
+    Component: resource-host
+    PR: "521"

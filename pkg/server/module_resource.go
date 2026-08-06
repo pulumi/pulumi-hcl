@@ -150,6 +150,7 @@ func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSc
 	spec := moduleResourceSchema(m.version)
 	if m.param != nil {
 		spec = m.param.schema.ToPulumiPackageSchema()
+		spec.Namespace = m.param.namespace
 		spec.Parameterization = &pulumiSchema.ParameterizationSpec{
 			BaseProvider: pulumiSchema.BaseProviderSpec{Name: "hcl", Version: m.version},
 			Parameter:    m.param.value,
