@@ -306,8 +306,53 @@ type Graph struct {
 	missingProviders map[string]*hcl.Diagnostic
 }
 
+// aspect is the scheduling role a dag node plays for its block: the block's
+// own graph node, or one of the expansion-skeleton nodes serving it.
+type aspect int
+
+const (
+	aspectBlock aspect = iota
+	aspectExpand
+	aspectComplete
+	aspectGate
+	aspectInstance
+	aspectSync
+)
+
+// nodeDesc says what a dag node stands for, for diagnostics only — identity
+// lives in the graph's interning maps. The zero value describes an anonymous
+// node and renders empty.
+type nodeDesc struct {
+	block  NodeKey // the config block the node serves; zero for named synthetics
+	aspect aspect
+	index  string // instance suffix for gates/instances: `[0]`, `["x"]`
+	name   string // for named synchronization points ("plan barrier")
+}
+
+func (d nodeDesc) String() string {
+	if d.name != "" {
+		return d.name
+	}
+	addr := d.block.String()
+	if addr == "" {
+		return ""
+	}
+	switch d.aspect {
+	case aspectExpand:
+		return addr + " (expand)"
+	case aspectComplete:
+		return addr + " (completion)"
+	case aspectGate:
+		return addr + d.index + " (gate)"
+	case aspectInstance:
+		return addr + d.index
+	default:
+		return addr
+	}
+}
+
 type dagNode struct {
-	key  NodeKey
+	desc nodeDesc
 	exec func(context.Context) error
 }
 
@@ -350,7 +395,7 @@ func (g *Graph) Walk(ctx context.Context, apply func(context.Context, *Node) err
 		if n.exec != nil {
 			return n.exec(ctx)
 		}
-		node, ok := g.seen[n.key]
+		node, ok := g.seen[n.desc.block]
 		contract.Assertf(ok, "invalid graph - key not interned")
 		return apply(ctx, node.n)
 	}, pdag.MaxProcs(parallel))
@@ -396,7 +441,7 @@ func (g *Graph) InjectAfter(f func(context.Context) error, match func(*Node) boo
 			err = g.dag.NewEdge(n, node.i)
 		}
 		if err != nil {
-			return err
+			return cycleError(err)
 		}
 	}
 	return nil
@@ -407,7 +452,7 @@ func (g *Graph) newNode(key NodeKey) (*Node, pdag.Node) {
 		contract.Assertf(n.n.Key == key, "key should not be changed")
 		return n.n, n.i
 	}
-	i, done := g.dag.NewNode(dagNode{key: key})
+	i, done := g.dag.NewNode(dagNode{desc: nodeDesc{block: key}})
 	n := &Node{Key: key}
 	done() // We don't execute the graph as we build - so this is always safe
 	g.seen[key] = internedNode{
@@ -423,7 +468,7 @@ func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
 	n, i := g.newNode(node.Key)
 	*n = *node
 	for _, dep := range deps {
-		err := g.dag.NewEdge(dep, i)
+		err := cycleError(g.dag.NewEdge(dep, i))
 		if err != nil {
 			return err
 		}
@@ -749,24 +794,47 @@ func (g *Graph) classifyPlanTimeReads() {
 // internExecNode creates an exec node interned under key (as a Builtin, so
 // pre-walk passes see it but Validate accepts it), leaving arming to the
 // caller.
-func (g *Graph) internExecNode(key NodeKey, exec func(context.Context) error) (pdag.Node, pdag.Done) {
-	i, done := g.dag.NewNode(dagNode{key: key, exec: exec})
+func (g *Graph) internExecNode(key NodeKey, desc nodeDesc, exec func(context.Context) error) (pdag.Node, pdag.Done) {
+	i, done := g.dag.NewNode(dagNode{desc: desc, exec: exec})
 	g.seen[key] = internedNode{i: i, n: &Node{Key: key, Type: NodeTypeBuiltin}}
 	g.keyByDagNode[i] = key
 	return i, done
 }
 
 // NewJoinNode creates an armed no-op node interned under key, for the engine
-// to use as a synchronization point (edges added via Order).
-func (g *Graph) NewJoinNode(key string) pdag.Node {
-	i, done := g.internExecNode(NodeKey{ID: key}, func(context.Context) error { return nil })
+// to use as a synchronization point (edges added via Order). name is how the
+// node reads in diagnostics.
+func (g *Graph) NewJoinNode(key, name string) pdag.Node {
+	i, done := g.internExecNode(NodeKey{ID: key}, nodeDesc{aspect: aspectSync, name: name},
+		func(context.Context) error { return nil })
 	done()
 	return i
 }
 
 // Order adds the edge from → to.
 func (g *Graph) Order(from, to pdag.Node) error {
-	return g.dag.NewEdge(from, to)
+	return cycleError(g.dag.NewEdge(from, to))
+}
+
+// cycleError rewraps a pdag cycle error to name the participating nodes in
+// dependency order, closing the loop back on the first node. Anonymous nodes
+// are dropped from the report; other errors pass through unchanged.
+func cycleError(err error) error {
+	var c pdag.ErrorCycle[dagNode]
+	if !errors.As(err, &c) {
+		return err
+	}
+	var parts []string
+	for _, n := range c.Cycle {
+		if s := n.desc.String(); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return err
+	}
+	parts = append(parts, parts[0])
+	return fmt.Errorf("dependency cycle: %s", strings.Join(parts, " -> "))
 }
 
 // defaultProviderDeps returns an implicit dependency on the un-aliased

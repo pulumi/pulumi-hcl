@@ -1,0 +1,6 @@
+kind: Improvements
+body: Name the participating nodes in dependency-cycle errors instead of `Cycle found`
+time: 2026-08-06T15:00:03Z
+custom:
+    Component: runtime
+    PR: "526"

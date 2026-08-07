@@ -52,7 +52,7 @@ func walkOrder(t *testing.T, g *Graph) []string {
 	t.Helper()
 	var order []string
 	err := g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		order = append(order, n.key.String())
+		order = append(order, n.desc.String())
 		return nil
 	}, pdag.MaxProcs(1))
 	require.NoError(t, err)

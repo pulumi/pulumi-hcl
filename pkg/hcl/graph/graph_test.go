@@ -66,7 +66,7 @@ output "instance_id" {
 	// Verify topological sort works
 	var sorted []string
 	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		sorted = append(sorted, n.key.String())
+		sorted = append(sorted, n.desc.String())
 		return nil
 	}, pdag.MaxProcs(1))
 	require.NoError(t, err)
@@ -131,7 +131,7 @@ output "gate" {
 
 	var sorted []string
 	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
-		key := n.key.String()
+		key := n.desc.String()
 		if n.exec != nil {
 			key = barrierKey
 		}
@@ -401,4 +401,27 @@ func TestModuleAddress(t *testing.T) {
 		NodeKey{Module: p, ID: "aws_instance.web"}.String())
 	assert.Equal(t, "aws_instance.web",
 		NodeKey{ID: "aws_instance.web"}.String())
+}
+
+func TestCycleErrorNamesNodes(t *testing.T) {
+	t.Parallel()
+	g := NewGraph()
+	require.NoError(t, g.AddNode(&Node{Key: nk("local.a")}, nil))
+	aIdx, ok := g.KeyNode(nk("local.a"))
+	require.True(t, ok)
+	require.NoError(t, g.AddNode(&Node{Key: nk("local.b")}, []pdag.Node{aIdx}))
+	bIdx, ok := g.KeyNode(nk("local.b"))
+	require.True(t, ok)
+
+	assert.EqualError(t, g.Order(bIdx, aIdx),
+		"dependency cycle: local.b -> local.a -> local.b")
+}
+
+func TestCycleErrorLabelsExpansionNodes(t *testing.T) {
+	t.Parallel()
+	g := NewGraph()
+	b := g.NewBlockExpansion(nk("pfx_res.a"), true, func(context.Context) error { return nil })
+
+	assert.EqualError(t, b.DependOn(b.Complete()),
+		"dependency cycle: pfx_res.a (completion) -> pfx_res.a (expand) -> pfx_res.a (completion)")
 }

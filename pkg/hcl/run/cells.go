@@ -120,7 +120,7 @@ func (r *urnRegistry) widen(urns []string) []string {
 // resource/data block, plus the plan barrier separating plan-time data reads
 // from resource creation. Runs after graph validation and before the walk.
 func (e *Engine) materializeRootCells(g *graph.Graph) error {
-	e.planBarrier = g.NewJoinNode("!plan-reads")
+	e.planBarrier = g.NewJoinNode("!plan-reads", "plan barrier")
 
 	var blocks, locals []*graph.Node
 	for _, node := range g.ExpandableNodes() {

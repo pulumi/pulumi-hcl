@@ -78,13 +78,17 @@ func (g *Graph) NewBlockExpansion(key NodeKey, static bool, expandExec func(cont
 		defer b.finish()
 		return expandExec(ctx)
 	}
+	expandDesc := nodeDesc{block: key, aspect: aspectExpand}
 	if static {
-		b.expand, b.armExpand = g.internExecNode(NodeKey{Module: key.Module, ID: key.ID + "!expand"}, exec)
+		b.expand, b.armExpand = g.internExecNode(NodeKey{Module: key.Module, ID: key.ID + "!expand"}, expandDesc, exec)
 	} else {
-		b.expand, b.armExpand = g.dag.NewNode(dagNode{exec: exec})
+		b.expand, b.armExpand = g.dag.NewNode(dagNode{desc: expandDesc, exec: exec})
 	}
 
-	complete, armComplete := g.dag.NewNode(dagNode{exec: func(context.Context) error { return nil }})
+	complete, armComplete := g.dag.NewNode(dagNode{
+		desc: nodeDesc{block: key, aspect: aspectComplete},
+		exec: func(context.Context) error { return nil },
+	})
 	b.complete = complete
 	contract.AssertNoErrorf(g.dag.NewEdge(b.expand, complete), "fresh nodes cannot form a cycle")
 	armComplete()
@@ -94,7 +98,7 @@ func (g *Graph) NewBlockExpansion(key NodeKey, static bool, expandExec func(cont
 // DependOn orders the expansion after dep: no instance is created (and so no
 // instance work runs) until dep is done.
 func (b *BlockExpansion) DependOn(dep pdag.Node) error {
-	return b.g.dag.NewEdge(dep, b.expand)
+	return cycleError(b.g.dag.NewEdge(dep, b.expand))
 }
 
 // Complete returns the node that is done once every instance has finished.
@@ -110,7 +114,10 @@ func (b *BlockExpansion) Gate(suffix string) pdag.Node {
 	if gate, ok := b.gates[suffix]; ok {
 		return gate
 	}
-	gate, arm := b.g.dag.NewNode(dagNode{exec: func(context.Context) error { return nil }})
+	gate, arm := b.g.dag.NewNode(dagNode{
+		desc: nodeDesc{block: b.key, aspect: aspectGate, index: suffix},
+		exec: func(context.Context) error { return nil },
+	})
 	contract.AssertNoErrorf(b.g.dag.NewEdge(b.expand, gate), "fresh nodes cannot form a cycle")
 	arm()
 	b.gates[suffix] = gate
@@ -125,7 +132,7 @@ func (b *BlockExpansion) Arm() { b.armExpand() }
 // the expansion (the block's own graph node, in particular) waits for every
 // instance.
 func (b *BlockExpansion) CompleteBefore(n pdag.Node) error {
-	return b.g.dag.NewEdge(b.complete, n)
+	return cycleError(b.g.dag.NewEdge(b.complete, n))
 }
 
 // AddInstance creates the node that runs one instance's work, ordered before
@@ -133,15 +140,18 @@ func (b *BlockExpansion) CompleteBefore(n pdag.Node) error {
 // Only call from the expand exec. Instances become runnable when the exec
 // returns (finish arms them after all wiring).
 func (b *BlockExpansion) AddInstance(suffix string, exec func(context.Context) error) error {
-	inst, arm := b.g.dag.NewNode(dagNode{exec: exec})
+	inst, arm := b.g.dag.NewNode(dagNode{
+		desc: nodeDesc{block: b.key, aspect: aspectInstance, index: suffix},
+		exec: exec,
+	})
 	// Arm even on the error paths: a node left preparing stalls the walk
 	// forever, while an armed node at worst runs before the walk aborts.
 	b.armPending = append(b.armPending, arm)
-	if err := b.g.dag.NewEdge(inst, b.complete); err != nil {
+	if err := cycleError(b.g.dag.NewEdge(inst, b.complete)); err != nil {
 		return err
 	}
 	if gate, ok := b.gates[suffix]; ok {
-		if err := b.g.dag.NewEdge(inst, gate); err != nil {
+		if err := cycleError(b.g.dag.NewEdge(inst, gate)); err != nil {
 			return err
 		}
 		delete(b.gates, suffix)
