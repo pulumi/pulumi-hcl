@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Project the imported state's `id` onto the dynamic bridge's renamed id property on `import --from hcl`
-time: 2026-08-05T18:55:29.535666+02:00
-custom:
-    Component: converter
-    PR: "512"

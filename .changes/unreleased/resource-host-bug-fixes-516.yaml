@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Correctly type unlabeled properties
-time: 2026-08-06T15:14:29.414897+02:00
-custom:
-    Component: resource-host
-    PR: "516"
