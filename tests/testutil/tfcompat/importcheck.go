@@ -35,8 +35,9 @@ import (
 //
 // The CLI drives the whole flow: it spawns the converter (an in-process server
 // behind a PATH shim) and resolves mappings through its own engine-side
-// mapper, which reaches the case's providers via PULUMI_DEBUG_PROVIDERS. The
-// same flow against real released plugins is covered by tests/smoke.
+// mapper, which reaches the case's providers through the terraform-provider
+// plugin exactly like the main comparison does. The same flow against real
+// released plugins is covered by tests/smoke.
 func runImportCheck(
 	t *testing.T, c Case, stage int, files map[string]string, tfStateDir string,
 ) {
@@ -61,36 +62,49 @@ func runImportCheck(
 		require.FileExists(t, statePath)
 
 		// Import into a fresh stack.
-		pulProvs := buildPulumiProviders(t, c.Providers, &tfexec.Recorder{})
+		rec := &tfexec.Recorder{}
+		pulProvs := buildDynamicPulumiProviders(t, c.Providers, rec)
 		d := pulexec.NewDriver(t, pulProvs, c.Config)
 		out, err := d.Import(t, files, statePath)
 		require.NoErrorf(t, err, "pulumi import --from hcl failed:\n%s", out)
 
 		// A clean import means the next operations plan and perform no
-		// resource changes, observed at the provider RPC boundary: a preview
-		// surfaces planned creates and updates as Create/Update with
-		// preview=true, and planned deletes — invisible to a preview at that
-		// boundary — would execute on the real up. The stack shell, default
-		// providers, and module component shells are still created, but none
-		// of those reach a resource provider's mutating RPCs.
+		// resource changes, observed at the TF CRUD boundary: a no-op plan
+		// invokes no CRUD, so any Create/Update/Delete the recorder sees is a
+		// resource change. A planned change surfaces when the up executes it.
+		// The stack shell, default providers, and module component shells are
+		// still created, but none of those reach the TF provider.
 		summary, err := d.Preview(t, files)
 		require.NoError(t, err)
-		require.Empty(t, d.Mutations(), "preview after import proposed resource changes")
+		assertNoMutatingOps(t, "preview", rec)
 		assertNoDestructiveOps(t, "preview", summary)
 
 		res, err := d.TryApply(t, files)
 		require.NoErrorf(t, err, "up after import failed:\n%s", res.Output)
-		require.Empty(t, d.Mutations(), "up after import performed resource changes")
+		assertNoMutatingOps(t, "up", rec)
 		assertNoDestructiveOps(t, "up", res.Changes)
 
 		// TF state records no module inputs, so an imported component carries
 		// none and the up above records them. Nothing may remain after that.
 		settled, err := d.Preview(t, files)
 		require.NoError(t, err)
+		assertNoMutatingOps(t, "settled preview", rec)
 		for op, n := range settled {
 			assert.Equalf(t, apitype.OpSame, op, "%d %q operations remain after the import converged", n, op)
 		}
 	})
+}
+
+// assertNoMutatingOps fails if the recorder saw any Create, Update, or
+// Delete since the import.
+func assertNoMutatingOps(t *testing.T, phase string, rec *tfexec.Recorder) {
+	t.Helper()
+	for _, op := range rec.Ops() {
+		switch op.Kind {
+		case tfexec.OpCreate, tfexec.OpUpdate, tfexec.OpDelete:
+			t.Errorf("%s after import performed a mutating %q operation (kind %d)", phase, op.Type, op.Kind)
+		}
+	}
 }
 
 // assertNoDestructiveOps fails on any operation that would disturb an existing

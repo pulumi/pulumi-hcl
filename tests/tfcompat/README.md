@@ -139,6 +139,8 @@ describe the *shape* of what they are: prefer field names like `attr`,
 ## Scope
 
 Cases here must be valid Terraform programs — both paths run the same `.tf`
-files. Pulumi-only constructs (component / package blocks, parameterized
-providers, Pulumi-specific resource options) belong in the language-host test
-suite, not here.
+files. Pulumi-only constructs (component / package blocks, Pulumi-specific
+resource options) belong in the language-host test suite. Provider setups a
+tf-compatible program cannot produce (e.g. `Customize` hooks on the bridged
+`ProviderInfo`) belong in the Pulumi-only `putest` suite under
+`tests/putest/`.

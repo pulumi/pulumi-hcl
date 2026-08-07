@@ -23,6 +23,8 @@ import (
 
 func TestL2OptionalComputedBlockUnset(t *testing.T) {
 	t.Parallel()
+	// Correct behavior pinned in tests/putest/l2_block_projection_test.go.
+	t.Skip("TODO[https://github.com/pulumi/pulumi-hcl/issues/508]: dynamic bridge reads the unset TypeSet block as null, not the empty set")
 	tfcompat.RunCase(t, "l2_optional_computed_block_unset", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "optcomp", Factory: providers.OptCompBlockProvider},

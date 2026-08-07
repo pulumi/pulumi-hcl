@@ -21,12 +21,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strings"
-	"sync"
 	"testing"
 
-	"github.com/blang/semver"
+	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/pulumi/providertest/providers"
 	"github.com/pulumi/providertest/pulumitest"
 	"github.com/pulumi/providertest/pulumitest/optnewstack"
@@ -40,11 +37,9 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // serveLanguageHost serves the pulumi-language-hcl runtime in-process on an
@@ -85,49 +80,18 @@ func languageHostGuard(t *testing.T) string {
 	return dir
 }
 
-// Provider pairs a provider name with a way to start its in-process Pulumi
-// provider server. Use SDKv2Provider or PFProvider to build one.
+// Provider pairs a provider name with a way for the engine to reach it.
+// Exactly one of Start and Reattach is set.
+//
+// Start serves an in-process Pulumi provider server the engine attaches to
+// directly (SDKv2Provider, PFProvider). Reattach describes an in-process TF
+// provider server the engine reaches through the real terraform-provider
+// plugin via PULUMI_BRIDGE_REATTACH_PROVIDERS (SDKv2ProviderDynamic,
+// PFProviderDynamic).
 type Provider struct {
-	Name          string
-	Start         func(ctx context.Context) (pulumirpc.ResourceProviderServer, error)
-	Parameterized bool
-}
-
-// parameterizedVersion is the version the fake parameterization reports; the
-// descriptor and the Parameterize response must agree on it.
-const parameterizedVersion = "0.0.1"
-
-// pluginName is the name the engine resolves the provider's plugin by: the
-// package name itself, or the base plugin's name when parameterized.
-func (p Provider) pluginName() string {
-	if p.Parameterized {
-		return p.Name + "-base"
-	}
-	return p.Name
-}
-
-// parameterizedServer wraps a provider server with a Parameterize
-// implementation that accepts any value and reports the package identity,
-// standing in for a dynamically bridged base plugin.
-type parameterizedServer struct {
-	pulumirpc.ResourceProviderServer
-	pkg string
-}
-
-func (s *parameterizedServer) Parameterize(
-	_ context.Context, _ *pulumirpc.ParameterizeRequest,
-) (*pulumirpc.ParameterizeResponse, error) {
-	return &pulumirpc.ParameterizeResponse{Name: s.pkg, Version: parameterizedVersion}, nil
-}
-
-// start returns the provider's server, wrapped for parameterization when
-// configured.
-func (p Provider) start(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
-	inner, err := p.Start(ctx)
-	if err != nil || !p.Parameterized {
-		return inner, err
-	}
-	return &parameterizedServer{ResourceProviderServer: inner, pkg: p.Name}, nil
+	Name     string
+	Start    func(ctx context.Context) (pulumirpc.ResourceProviderServer, error)
+	Reattach *goplugin.ReattachConfig
 }
 
 // Result holds the outputs and resource state from a Pulumi deployment.
@@ -147,26 +111,17 @@ type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
 	providers []Provider
-	mutations *mutationLog
+	// install is set when reattach providers are present: their SDKs are
+	// written by the real `pulumi install` flow, run once per stage.
+	install bool
+	// extraEnv holds the same env pairs opttest.Env configures on the
+	// workspace, for commands the harness must run itself (`pulumi install`,
+	// which pulumitest runs without the workspace env).
+	extraEnv []string
 	// lastProgramFiles are the program-file paths written by the previous
 	// writeFiles call, removed before the next stage so a stage that drops a
 	// file doesn't inherit a stale copy.
 	lastProgramFiles []string
-}
-
-// rawDebugProvidersEnv starts an in-process server per provider and returns
-// the PULUMI_DEBUG_PROVIDERS value describing them: pulumitest only attaches
-// providers for the duration of its own engine operations, so raw commands
-// must bring their own.
-func (d *Driver) rawDebugProvidersEnv(t *testing.T) string {
-	t.Helper()
-	parts := make([]string, 0, len(d.providers))
-	for _, p := range d.providers {
-		handle, err := startProvider(t.Context(), p.start)
-		require.NoError(t, err)
-		parts = append(parts, fmt.Sprintf("%s:%d", p.pluginName(), handle.Port))
-	}
-	return strings.Join(parts, ",")
 }
 
 // NewDriver builds the project dir, attaches the bridged providers, and sets
@@ -174,15 +129,22 @@ func (d *Driver) rawDebugProvidersEnv(t *testing.T) string {
 func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
 	t.Helper()
 
-	mutations := &mutationLog{}
-	recorded := make([]Provider, len(provs))
-	for i, p := range provs {
-		recorded[i] = p.recorded(mutations)
-	}
-	provs = recorded
-
 	hostPort := serveLanguageHost(t)
 	dir := t.TempDir()
+
+	reattach := map[string]*goplugin.ReattachConfig{}
+	for _, p := range provs {
+		switch {
+		case p.Start != nil && p.Reattach == nil:
+		case p.Reattach != nil && p.Start == nil:
+			// Keyed by the source the language host requests for a provider
+			// with no required_providers entry (see tfProviderSource); an
+			// explicit `source = "hashicorp/<name>"` matches the same key.
+			reattach["hashicorp/"+p.Name] = p.Reattach
+		default:
+			t.Fatalf("provider %q: exactly one of Start or Reattach must be set", p.Name)
+		}
+	}
 
 	// The project name is used as the default namespace for user config. It
 	// must not collide with any attached provider name, or user config like
@@ -193,25 +155,41 @@ backend:
   url: file://` + filepath.Join(dir, "state") + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600))
 
-	opts := append(
-		make([]opttest.Option, 0, 6+len(provs)),
-		opttest.Env("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"),
-		opttest.Env("PULUMI_HOME", isolatedPulumiHome(t)),
-		opttest.Env("PULUMI_DEBUG_LANGUAGES", fmt.Sprintf("hcl:%d", hostPort)),
+	env := [][2]string{
+		{"PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "true"},
+		{"PULUMI_HOME", isolatedPulumiHome(t)},
+		{"PULUMI_DEBUG_LANGUAGES", fmt.Sprintf("hcl:%d", hostPort)},
 		// The runtime under test is served in-process via PULUMI_DEBUG_LANGUAGES, so
 		// the engine must never spawn (or download) the pulumi-language-hcl binary.
-		opttest.Env("PATH", languageHostGuard(t)+string(os.PathListSeparator)+os.Getenv("PATH")),
+		{"PATH", languageHostGuard(t) + string(os.PathListSeparator) + os.Getenv("PATH")},
+	}
+	if len(reattach) > 0 {
+		env = append(env, [2]string{
+			"PULUMI_BRIDGE_REATTACH_PROVIDERS", tfexec.FormatReattachProviders(reattach),
+		})
+	}
+
+	opts := append(
+		make([]opttest.Option, 0, 4+len(env)+len(provs)),
 		opttest.TestInPlace(),
 		opttest.SkipInstall(),
 		// Cleanup destroy fails on prevent_destroy cases; temp dir is
 		// discarded by t.TempDir anyway.
 		opttest.NewStackOptions(optnewstack.DisableAutoDestroy()),
 	)
+	extraEnv := make([]string, 0, len(env))
+	for _, kv := range env {
+		opts = append(opts, opttest.Env(kv[0], kv[1]))
+		extraEnv = append(extraEnv, kv[0]+"="+kv[1])
+	}
 	for _, p := range provs {
+		if p.Start == nil {
+			continue
+		}
 		opts = append(opts, opttest.AttachProvider(
-			p.pluginName(),
+			p.Name,
 			func(ctx context.Context, pt providers.PulumiTest) (providers.Port, error) {
-				handle, err := startProvider(ctx, p.start)
+				handle, err := startProvider(ctx, p.Start)
 				if err != nil {
 					return 0, err
 				}
@@ -219,12 +197,17 @@ backend:
 			},
 		))
 	}
-
 	pt := pulumitest.NewPulumiTest(t, dir, opts...)
 	for k, v := range config {
 		pt.SetConfig(t, k, v)
 	}
-	return &Driver{pt: pt, dir: dir, providers: provs, mutations: mutations}
+	return &Driver{
+		pt:        pt,
+		dir:       dir,
+		providers: provs,
+		install:   len(reattach) > 0,
+		extraEnv:  extraEnv,
+	}
 }
 
 // Dir returns the program directory where pulumi runs and program files are
@@ -334,6 +317,20 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 		d.lastProgramFiles = append(d.lastProgramFiles, path)
 	}
 	d.writeStubSDKs(t)
+	if d.install {
+		// Reattach providers go through the real parameterization flow: the
+		// language host reports them as terraform-provider PackageSpecs and
+		// `pulumi install` runs the plugin (which reattaches to the in-process
+		// TF provider) to generate their SDK descriptors. pulumitest's Install
+		// runs without the workspace env, so run the command directly.
+		cmd := exec.Command("pulumi", "install")
+		cmd.Dir = d.dir
+		// Go child processes resolve duplicate env entries last-wins, so
+		// appending overrides the test process env.
+		cmd.Env = append(os.Environ(), d.extraEnv...)
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "pulumi install failed: %s", out)
+	}
 }
 
 // writeStubSDKs materializes a minimal sdks/<provider>/hcl.sdk.json for each
@@ -345,26 +342,13 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 func (d *Driver) writeStubSDKs(t *testing.T) {
 	t.Helper()
 	for _, p := range d.providers {
+		if p.Start == nil {
+			// Reattach providers get real SDKs from `pulumi install`.
+			continue
+		}
 		sdkDir := filepath.Join(d.dir, "sdks", p.Name)
 		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
 		desc := fmt.Appendf(nil, `{"name":%q,"kind":"resource"}`+"\n", p.Name)
-		if p.Parameterized {
-			version := semver.MustParse(parameterizedVersion)
-			var err error
-			desc, err = json.Marshal(workspace.PackageDescriptor{
-				PluginDescriptor: workspace.PluginDescriptor{
-					Name:    p.pluginName(),
-					Kind:    apitype.ResourcePlugin,
-					Version: &version,
-				},
-				Parameterization: &workspace.Parameterization{
-					Name:    p.Name,
-					Version: version,
-					Value:   []byte(p.Name),
-				},
-			})
-			require.NoError(t, err)
-		}
 		require.NoError(t, os.WriteFile(
 			filepath.Join(sdkDir, "hcl.sdk.json"), desc, 0o600,
 		))
@@ -425,10 +409,10 @@ func converterShim(t *testing.T, port int) string {
 
 // Import writes programFiles and runs `pulumi import --from hcl` with the
 // given converter arguments. The converter is served in-process behind a PATH
-// shim, and PULUMI_DEBUG_PROVIDERS points the CLI's mapper at the attached
-// in-process providers; the values themselves come from the state, so no
-// provider Read runs. Imports are unprotected for the same reason as
-// ImportFromFile.
+// shim, and the CLI's mapper resolves mappings through the providers the
+// workspace env configures (the terraform-provider reattach path for dynamic
+// providers); the values themselves come from the state, so no provider Read
+// runs. Imports are unprotected for the same reason as ImportFromFile.
 //
 // TODO[https://github.com/pulumi/pulumi/issues/24144]: This is a raw CLI invocation: the
 // Automation API's ImportResources appends `--stack` after the `--` separator, which the
@@ -455,84 +439,8 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 		}
 	}
 	shimDir := converterShim(t, d.serveConverter(t))
-	env = append(env,
-		"PATH="+shimDir+string(os.PathListSeparator)+envPath,
-		"PULUMI_DEBUG_PROVIDERS="+d.rawDebugProvidersEnv(t),
-	)
+	env = append(env, "PATH="+shimDir+string(os.PathListSeparator)+envPath)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
-
-// mutationLog accumulates the resource-mutating provider RPCs a Driver's
-// providers receive across all engine operations.
-type mutationLog struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (l *mutationLog) record(op, urn string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.calls = append(l.calls, op+" "+urn)
-}
-
-func (l *mutationLog) snapshot() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return slices.Clone(l.calls)
-}
-
-// mutationRecorder wraps a provider server, logging the RPCs that mutate (or,
-// with preview set, would mutate) a resource. Previews surface planned
-// creates and updates as Create/Update with preview=true, but planned deletes
-// never reach the provider — asserting no deletes requires a real up.
-type mutationRecorder struct {
-	pulumirpc.ResourceProviderServer
-	log *mutationLog
-}
-
-func previewOp(op string, preview bool) string {
-	if preview {
-		return op + "(preview)"
-	}
-	return op
-}
-
-func (m *mutationRecorder) Create(
-	ctx context.Context, req *pulumirpc.CreateRequest,
-) (*pulumirpc.CreateResponse, error) {
-	m.log.record(previewOp("create", req.Preview), req.Urn)
-	return m.ResourceProviderServer.Create(ctx, req)
-}
-
-func (m *mutationRecorder) Update(
-	ctx context.Context, req *pulumirpc.UpdateRequest,
-) (*pulumirpc.UpdateResponse, error) {
-	m.log.record(previewOp("update", req.Preview), req.Urn)
-	return m.ResourceProviderServer.Update(ctx, req)
-}
-
-func (m *mutationRecorder) Delete(
-	ctx context.Context, req *pulumirpc.DeleteRequest,
-) (*emptypb.Empty, error) {
-	m.log.record("delete", req.Urn)
-	return m.ResourceProviderServer.Delete(ctx, req)
-}
-
-// recorded returns a copy of p whose servers log mutating RPCs to log.
-func (p Provider) recorded(log *mutationLog) Provider {
-	start := p.Start
-	return Provider{Name: p.Name, Parameterized: p.Parameterized, Start: func(ctx context.Context) (pulumirpc.ResourceProviderServer, error) {
-		srv, err := start(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return &mutationRecorder{ResourceProviderServer: srv, log: log}, nil
-	}}
-}
-
-// Mutations returns the create/update/delete provider calls recorded since
-// the driver was built, in arrival order, formatted "op urn" (preview-mode
-// calls as "op(preview) urn").
-func (d *Driver) Mutations() []string { return d.mutations.snapshot() }

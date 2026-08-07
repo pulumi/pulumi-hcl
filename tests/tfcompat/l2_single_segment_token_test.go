@@ -19,36 +19,18 @@ import (
 
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
-	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 )
 
 // TestL2SingleSegmentToken pins that providers whose type token is a single
 // word (no underscore) — e.g. `hashicorp/external` exposing `data "external"`,
-// or `hashicorp/http` exposing `data "http"` — resolve through the engine
-// without being rejected as malformed tokens, AND go through the bridge
-// BodyMapping so TF-side attribute names that don't reverse-derive from the
-// Pulumi name (`program` → `programs`, or any explicit Customize rename) are
-// translated before the engine validates the HCL body.
+// or `hashicorp/http` exposing `data "http"` — resolve through the dynamic
+// bridge without being rejected as malformed tokens. The hand-renamed
+// body-mapping variant lives in tests/putest, which supports Customize.
 func TestL2SingleSegmentToken(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_single_segment_token", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{
-				Name:    "single",
-				Factory: providers.SingleSegmentProvider,
-				Customize: func(_ *testing.T, info *tfbridge.ProviderInfo) {
-					// Rename to a Pulumi name whose snake_case reversal
-					// (`tagged_thing`, `my_input`) doesn't match the TF
-					// name, so the body mapping is the only path that can
-					// translate HCL's TF-style names into the Pulumi schema.
-					info.DataSources["single"].Fields = map[string]*tfbridge.SchemaInfo{
-						"tag_value": {Name: "taggedThing"},
-					}
-					info.Resources["single"].Fields = map[string]*tfbridge.SchemaInfo{
-						"input_value": {Name: "myInput"},
-					}
-				},
-			},
+			{Name: "single", Factory: providers.SingleSegmentProvider},
 		},
 	})
 }

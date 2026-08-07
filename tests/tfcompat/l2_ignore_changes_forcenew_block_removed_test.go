@@ -26,11 +26,13 @@ import (
 // ForceNew and listed in ignore_changes as settings[0].mode. When stage 1
 // removes the whole `settings` block, OpenTofu can no longer reset
 // settings[0].mode (the index no longer exists), so it observes the ForceNew
-// change and replaces the resource (destroy + create). pulumi-hcl suppresses
-// the change and updates the resource in place, so the two runtimes emit a
-// different sequence of provider operations.
+// change and replaces the resource, leaving `settings` empty. pulumi-hcl
+// replaces too, but its `settings` output still reports the removed block's
+// old value instead of the empty list the replacement was created with.
 func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 	t.Parallel()
+	// Correct behavior pinned in tests/putest/l2_block_projection_test.go.
+	t.Skip("TODO[https://github.com/pulumi/pulumi-hcl/issues/508]: dynamic bridge reports the removed block's old value after the replace, not []")
 	tfcompat.RunCase(t, "l2_ignore_changes_forcenew_block_removed", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "fnblock", Factory: providers.FNBlockProvider},

@@ -21,15 +21,15 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// The Pulumi side serves `simple` as a parameterized package, so the runtime
-// registers resources under a parameterized default provider and the
+// The runtime registers resources under a parameterized default provider
+// (every dynamic provider is a terraform-provider parameterization), and the
 // state-import check must reproduce that exact provider identity for its
 // preview to be clean — the dynamic-bridge branch of the import contract.
 func TestL2ParameterizedImport(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_parameterized_import", tfcompat.Case{
 		Providers: []tfcompat.Provider{
-			{Name: "simple", Factory: providers.SimpleProvider, Parameterized: true},
+			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 	})
 }

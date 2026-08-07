@@ -29,6 +29,8 @@ import (
 // and yields false — diverging on both the same-order and reordered outputs.
 func TestL2SetBlockEquality(t *testing.T) {
 	t.Parallel()
+	// Correct behavior pinned in tests/putest/l2_block_projection_test.go.
+	t.Skip("TODO[https://github.com/pulumi/pulumi-hcl/issues/509]: dynamic bridge materializes the set block as a tuple, so == toset(...) is false")
 	tfcompat.RunCase(t, "l2_set_block_equality", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},

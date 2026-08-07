@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tfcompat_test
+package putest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 )
@@ -74,15 +74,16 @@ func renamedProviderCustomize(_ *testing.T, info *tfbridge.ProviderInfo) {
 }
 
 // renamedCase is the standard provider list for these tests.
-func renamedCase() tfcompat.Case {
-	return tfcompat.Case{
-		Providers: []tfcompat.Provider{
+func renamedCase(expectedOutputs map[string]string) putest.Case {
+	return putest.Case{
+		Providers: []putest.Provider{
 			{
 				Name:      "renamed",
 				Factory:   providers.RenamedProvider,
 				Customize: renamedProviderCustomize,
 			},
 		},
+		ExpectedOutputs: expectedOutputs,
 	}
 }
 
@@ -98,7 +99,11 @@ func renamedCase() tfcompat.Case {
 // `arn` to confirm default-cased outputs still work alongside renames.
 func TestL2RenamedOutputs(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_renamed_outputs", renamedCase())
+	putest.RunCase(t, "l2_renamed_outputs", renamedCase(map[string]string{
+		"fn_name": "alpha",
+		"arn":     "arn:test:alpha",
+		"window":  "5",
+	}))
 }
 
 // TestL2RenamedDataSourceOutputs covers data-source scalar output renames.
@@ -106,7 +111,10 @@ func TestL2RenamedOutputs(t *testing.T) {
 // surfaced under the TF name even though the bridge renames it to `source`.
 func TestL2RenamedDataSourceOutputs(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_renamed_data_source_outputs", renamedCase())
+	putest.RunCase(t, "l2_renamed_data_source_outputs", renamedCase(map[string]string{
+		"matched": "hit:lambda:",
+		"from":    "registry",
+	}))
 }
 
 // TestL2RenamedProviderConfig covers provider-config input renames, both
@@ -116,7 +124,10 @@ func TestL2RenamedDataSourceOutputs(t *testing.T) {
 // test asserts the renamed inputs reached the upstream Configure call intact.
 func TestL2RenamedProviderConfig(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_renamed_provider_config", renamedCase())
+	putest.RunCase(t, "l2_renamed_provider_config", renamedCase(map[string]string{
+		"endpoint_seen": "https://example.test/api",
+		"retries_seen":  "3",
+	}))
 }
 
 // TestL2RenamedDataSourceInputs covers data-source nested-block input renames:
@@ -125,7 +136,9 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 // when the renamed nested input was forwarded through the bridge.
 func TestL2RenamedDataSourceInputs(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_renamed_data_source_inputs", renamedCase())
+	putest.RunCase(t, "l2_renamed_data_source_inputs", renamedCase(map[string]string{
+		"matched": "hit:lambda:trigger",
+	}))
 }
 
 // TestL2RenamedDataSourceNestedOutputs covers nested-block output renames on
@@ -134,5 +147,7 @@ func TestL2RenamedDataSourceInputs(t *testing.T) {
 // `result[0].tag` traversal resolves.
 func TestL2RenamedDataSourceNestedOutputs(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_renamed_data_source_nested_outputs", renamedCase())
+	putest.RunCase(t, "l2_renamed_data_source_nested_outputs", renamedCase(map[string]string{
+		"tag": "tag-for-lambda",
+	}))
 }

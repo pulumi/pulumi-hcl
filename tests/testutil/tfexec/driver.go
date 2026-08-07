@@ -79,6 +79,53 @@ func PFProvider(name string, factory func() provider.Provider, rec *Recorder) Pr
 	}}
 }
 
+// ServeProvider serves p in-process over go-plugin's test mode and returns
+// the reattach config a client needs to connect. The server builds a fresh
+// provider per client connection (identified by ConnTagger) so provider
+// instances don't share state. go-plugin is invoked directly rather than via
+// tf6server.Serve because the latter offers no way to attach the stats
+// handler the router's connection identity comes from. Serving stops when the
+// test finishes.
+func ServeProvider(t *testing.T, p Provider) *plugin.ReattachConfig {
+	t.Helper()
+
+	reattachConfigCh := make(chan *plugin.ReattachConfig)
+	name, router, tagger := p.Name, ConnRoutedServer(p.Server), &ConnTagger{}
+	serveConfig := &plugin.ServeConfig{
+		// The handshake tf6server.Serve performs: protocol major version
+		// and the terraform plugin protocol's magic cookie.
+		HandshakeConfig: plugin.HandshakeConfig{
+			ProtocolVersion:  6,
+			MagicCookieKey:   "TF_PLUGIN_MAGIC_COOKIE",
+			MagicCookieValue: "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a219cb4d6991ca9872b2",
+		},
+		Logger: hclog.FromStandardLogger(log.New(io.Discard, "", 0), hclog.DefaultOptions),
+		Plugins: plugin.PluginSet{
+			"provider": &tf6server.GRPCProviderPlugin{
+				Name:         name,
+				GRPCProvider: func() tfprotov6.ProviderServer { return router },
+			},
+		},
+		GRPCServer: func(opts []grpc.ServerOption) *grpc.Server {
+			// Message sizes tf6server.Serve would configure.
+			opts = append(opts,
+				grpc.MaxRecvMsgSize(256<<20),
+				grpc.MaxSendMsgSize(256<<20),
+				grpc.StatsHandler(tagger),
+			)
+			return grpc.NewServer(opts...)
+		},
+		Test: &plugin.ServeTestConfig{
+			Context:          t.Context(),
+			ReattachConfigCh: reattachConfigCh,
+			CloseCh:          make(chan struct{}),
+		},
+	}
+	go plugin.Serve(serveConfig)
+
+	return <-reattachConfigCh
+}
+
 // Driver hosts TF providers in-process and runs the terraform CLI against them.
 type Driver struct {
 	cwd             string
@@ -104,47 +151,7 @@ func NewDriver(t *testing.T, providers []Provider) *Driver {
 
 	reattachConfigs := make(map[string]*plugin.ReattachConfig, len(providers))
 	for _, p := range providers {
-		reattachConfigCh := make(chan *plugin.ReattachConfig)
-
-		// One router per provider name; it builds a fresh provider per client
-		// connection (identified by tagger) so provider instances don't share
-		// state. go-plugin is invoked directly rather than via tf6server.Serve
-		// because the latter offers no way to attach the stats handler the
-		// router's connection identity comes from.
-		name, router, tagger := p.Name, ConnRoutedServer(p.Server), &ConnTagger{}
-		serveConfig := &plugin.ServeConfig{
-			// The handshake tf6server.Serve performs: protocol major version
-			// and the terraform plugin protocol's magic cookie.
-			HandshakeConfig: plugin.HandshakeConfig{
-				ProtocolVersion:  6,
-				MagicCookieKey:   "TF_PLUGIN_MAGIC_COOKIE",
-				MagicCookieValue: "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a219cb4d6991ca9872b2",
-			},
-			Logger: hclog.FromStandardLogger(log.New(io.Discard, "", 0), hclog.DefaultOptions),
-			Plugins: plugin.PluginSet{
-				"provider": &tf6server.GRPCProviderPlugin{
-					Name:         name,
-					GRPCProvider: func() tfprotov6.ProviderServer { return router },
-				},
-			},
-			GRPCServer: func(opts []grpc.ServerOption) *grpc.Server {
-				// Message sizes tf6server.Serve would configure.
-				opts = append(opts,
-					grpc.MaxRecvMsgSize(256<<20),
-					grpc.MaxSendMsgSize(256<<20),
-					grpc.StatsHandler(tagger),
-				)
-				return grpc.NewServer(opts...)
-			},
-			Test: &plugin.ServeTestConfig{
-				Context:          t.Context(),
-				ReattachConfigCh: reattachConfigCh,
-				CloseCh:          make(chan struct{}),
-			},
-		}
-		go plugin.Serve(serveConfig)
-
-		reattachConfigs[p.Name] = <-reattachConfigCh
+		reattachConfigs[p.Name] = ServeProvider(t, p)
 	}
 
 	return &Driver{
@@ -303,7 +310,13 @@ func (d *Driver) formatReattachEnvVar() string {
 	if len(d.reattachConfigs) == 0 {
 		return ""
 	}
+	return "TF_REATTACH_PROVIDERS=" + FormatReattachProviders(d.reattachConfigs)
+}
 
+// FormatReattachProviders renders reattach configs as the JSON accepted by
+// TF_REATTACH_PROVIDERS (and PULUMI_BRIDGE_REATTACH_PROVIDERS), keyed as
+// given.
+func FormatReattachProviders(configs map[string]*plugin.ReattachConfig) string {
 	type reattachConfigAddr struct {
 		Network string
 		String  string
@@ -317,9 +330,9 @@ func (d *Driver) formatReattachEnvVar() string {
 		Addr            reattachConfigAddr
 	}
 
-	configs := make(map[string]reattachConfig, len(d.reattachConfigs))
-	for name, rc := range d.reattachConfigs {
-		configs[name] = reattachConfig{
+	out := make(map[string]reattachConfig, len(configs))
+	for name, rc := range configs {
+		out[name] = reattachConfig{
 			Protocol:        string(rc.Protocol),
 			ProtocolVersion: rc.ProtocolVersion,
 			Pid:             rc.Pid,
@@ -331,11 +344,11 @@ func (d *Driver) formatReattachEnvVar() string {
 		}
 	}
 
-	reattachBytes, err := json.Marshal(configs)
+	reattachBytes, err := json.Marshal(out)
 	if err != nil {
-		panic(fmt.Sprintf("failed to build TF_REATTACH_PROVIDERS string: %v", err))
+		panic(fmt.Sprintf("failed to build reattach providers string: %v", err))
 	}
-	return "TF_REATTACH_PROVIDERS=" + string(reattachBytes)
+	return string(reattachBytes)
 }
 
 func getTFCommand() string {

@@ -33,9 +33,16 @@ tests/
 
 Each test runs both paths in parallel against the same wrapped providers:
 
-- **Path A** — `tofu apply` against TF providers via reattach.
-- **Path B** — `pulumi up` against bridged TF providers via
-  `pulumi-language-hcl`.
+- **Path A** — `tofu apply` against TF providers via reattach
+  (`TF_REATTACH_PROVIDERS`).
+- **Path B** — `pulumi up` via `pulumi-language-hcl`, where the real
+  `terraform-provider` plugin is parameterized through the production
+  `pulumi install` flow and reattaches to the same in-memory TF providers
+  (`PULUMI_BRIDGE_REATTACH_PROVIDERS`).
+
+Both paths therefore consume the provider exactly the way their production
+runtimes do — including the wire-protocol schema the dynamic bridge derives
+on the Pulumi side.
 
 The harness asserts equality of two things:
 
@@ -124,11 +131,19 @@ particular:
 
 - A `terraform { required_providers { ... } }` block with a
   `pulumi/*`-style source has no meaning on the TF side; both paths
-  discover the provider from the resource type prefix and from
-  `opttest.AttachProvider`, so fixtures can omit the block.
+  discover the provider from the resource type prefix (defaulting to the
+  `hashicorp/<name>` source), so fixtures can omit the block.
 - Pulumi-only constructs (component / package blocks, Pulumi-specific
-  resource options, parameterized providers, etc.) belong in the
-  language-host test suite, not here.
+  resource options) belong in the language-host test suite, not here.
+- Provider setups a tf-compatible program cannot produce — `Customize`
+  hooks on the bridged `ProviderInfo` foremost — belong in the
+  Pulumi-only `putest` suite (`tests/putest/`,
+  `tests/testutil/putest/`), which asserts directly on stack outputs,
+  Pulumi state, and recorded provider ops instead of comparing against
+  OpenTofu. A tfcompat case skipped as a known divergence of the
+  terraform-provider plugin path gets a putest twin pinning the correct
+  (OpenTofu-matching) behavior against the linked-in bridge until the
+  divergence is fixed.
 
 Only Create + DataSource Read are exercised by the first test. The
 recorder shapes for Update/Delete are wired but not yet covered by a

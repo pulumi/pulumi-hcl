@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tfcompat_test
+package putest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 )
@@ -29,8 +29,11 @@ import (
 // single-element tuple that must collapse to the flattened object.
 func TestL2PFMaxItemsOneAttr(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_pf_max_items_one_attr", tfcompat.Case{
-		Providers: []tfcompat.Provider{pfxFlatMaxItemsOne()},
+	putest.RunCase(t, "l2_pf_max_items_one_attr", putest.Case{
+		Providers: []putest.Provider{pfxFlatMaxItemsOne()},
+		ExpectedOutputs: map[string]string{
+			"id": "pfx-flat-id",
+		},
 	})
 }
 
@@ -39,15 +42,20 @@ func TestL2PFMaxItemsOneAttr(t *testing.T) {
 // list on output and `settings[0]` / `length(settings)` must resolve.
 func TestL2PFMaxItemsOneAttrOutput(t *testing.T) {
 	t.Parallel()
-	tfcompat.RunCase(t, "l2_pf_max_items_one_attr_output", tfcompat.Case{
-		Providers: []tfcompat.Provider{pfxFlatMaxItemsOne()},
+	putest.RunCase(t, "l2_pf_max_items_one_attr_output", putest.Case{
+		Providers: []putest.Provider{pfxFlatMaxItemsOne()},
+		ExpectedOutputs: map[string]string{
+			"settings": `[{"enabled":true}]`,
+			"enabled":  "true",
+			"count":    "1",
+		},
 	})
 }
 
 // pfxFlatMaxItemsOne is the PFX provider with pfx_flat's `settings`
 // list-nested attribute flattened to a single Pulumi object.
-func pfxFlatMaxItemsOne() tfcompat.Provider {
-	return tfcompat.Provider{
+func pfxFlatMaxItemsOne() putest.Provider {
+	return putest.Provider{
 		Name:      "pfx",
 		PFFactory: providers.PFXProvider,
 		Customize: func(_ *testing.T, info *tfbridge.ProviderInfo) {

@@ -15,8 +15,6 @@
 package tfcompat
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -77,51 +75,4 @@ func TestResolveStages(t *testing.T) {
 		_, err := resolveStages([]map[string]string{a, b}, true, []Stage{{}})
 		require.EqualError(t, err, "case has 2 numbered stage dirs but Case.Stages has 1 entries")
 	})
-}
-
-// TestLoadCaseFS_MultiFile checks that the directory loader picks up every
-// regular file, keyed by path relative to the case directory.
-func TestLoadCaseFS_MultiFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.tf"), []byte("a-content"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.tf"), []byte("b-content"), 0o600))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "mod"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "mod", "c.tf"), []byte("c-content"), 0o600))
-
-	files, err := loadCaseFS(dir)
-	require.NoError(t, err)
-	assert.Equal(t, map[string]string{
-		"a.tf":                       "a-content",
-		"b.tf":                       "b-content",
-		filepath.Join("mod", "c.tf"): "c-content",
-	}, files)
-}
-
-// TestLoadCaseFS_MissingDir asserts the loader returns an error when the
-// directory does not exist, rather than silently returning an empty map.
-func TestLoadCaseFS_MissingDir(t *testing.T) {
-	t.Parallel()
-	_, err := loadCaseFS(filepath.Join(t.TempDir(), "does-not-exist"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "case directory")
-}
-
-// TestLoadCaseFS_NotADir asserts the loader rejects a file path masquerading
-// as a case directory.
-func TestLoadCaseFS_NotADir(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "a.tf")
-	require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
-	_, err := loadCaseFS(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not a directory")
-}
-
-// TestLoadCaseFS_Empty asserts the loader rejects an empty directory.
-func TestLoadCaseFS_Empty(t *testing.T) {
-	t.Parallel()
-	_, err := loadCaseFS(t.TempDir())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no files found")
 }
