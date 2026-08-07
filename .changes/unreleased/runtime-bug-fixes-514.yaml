@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Fix false `Cycle found` when a data source reaches a resource only through a root local
-time: 2026-08-06T13:56:28Z
-custom:
-    Component: runtime
-    PR: "514"
