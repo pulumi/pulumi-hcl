@@ -93,7 +93,7 @@ jobs:
       # terraform_remote_state lowers to the pulumi-terraform getLocalReference
       # invoke; the tfcompat harness disables plugin acquisition, so pre-install it.
       - run: pulumi plugin install resource terraform 6.1.0
-      - run: pulumi plugin install resource terraform-provider 1.3.0
+      - run: pulumi plugin install resource terraform-provider 1.3.0 # renovate: github-releases pulumi/pulumi-terraform-provider
       - run: pulumi plugin install resource local 0.1.6
       - run: make bin/pulumi-language-hcl bin/pulumi-converter-hcl bin/pulumi-resource-hcl
       - run: echo "$PWD/bin" >> "$GITHUB_PATH"
