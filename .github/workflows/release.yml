@@ -69,7 +69,7 @@ jobs:
     steps:
       - name: Fetch the AWS upload credentials from ESC
         id: esc-secrets
-        uses: pulumi/esc-action@v3
+        uses: pulumi/esc-action@32dda43ffe7a2ab21e6bce11c781b44a3e5623cf # v3
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: ${{ runner.temp }}/go-toolchain/go.mod
-      - uses: pulumi/actions@v7
+      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
           pulumi-version: "latest"
         env:
@@ -338,7 +338,7 @@ jobs:
       ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: PUBLISH_REPO_USERNAME=OSSRH_USERNAME,PUBLISH_REPO_PASSWORD=OSSRH_PASSWORD,SIGNING_KEY=JAVA_SIGNING_KEY,SIGNING_PASSWORD=JAVA_SIGNING_PASSWORD
     steps:
       - name: Fetch the publishing secrets from ESC
-        uses: pulumi/esc-action@v3
+        uses: pulumi/esc-action@32dda43ffe7a2ab21e6bce11c781b44a3e5623cf # v3
       - uses: actions/checkout@v7
         with:
           ref: sdk-releases
@@ -395,7 +395,7 @@ jobs:
       ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: GITHUB_TOKEN=hcl-registry-publish-dispatch
     steps:
       - name: Fetch the dispatch token from ESC
-        uses: pulumi/esc-action@v3
+        uses: pulumi/esc-action@32dda43ffe7a2ab21e6bce11c781b44a3e5623cf # v3
       - name: Dispatch a registry docs build
         run: |
           base="https://raw.githubusercontent.com/${{ github.repository }}/${SHA}/registry"
