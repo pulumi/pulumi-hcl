@@ -84,7 +84,7 @@ jobs:
           restore-keys: |
             ${{ matrix.cache-key }}-
             go-test-
-      - uses: pulumi/actions@v7
+      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
           pulumi-version: "dev"
         env:
@@ -157,7 +157,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v6
-      - uses: pulumi/actions@v7
+      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
           pulumi-version: "latest"
         env:
