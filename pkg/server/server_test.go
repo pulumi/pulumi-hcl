@@ -342,6 +342,7 @@ terraform {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"rollbar/rollbar", ">= 1.0"},
 	}}, resp.Specs)
 }
@@ -552,6 +553,7 @@ terraform {
 	// regardless of module-walk order ("< 3.2" sorts before ">= 3.0").
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"hashicorp/dns", "< 3.2, >= 3.0"},
 	}}, resp.Specs)
 }
@@ -594,6 +596,7 @@ resource "aws_s3_bucket" "b" {}
 	}}, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"hashicorp/aws"},
 	}}, resp.Specs)
 
@@ -699,6 +702,7 @@ terraform {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"hashicorp/dns", ">= 3.0"},
 	}}, resp.Specs)
 }
@@ -810,8 +814,8 @@ terraform {
 	assert.Empty(t, resp.Packages)
 	// Specs are sorted by source.
 	assert.Equal(t, []*pulumirpc.PackageSpec{
-		{Source: "terraform-provider", Parameters: []string{"hashicorp/dns"}},
-		{Source: "terraform-provider", Parameters: []string{"rollbar/rollbar"}},
+		{Source: "terraform-provider", Version: bridgePackageVersion, Parameters: []string{"hashicorp/dns"}},
+		{Source: "terraform-provider", Version: bridgePackageVersion, Parameters: []string{"rollbar/rollbar"}},
 	}, resp.Specs)
 }
 
@@ -1131,6 +1135,7 @@ func TestGetRequiredPackages_SubmoduleComponentProviders(t *testing.T) {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"acme/greeting", ">= 3.0"},
 	}}, resp.Specs)
 }
@@ -1142,6 +1147,7 @@ func TestGetRequiredPackages_RootlessComponentProviders(t *testing.T) {
 	assert.Empty(t, resp.Packages)
 	assert.Equal(t, []*pulumirpc.PackageSpec{{
 		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
 		Parameters: []string{"acme/greeting", ">= 3.0"},
 	}}, resp.Specs)
 }

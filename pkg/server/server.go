@@ -160,6 +160,13 @@ func (host *LanguageHost) Close() error {
 // parameterization.
 const bridgePackageName = "terraform-provider"
 
+// bridgePackageVersion pins the terraform-provider release install specs
+// resolve to. Left unset, the CLI reuses whatever version is already in the
+// plugin cache, so a stale install keeps serving long-fixed schema bugs
+// (https://github.com/pulumi/pulumi-hcl/issues/204). Renovate bumps it on
+// each release (see renovate.json5).
+const bridgePackageVersion = "1.3.0" // renovate: github-releases pulumi/pulumi-terraform-provider
+
 // GetRequiredPackages returns the packages required to run an HCL program,
 // keyed by provider source — a local name may resolve to different sources
 // in different modules, and those are distinct requirements. Pulumi-source
@@ -227,6 +234,7 @@ func (host *LanguageHost) GetRequiredPackages(
 		}
 		specs = append(specs, &pulumirpc.PackageSpec{
 			Source:     bridgePackageName,
+			Version:    bridgePackageVersion,
 			Parameters: params,
 		})
 	}

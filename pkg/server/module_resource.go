@@ -474,7 +474,9 @@ func RequirementSpecs(
 		}
 		reqs = append(reqs, resolve.Request{
 			Alias: alias,
-			Spec:  &pulumirpc.PackageSpec{Source: "terraform-provider", Parameters: params},
+			Spec: &pulumirpc.PackageSpec{
+				Source: bridgePackageName, Version: bridgePackageVersion, Parameters: params,
+			},
 		})
 	}
 	return reqs

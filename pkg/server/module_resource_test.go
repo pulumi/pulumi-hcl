@@ -172,10 +172,12 @@ resource "aws_s3_bucket" "b" {}
 	assert.Equal(t, []resolve.Request{
 		{Alias: "aws", Spec: &pulumirpc.PackageSpec{
 			Source:     "terraform-provider",
+			Version:    bridgePackageVersion,
 			Parameters: []string{"hashicorp/aws"},
 		}},
 		{Alias: "null", Spec: &pulumirpc.PackageSpec{
 			Source:     "terraform-provider",
+			Version:    bridgePackageVersion,
 			Parameters: []string{"hashicorp/null", "~> 3.2"},
 		}},
 		{Alias: "random", Spec: &pulumirpc.PackageSpec{Source: "random"}},

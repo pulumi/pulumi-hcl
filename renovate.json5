@@ -1,6 +1,20 @@
 {
     $schema: "https://docs.renovatebot.com/renovate-schema.json",
     extends: ["github>pulumi/renovate-config//default.json5"],
+    customManagers: [
+        {
+            description: "Track the pinned terraform-provider plugin release",
+            customType: "regex",
+            managerFilePatterns: ["/^pkg/server/server\\.go$/", "/^\\.github/workflows/ci\\.yml$/"],
+            matchStrings: [
+                "\"(?<currentValue>[^\"]+)\" // renovate: github-releases pulumi/pulumi-terraform-provider",
+                "pulumi plugin install resource terraform-provider (?<currentValue>\\S+) # renovate: github-releases pulumi/pulumi-terraform-provider",
+            ],
+            depNameTemplate: "pulumi/pulumi-terraform-provider",
+            datasourceTemplate: "github-releases",
+            extractVersionTemplate: "^v(?<version>.*)$",
+        },
+    ],
     packageRules: [
         {
             description: "Write a changie fragment for each dependency bump",
