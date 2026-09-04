@@ -378,24 +378,26 @@ output "missing" {
 // so output typing that depends on the mapping (e.g. MaxItemsOne block shape)
 // can be tested without a live provider.
 type mappingResolver struct {
-	resources map[string]*pulumiSchema.Resource
-	mappings  map[string]*bridge.BodyMapping
+	resources          map[string]*pulumiSchema.Resource
+	mappings           map[string]*bridge.BodyMapping
+	dataSources        map[string]*pulumiSchema.Function
+	dataSourceMappings map[string]*bridge.BodyMapping
 }
 
 func (s mappingResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
 	return s.resources[tfType], nil
 }
 
-func (mappingResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.Function, error) {
-	return nil, nil
+func (s mappingResolver) ResolveFunction(_ context.Context, tfType string) (*pulumiSchema.Function, error) {
+	return s.dataSources[tfType], nil
 }
 
 func (s mappingResolver) ResourceBodyMapping(_ context.Context, tfType string) *bridge.BodyMapping {
 	return s.mappings[tfType]
 }
 
-func (mappingResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
-	return nil
+func (s mappingResolver) DataSourceBodyMapping(_ context.Context, tfType string) *bridge.BodyMapping {
+	return s.dataSourceMappings[tfType]
 }
 
 func (mappingResolver) ProviderFunctions(
@@ -1030,4 +1032,137 @@ func TestPackageSchema(t *testing.T) {
 		_, err := PackageSchema(nil, []*ModuleSchema{makeComponent("user-data"), makeComponent("userdata")})
 		require.EqualError(t, err, `modules "user-data" and "userdata" both map to Go package "userdata"`)
 	})
+}
+
+// TestConditionalResourceDataSourceOutputIsTyped covers the "create or adopt"
+// idiom: a conditional selects between a counted resource and its matching data
+// source, whose reference types differ (here in the `timeouts` operations and in
+// a resource-only attribute). At runtime only one branch ever holds a value, so
+// an attribute read through the local must type from the selected object.
+func TestConditionalResourceDataSourceOutputIsTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "create" {
+  type = bool
+}
+
+resource "pfx_res" "this" {
+  count = var.create ? 1 : 0
+}
+
+data "pfx_res" "this" {
+  count = var.create ? 0 : 1
+}
+
+locals {
+  selected = var.create ? pfx_res.this[0] : data.pfx_res.this[0]
+}
+
+output "selected_id" {
+  value = local.selected.id
+}
+
+output "selected_attr" {
+  value = local.selected.attr
+}
+
+output "selected" {
+  value = local.selected
+}
+
+output "wrapped" {
+  value = { inner = local.selected }
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := mappingResolver{
+		resources: map[string]*pulumiSchema.Resource{
+			"pfx_res": {Properties: []*pulumiSchema.Property{{Name: "attr", Type: pulumiSchema.StringType}}},
+		},
+		mappings: map[string]*bridge.BodyMapping{
+			"pfx_res": {Timeouts: []string{"create", "read", "update", "delete"}},
+		},
+		dataSources: map[string]*pulumiSchema.Function{
+			"pfx_res": {ReturnType: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
+				{Name: "id", Type: pulumiSchema.StringType},
+			}}},
+		},
+		dataSourceMappings: map[string]*bridge.BodyMapping{
+			"pfx_res": {Timeouts: []string{"read"}},
+		},
+	}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	// The synthetic `id` and `timeouts` of a resource reference are optional, so
+	// only the declared required property is required; a data source's `id` is a
+	// declared property.
+	resource := &PropertySpec{Type: TypeObject, Properties: map[string]*PropertySpec{
+		"attr": {Type: TypeString},
+		"id":   {Type: TypeString},
+		"timeouts": {Type: TypeObject, Properties: map[string]*PropertySpec{
+			"create": {Type: TypeString},
+			"delete": {Type: TypeString},
+			"read":   {Type: TypeString},
+			"update": {Type: TypeString},
+		}},
+	}, Required: []string{"attr"}}
+	dataSource := &PropertySpec{Type: TypeObject, Properties: map[string]*PropertySpec{
+		"id": {Type: TypeString},
+		"timeouts": {Type: TypeObject, Properties: map[string]*PropertySpec{
+			"read": {Type: TypeString},
+		}},
+	}, Required: []string{"id"}}
+	selected := &PropertySpec{OneOf: []*PropertySpec{resource, dataSource}}
+	assert.Equal(t, map[string]*PropertySpec{
+		"selected_id":   {Type: TypeString},
+		"selected_attr": {Type: TypeString},
+		"selected":      selected,
+		"wrapped": {Type: TypeObject, Properties: map[string]*PropertySpec{
+			"inner": selected,
+		}, Required: []string{"inner"}},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"selected", "selected_attr", "wrapped"}, moduleSchema.RequiredOutputs)
+
+	spec := moduleSchema.ToPulumiPackageSchema()
+	assert.Equal(t, pulumiSchema.TypeSpec{OneOf: []pulumiSchema.TypeSpec{
+		{Ref: "#/types/pkg:index:Selected0"},
+		{Ref: "#/types/pkg:index:Selected1"},
+	}}, spec.Resources["pkg:index:pkg"].Properties["selected"].TypeSpec)
+	assert.Equal(t, []string{"attr", "id", "timeouts"}, slices.Sorted(maps.Keys(spec.Types["pkg:index:Selected0"].Properties)))
+	assert.Equal(t, []string{"id", "timeouts"}, slices.Sorted(maps.Keys(spec.Types["pkg:index:Selected1"].Properties)))
+	assert.Equal(t, pulumiSchema.TypeSpec{OneOf: []pulumiSchema.TypeSpec{
+		{Ref: "#/types/pkg:index:WrappedInner0"},
+		{Ref: "#/types/pkg:index:WrappedInner1"},
+	}}, spec.Types["pkg:index:Wrapped"].Properties["inner"].TypeSpec)
+}
+
+// TestConditionalUnifiedObjectsOutputIsMap shows that a conditional over objects
+// whose attribute types unify keeps HCL's own result: the branches become a map,
+// as they do at runtime, rather than a union.
+func TestConditionalUnifiedObjectsOutputIsMap(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "flag" {
+  type = bool
+}
+
+output "disjoint" {
+  value = var.flag ? { a = "x" } : { b = 1 }
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, nil, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]*PropertySpec{
+		"disjoint": {Type: TypeObject, AdditionalProperties: &PropertySpec{Type: TypeString}},
+	}, moduleSchema.OutputProperties)
 }

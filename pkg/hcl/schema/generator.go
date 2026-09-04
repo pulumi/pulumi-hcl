@@ -147,6 +147,10 @@ type PropertySpec struct {
 
 	// Ref is a reference to another type definition.
 	Ref string `json:"$ref,omitempty"`
+
+	// OneOf lists the alternatives of a union type: the value is of exactly one
+	// of them.
+	OneOf []*PropertySpec `json:"oneOf,omitempty"`
 }
 
 // GenerateModuleSchema generates a Pulumi schema from an HCL module
@@ -197,7 +201,7 @@ func GenerateModuleSchema(
 			return nil, fmt.Errorf("processing output %q: %w", o.Name, err)
 		}
 		schema.OutputProperties[o.Name] = prop
-		if !val.Range().CouldBeNull() {
+		if !couldBeNull(val) {
 			schema.RequiredOutputs = append(schema.RequiredOutputs, o.Name)
 		}
 	}
@@ -465,7 +469,8 @@ func seedModuleTypes(
 // inferOutputType evaluates an output's value expression against the type scope
 // and returns the resulting unknown value, whose type and nullability describe
 // the output. An output with no value, or one that cannot be evaluated against
-// the scope, is an error. The value is unmarked so its range can be read.
+// the scope, is an error. The value keeps only its union marks, so its range
+// can be read.
 func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error) {
 	if o.Value == nil {
 		return cty.NilVal, fmt.Errorf("output has no value expression")
@@ -474,8 +479,7 @@ func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error
 	if diags.HasErrors() {
 		return cty.NilVal, fmt.Errorf("%s", diags.Error())
 	}
-	unmarked, _ := val.UnmarkDeep()
-	return unmarked, nil
+	return keepUnions(val), nil
 }
 
 // variableToPropertySpec converts an HCL variable to a PropertySpec.
@@ -553,10 +557,22 @@ func outputToPropertySpec(o *ast.Output, val cty.Value) (*PropertySpec, error) {
 }
 
 // ctyValueToPropertySpec converts an inferred unknown value to a PropertySpec.
-// For object types it reads each attribute's nullability from the value's
-// refinements to populate Required; collections fall back to ctyTypeToPropertySpec,
-// where nested object fields' requiredness rides on optional-attribute metadata.
+// A union value becomes a OneOf over its members. For object types it reads
+// each attribute's nullability from the value's refinements to populate
+// Required; collections fall back to ctyTypeToPropertySpec, where nested object
+// fields' requiredness rides on optional-attribute metadata.
 func ctyValueToPropertySpec(v cty.Value) (*PropertySpec, error) {
+	if members, ok := unionMembers(v); ok {
+		oneOf := make([]*PropertySpec, len(members))
+		for i, m := range members {
+			spec, err := ctyValueToPropertySpec(m)
+			if err != nil {
+				return nil, err
+			}
+			oneOf[i] = spec
+		}
+		return &PropertySpec{OneOf: oneOf}, nil
+	}
 	t := v.Type()
 	if !t.IsObjectType() {
 		return ctyTypeToPropertySpec(t)
@@ -570,7 +586,7 @@ func ctyValueToPropertySpec(v cty.Value) (*PropertySpec, error) {
 			return nil, err
 		}
 		props[name] = propSpec
-		if !attr.Range().CouldBeNull() {
+		if !couldBeNull(attr) {
 			required = append(required, name)
 		}
 	}
@@ -724,6 +740,9 @@ func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) p
 	if spec == nil || v.IsNull() || v.IsComputed() {
 		return v
 	}
+	if len(spec.OneOf) > 0 {
+		spec = mergeSpecs(spec.OneOf)
+	}
 	switch {
 	case len(spec.Properties) > 0 && v.IsMap():
 		obj := v.AsMap()
@@ -755,6 +774,43 @@ func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) p
 	default:
 		return v
 	}
+}
+
+// mergeSpecs folds the alternatives of a union into one spec that renames every
+// field any alternative declares. A field's Pulumi name depends only on its HCL
+// name, so renaming against the merged spec renames a value of any alternative
+// correctly; the merged spec describes no single alternative's type.
+func mergeSpecs(specs []*PropertySpec) *PropertySpec {
+	merged := &PropertySpec{}
+	byName := map[string][]*PropertySpec{}
+	var items, additional []*PropertySpec
+	for _, spec := range specs {
+		if len(spec.OneOf) > 0 {
+			spec = mergeSpecs(spec.OneOf)
+		}
+		for name, field := range spec.Properties {
+			byName[name] = append(byName[name], field)
+		}
+		if spec.Items != nil {
+			items = append(items, spec.Items)
+		}
+		if spec.AdditionalProperties != nil {
+			additional = append(additional, spec.AdditionalProperties)
+		}
+	}
+	if len(byName) > 0 {
+		merged.Properties = make(map[string]*PropertySpec, len(byName))
+		for name, fields := range byName {
+			merged.Properties[name] = mergeSpecs(fields)
+		}
+	}
+	if len(items) > 0 {
+		merged.Items = mergeSpecs(items)
+	}
+	if len(additional) > 0 {
+		merged.AdditionalProperties = mergeSpecs(additional)
+	}
+	return merged
 }
 
 // ToPulumiPackageSchema converts the module schema to a full Pulumi package
@@ -919,6 +975,12 @@ func (s *ModuleSchema) schemaType(
 	prop *PropertySpec, typeName string, types map[string]pulumischema.ComplexTypeSpec,
 ) pulumischema.TypeSpec {
 	switch {
+	case len(prop.OneOf) > 0:
+		oneOf := make([]pulumischema.TypeSpec, len(prop.OneOf))
+		for i, member := range prop.OneOf {
+			oneOf[i] = s.schemaType(member, fmt.Sprintf("%s%d", typeName, i), types)
+		}
+		return pulumischema.TypeSpec{OneOf: oneOf}
 	case prop.Properties != nil:
 		token := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, typeName)
 		fields := make(map[string]pulumischema.PropertySpec, len(prop.Properties))

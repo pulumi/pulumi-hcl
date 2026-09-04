@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: "Type a conditional whose branches do not unify, such as `var.create ? res[0] : data.res[0]`, as a union in a module's generated schema instead of failing schema generation"
+time: 2026-09-04T10:58:33Z
+custom:
+    Component: runtime
+    PR: "605"
