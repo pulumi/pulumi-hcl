@@ -767,6 +767,44 @@ func TestBoundaryNameConversion(t *testing.T) {
 	})))
 }
 
+// TestUnionBoundaryNameConversion shows that a union output's fields are
+// renamed whichever member the value is, including a field only one member
+// declares and a nested object inside a member.
+func TestUnionBoundaryNameConversion(t *testing.T) {
+	t.Parallel()
+
+	s := &ModuleSchema{
+		OutputProperties: map[string]*PropertySpec{
+			"union_out": {OneOf: []*PropertySpec{
+				{Type: TypeObject, Properties: map[string]*PropertySpec{
+					"shared_field": {Type: TypeString},
+					"only_first": {Type: TypeObject, Properties: map[string]*PropertySpec{
+						"nested_field": {Type: TypeString},
+					}},
+				}},
+				{Type: TypeObject, Properties: map[string]*PropertySpec{
+					"shared_field": {Type: TypeString},
+					"only_second":  {Type: TypeString},
+				}},
+			}},
+		},
+	}
+	propMap := func(m map[string]any) property.Map {
+		return resource.FromResourcePropertyMap(resource.NewPropertyMapFromMap(m))
+	}
+
+	assert.Equal(t, propMap(map[string]any{
+		"unionOut": map[string]any{"sharedField": "a", "onlyFirst": map[string]any{"nestedField": "b"}},
+	}), s.OutputsToPulumi(propMap(map[string]any{
+		"union_out": map[string]any{"shared_field": "a", "only_first": map[string]any{"nested_field": "b"}},
+	})))
+	assert.Equal(t, propMap(map[string]any{
+		"unionOut": map[string]any{"sharedField": "c", "onlySecond": "d"},
+	}), s.OutputsToPulumi(propMap(map[string]any{
+		"union_out": map[string]any{"shared_field": "c", "only_second": "d"},
+	})))
+}
+
 // TestAnyTypedVariableIsAny reproduces
 // https://github.com/pulumi/pulumi-hcl/issues/515: a module input declared
 // `type = any` (or with no type constraint) must surface in the Pulumi schema
@@ -1165,4 +1203,70 @@ output "disjoint" {
 	assert.Equal(t, map[string]*PropertySpec{
 		"disjoint": {Type: TypeObject, AdditionalProperties: &PropertySpec{Type: TypeString}},
 	}, moduleSchema.OutputProperties)
+}
+
+// TestConditionalUnionOutsideTraversal shows the two ways a union leaves the
+// walker's precise handling: an attribute no member has is HCL's own error, and
+// a union that flows through a function call degrades to any.
+func TestConditionalUnionOutsideTraversal(t *testing.T) {
+	t.Parallel()
+
+	// A list attribute against a string attribute cannot unify, so the
+	// conditional is a union rather than HCL's map.
+	resolver := mappingResolver{
+		resources: map[string]*pulumiSchema.Resource{
+			"pfx_res": {Properties: []*pulumiSchema.Property{
+				{Name: "attr", Type: &pulumiSchema.ArrayType{ElementType: pulumiSchema.StringType}},
+			}},
+		},
+		dataSources: map[string]*pulumiSchema.Function{
+			"pfx_res": {ReturnType: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
+				{Name: "id", Type: pulumiSchema.StringType},
+			}}},
+		},
+	}
+	const prelude = `
+variable "create" {
+  type = bool
+}
+
+resource "pfx_res" "this" {
+  count = var.create ? 1 : 0
+}
+
+data "pfx_res" "this" {
+  count = var.create ? 0 : 1
+}
+
+locals {
+  selected = var.create ? pfx_res.this[0] : data.pfx_res.this[0]
+}
+`
+	generate := func(t *testing.T, src string) (*ModuleSchema, error) {
+		config, diags := parser.NewParser().ParseSource("main.tf", []byte(prelude+src))
+		require.False(t, diags.HasErrors(), diags.Error())
+		return GenerateModuleSchema(
+			t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	}
+
+	t.Run("attribute of no member", func(t *testing.T) {
+		t.Parallel()
+		_, err := generate(t, `
+output "missing" {
+  value = local.selected.missing
+}
+`)
+		require.EqualError(t, err, `typing output "missing": main.tf:19,25-33: Unsupported attribute; This object does not have an attribute named "missing".`)
+	})
+
+	t.Run("through a function call", func(t *testing.T) {
+		t.Parallel()
+		moduleSchema, err := generate(t, `
+output "merged" {
+  value = merge(local.selected, {})
+}
+`)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]*PropertySpec{"merged": {Type: TypeAny}}, moduleSchema.OutputProperties)
+	})
 }
