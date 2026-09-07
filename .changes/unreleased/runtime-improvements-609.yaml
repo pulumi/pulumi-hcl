@@ -1,6 +1,0 @@
-kind: Improvements
-body: Type an instance indexed out of a `count` or `for_each` reference with the same required attributes as a direct reference in a module's generated schema
-time: 2026-09-04T10:56:18Z
-custom:
-    Component: runtime
-    PR: "609"
