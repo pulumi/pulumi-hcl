@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Convert top-level `version`, `protect`, `parent`, ... on resource and data blocks to inputs, not options
+time: 2026-09-03T22:55:44.87307+02:00
+custom:
+    Component: converter
+    PR: "602"

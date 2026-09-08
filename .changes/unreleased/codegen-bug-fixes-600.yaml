@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Write inputs named after a meta-argument (`count`, `lifecycle`, `source`, ...) in the `_` escaping block
+time: 2026-09-03T15:02:27.578483+02:00
+custom:
+    Component: codegen
+    PR: "600"
