@@ -1,8 +1,0 @@
-kind: bug-fixes
-body: Import a resource's values from Terraform state even when its provider declares
-    a schema version, instead of falling back to an id-only import that resource types
-    supporting no import cannot serve
-time: 2026-09-01T14:20:00Z
-custom:
-    Component: converter
-    PR: "595"

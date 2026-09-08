@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Read inputs from the `_` escaping block
-time: 2026-09-03T15:02:27.619376+02:00
-custom:
-    Component: converter
-    PR: "600"

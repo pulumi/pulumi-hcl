@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Fill an omitted resource input from its schema `const` value when the const is an integer
-time: 2026-09-03T14:16:51.217134+02:00
-custom:
-    Component: runtime
-    PR: "599"
