@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Emit `for_each` on a provider block from a provider resource with a `range` option
-time: 2026-09-03T23:11:39.48699+02:00
-custom:
-    Component: codegen
-    PR: "604"
