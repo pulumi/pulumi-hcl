@@ -1,0 +1,7 @@
+kind: bug-fixes
+body: Record the schema version imported Terraform state was written at, so a provider
+    upgrades that state only when it is behind the schema version the provider serves
+time: 2026-09-01T14:35:00Z
+custom:
+    Component: converter
+    PR: "596"
