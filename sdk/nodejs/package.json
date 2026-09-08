@@ -1,6 +1,6 @@
 {
     "name": "@pulumi/hcl",
-    "version": "0.16.2",
+    "version": "0.17.0",
     "repository": "https://github.com/pulumi/pulumi-hcl",
     "license": "Apache-2.0",
     "scripts": {
@@ -16,7 +16,7 @@
     "pulumi": {
         "resource": true,
         "name": "hcl",
-        "version": "0.16.2",
+        "version": "0.17.0",
         "server": "github://api.github.com/pulumi/pulumi-hcl"
     }
 }

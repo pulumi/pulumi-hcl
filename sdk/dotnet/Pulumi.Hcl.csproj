@@ -9,7 +9,7 @@
     <PackageProjectUrl></PackageProjectUrl>
     <RepositoryUrl>https://github.com/pulumi/pulumi-hcl</RepositoryUrl>
     <PackageIcon>logo.png</PackageIcon>
-    <Version>0.16.2</Version>
+    <Version>0.17.0</Version>
 
     <TargetFramework>net6.0</TargetFramework>
     <Nullable>enable</Nullable>

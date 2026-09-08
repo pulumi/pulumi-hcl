@@ -1,7 +1,7 @@
 {
   "name": "hcl",
   "displayName": "Any HCL Module",
-  "version": "0.16.2",
+  "version": "0.17.0",
   "description": "Instantiate a Terraform/OpenTofu module as a Pulumi component.",
   "license": "Apache-2.0",
   "repository": "https://github.com/pulumi/pulumi-hcl",
