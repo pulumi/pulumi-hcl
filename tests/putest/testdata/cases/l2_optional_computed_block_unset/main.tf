@@ -1,3 +1,9 @@
+terraform {
+  required_providers {
+    optcomp = { source = "pulumi/optcomp" }
+  }
+}
+
 # `identity` is an Optional+Computed MaxItems=1 nested block the provider
 # leaves unset; `identity_set` is its TypeSet twin. Matching OpenTofu, the
 # list variant reads null and the set variant stays an empty set. The plugin

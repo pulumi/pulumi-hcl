@@ -1,3 +1,9 @@
+terraform {
+  required_providers {
+    renamed = { source = "pulumi/renamed" }
+  }
+}
+
 data "renamed_lookup" "d" {
   query = "lambda"
 

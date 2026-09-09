@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     union = {
-      source = "union"
+      source = "pulumi/union"
     }
   }
 }

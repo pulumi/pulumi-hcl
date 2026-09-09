@@ -1,3 +1,9 @@
+terraform {
+  required_providers {
+    single = { source = "pulumi/single" }
+  }
+}
+
 data "single" "ds" {
   query     = "hi"
   tag_value = "v"

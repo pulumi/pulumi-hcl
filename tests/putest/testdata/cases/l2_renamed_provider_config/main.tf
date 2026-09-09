@@ -1,3 +1,9 @@
+terraform {
+  required_providers {
+    renamed = { source = "pulumi/renamed" }
+  }
+}
+
 provider "renamed" {
   endpoint = "https://example.test/api"
 

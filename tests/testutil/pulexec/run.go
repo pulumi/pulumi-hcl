@@ -111,9 +111,9 @@ type Driver struct {
 	pt        *pulumitest.PulumiTest
 	dir       string
 	providers []Provider
-	// install is set when reattach providers are present: their SDKs are
-	// written by the real `pulumi install` flow, run once per stage.
-	install bool
+	// debugProviders is the PULUMI_DEBUG_PROVIDERS value for the attached
+	// providers, served once for the commands the harness runs itself.
+	debugProviders string
 	// extraEnv holds the same env pairs opttest.Env configures on the
 	// workspace, for commands the harness must run itself (`pulumi install`,
 	// which pulumitest runs without the workspace env).
@@ -189,7 +189,7 @@ backend:
 		opts = append(opts, opttest.AttachProvider(
 			p.Name,
 			func(ctx context.Context, pt providers.PulumiTest) (providers.Port, error) {
-				handle, err := startProvider(ctx, p.Start)
+				handle, err := startProvider(ctx, p.Start, nil)
 				if err != nil {
 					return 0, err
 				}
@@ -205,7 +205,6 @@ backend:
 		pt:        pt,
 		dir:       dir,
 		providers: provs,
-		install:   len(reattach) > 0,
 		extraEnv:  extraEnv,
 	}
 }
@@ -316,47 +315,50 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
 		d.lastProgramFiles = append(d.lastProgramFiles, path)
 	}
-	d.writeStubSDKs(t)
-	if d.install {
-		// Reattach providers go through the real parameterization flow: the
-		// language host reports them as terraform-provider PackageSpecs and
-		// `pulumi install` runs the plugin (which reattaches to the in-process
-		// TF provider) to generate their SDK descriptors. pulumitest's Install
-		// runs without the workspace env, so run the command directly.
-		cmd := exec.Command("pulumi", "install")
-		cmd.Dir = d.dir
-		// Go child processes resolve duplicate env entries last-wins, so
-		// appending overrides the test process env.
-		cmd.Env = append(os.Environ(), d.extraEnv...)
-		out, err := cmd.CombinedOutput()
-		require.NoErrorf(t, err, "pulumi install failed: %s", out)
-	}
+	// Providers go through the real install flow. The language host reports
+	// a reattach provider as a terraform-provider PackageSpec, and `pulumi
+	// install` runs the plugin (which reattaches to the in-process TF
+	// provider) to generate its SDK descriptor. An attached provider is
+	// declared with `source = "pulumi/<name>"` and counts as installed.
+	// pulumitest's Install runs without the workspace env, so run the
+	// command directly.
+	cmd := exec.Command("pulumi", "install")
+	cmd.Dir = d.dir
+	// Go child processes resolve duplicate env entries last-wins, so
+	// appending overrides the test process env.
+	cmd.Env = append(os.Environ(), d.extraEnv...)
+	cmd.Env = append(cmd.Env, d.attachedProvidersEnv(t))
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "pulumi install failed: %s", out)
 }
 
-// writeStubSDKs materializes a minimal sdks/<provider>/hcl.sdk.json for each
-// attached provider. In production this file is written by `pulumi install`
-// (via GeneratePackage), but the harness uses AttachProvider, so the
-// terraform-provider plugin that `pulumi install` would normally invoke is
-// never run. The descriptor is intentionally unparameterized — AttachProvider
-// short-circuits plugin lookup to the in-process gRPC server.
-func (d *Driver) writeStubSDKs(t *testing.T) {
+// attachedProvidersEnv returns the PULUMI_DEBUG_PROVIDERS env pair that points
+// the CLI at the attached providers. pulumitest attaches them only around its
+// own operations, so the commands the harness runs itself get provider
+// servers of their own, started on first use and kept for the test.
+func (d *Driver) attachedProvidersEnv(t *testing.T) string {
 	t.Helper()
-	for _, p := range d.providers {
-		if p.Start == nil {
-			// Reattach providers get real SDKs from `pulumi install`.
-			continue
+	if d.debugProviders == "" {
+		cancel := make(chan bool)
+		t.Cleanup(func() { close(cancel) })
+		ports := map[providers.ProviderName]providers.Port{}
+		for _, p := range d.providers {
+			if p.Start == nil {
+				continue
+			}
+			handle, err := startProvider(t.Context(), p.Start, cancel)
+			require.NoError(t, err)
+			ports[providers.ProviderName(p.Name)] = providers.Port(handle.Port)
 		}
-		sdkDir := filepath.Join(d.dir, "sdks", p.Name)
-		require.NoError(t, os.MkdirAll(sdkDir, 0o755))
-		desc := fmt.Appendf(nil, `{"name":%q,"kind":"resource"}`+"\n", p.Name)
-		require.NoError(t, os.WriteFile(
-			filepath.Join(sdkDir, "hcl.sdk.json"), desc, 0o600,
-		))
+		d.debugProviders = providers.GetDebugProvidersEnv(ports)
 	}
+	return "PULUMI_DEBUG_PROVIDERS=" + d.debugProviders
 }
 
+// startProvider serves start's provider until cancel closes; a nil cancel
+// serves for the life of the process.
 func startProvider(
-	ctx context.Context, start func(context.Context) (pulumirpc.ResourceProviderServer, error),
+	ctx context.Context, start func(context.Context) (pulumirpc.ResourceProviderServer, error), cancel chan bool,
 ) (*rpcutil.ServeHandle, error) {
 	// Fail fast on providers that cannot start at all; the router then builds
 	// one instance server per engine connection.
@@ -365,6 +367,7 @@ func startProvider(
 	}
 
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
+		Cancel: cancel,
 		Init: func(srv *grpc.Server) error {
 			pulumirpc.RegisterResourceProviderServer(srv, newConnRoutedProvider(start))
 			return nil

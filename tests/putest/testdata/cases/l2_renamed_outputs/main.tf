@@ -1,3 +1,9 @@
+terraform {
+  required_providers {
+    renamed = { source = "pulumi/renamed" }
+  }
+}
+
 resource "renamed_thing" "r" {
   function_name = "alpha"
 
