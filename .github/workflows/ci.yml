@@ -86,10 +86,7 @@ jobs:
             go-test-
       - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
-          # TODO: move back to "dev" once a dev release carries
-          # https://github.com/pulumi/pulumi/pull/24604, which `pulumi install`
-          # needs for the attached providers in tests/putest.
-          pulumi-version: "pr#24604"
+          pulumi-version: "dev"
         env:
           GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
       - uses: opentofu/setup-opentofu@v2
