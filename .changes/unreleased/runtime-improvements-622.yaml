@@ -1,6 +1,0 @@
-kind: Improvements
-body: Type a component output that is a union, such as a conditional between a resource and its data source, as a `oneOf` of its member types instead of `any`
-time: 2026-09-10T12:42:20Z
-custom:
-    Component: runtime
-    PR: "622"
