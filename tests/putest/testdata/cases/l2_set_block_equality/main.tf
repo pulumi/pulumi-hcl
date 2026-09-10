@@ -1,3 +1,9 @@
+terraform {
+  required_providers {
+    blocky = { source = "pulumi/blocky" }
+  }
+}
+
 # `filter` is a repeating TypeSet nested block: a cty set, so `== toset(...)`
 # of the same elements is true in either order, matching OpenTofu. The plugin
 # path materializes an ordered tuple and yields false (https://github.com/pulumi/pulumi-hcl/issues/509).

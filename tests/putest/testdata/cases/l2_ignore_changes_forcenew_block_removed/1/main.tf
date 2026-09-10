@@ -1,3 +1,9 @@
+terraform {
+  required_providers {
+    fnblock = { source = "pulumi/fnblock" }
+  }
+}
+
 # Stage 1: remove the whole `settings` block. ignore_changes can no longer
 # reset the ForceNew `mode` (its index is gone), so the resource is REPLACED
 # and `settings` reports the replacement's empty list, matching OpenTofu. The
