@@ -1,0 +1,31 @@
+{
+  "name": "adopter",
+  "version": "0.0.0-dev",
+  "config": {},
+  "resources": {
+    "adopter:index:Module": {
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "string"
+        },
+        "thing": {
+          "$ref": "pulumi.json#/Any"
+        }
+      },
+      "type": "object",
+      "required": [
+        "result",
+        "thing"
+      ],
+      "inputProperties": {
+        "create": {
+          "type": "boolean"
+        }
+      },
+      "isComponent": true
+    }
+  }
+}

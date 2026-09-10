@@ -197,7 +197,7 @@ func GenerateModuleSchema(
 			return nil, fmt.Errorf("processing output %q: %w", o.Name, err)
 		}
 		schema.OutputProperties[o.Name] = prop
-		if !val.Range().CouldBeNull() {
+		if outputRequired(val) {
 			schema.RequiredOutputs = append(schema.RequiredOutputs, o.Name)
 		}
 	}
@@ -465,7 +465,9 @@ func seedModuleTypes(
 // inferOutputType evaluates an output's value expression against the type scope
 // and returns the resulting unknown value, whose type and nullability describe
 // the output. An output with no value, or one that cannot be evaluated against
-// the scope, is an error. The value is unmarked so its range can be read.
+// the scope, is an error. A union is returned as it is, so a parent module that
+// reads the output keeps its members; any other value is unmarked so its range
+// can be read.
 func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error) {
 	if o.Value == nil {
 		return cty.NilVal, fmt.Errorf("output has no value expression")
@@ -473,6 +475,9 @@ func inferOutputType(evaluator *eval.Evaluator, o *ast.Output) (cty.Value, error
 	val, diags := typeExpr(o.Value, evaluator.Context().HCLContext())
 	if diags.HasErrors() {
 		return cty.NilVal, fmt.Errorf("%s", diags.Error())
+	}
+	if _, ok := asUnion(val); ok {
+		return val, nil
 	}
 	unmarked, _ := val.UnmarkDeep()
 	return unmarked, nil
@@ -556,7 +561,9 @@ func outputToPropertySpec(o *ast.Output, val cty.Value) (*PropertySpec, error) {
 // For object types it reads each attribute's nullability from the value's
 // refinements to populate Required; collections fall back to ctyTypeToPropertySpec,
 // where nested object fields' requiredness rides on optional-attribute metadata.
+// A union is of DynamicPseudoType, so it maps to the any type.
 func ctyValueToPropertySpec(v cty.Value) (*PropertySpec, error) {
+	v, _ = v.UnmarkDeep()
 	t := v.Type()
 	if !t.IsObjectType() {
 		return ctyTypeToPropertySpec(t)
