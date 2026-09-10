@@ -2,6 +2,75 @@
   "name": "adopter",
   "version": "0.0.0-dev",
   "config": {},
+  "types": {
+    "adopter:index:Thing0": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "inputOne": {
+          "type": "string"
+        },
+        "resourceId": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "timeouts": {
+          "$ref": "#/types/adopter:index:Thing0Timeouts"
+        }
+      },
+      "type": "object",
+      "required": [
+        "resourceId",
+        "result"
+      ]
+    },
+    "adopter:index:Thing0Timeouts": {
+      "properties": {
+        "create": {
+          "type": "string"
+        },
+        "default": {
+          "type": "string"
+        },
+        "delete": {
+          "type": "string"
+        },
+        "update": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "adopter:index:Thing1": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "timeouts": {
+          "$ref": "#/types/adopter:index:Thing1Timeouts"
+        }
+      },
+      "type": "object",
+      "required": [
+        "id",
+        "result"
+      ]
+    },
+    "adopter:index:Thing1Timeouts": {
+      "properties": {
+        "read": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
   "resources": {
     "adopter:index:Module": {
       "properties": {
@@ -12,7 +81,14 @@
           "type": "string"
         },
         "thing": {
-          "$ref": "pulumi.json#/Any"
+          "oneOf": [
+            {
+              "$ref": "#/types/adopter:index:Thing0"
+            },
+            {
+              "$ref": "#/types/adopter:index:Thing1"
+            }
+          ]
         }
       },
       "type": "object",
