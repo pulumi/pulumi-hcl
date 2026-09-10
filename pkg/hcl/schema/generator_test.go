@@ -473,6 +473,91 @@ output "evaluated" {
 	assert.Equal(t, []string{"either", "evaluated", "nested", "pruned", "same_type", "shared"}, moduleSchema.RequiredOutputs)
 }
 
+// TestConditionalUnionSharedAttributesKeepShape shows that an attribute both
+// union members declare with one structured type, such as an object type from
+// another package or a collection of such objects, types as that structure
+// through the union, with the nullability its schema declares.
+func TestConditionalUnionSharedAttributesKeepShape(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "c" {
+  type = bool
+}
+
+resource "kind_a" "a" {}
+resource "kind_b" "b" {}
+
+locals {
+  either = var.c ? kind_a.a : kind_b.b
+}
+
+output "endpoint" {
+  value = local.either.endpoint
+}
+
+output "host" {
+  value = local.either.endpoint.host
+}
+
+output "port" {
+  value = local.either.endpoint.port
+}
+
+output "endpoints" {
+  value = local.either.endpoints
+}
+
+output "by_name" {
+  value = local.either.by_name
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	endpoint := &pulumiSchema.ObjectType{
+		Token: "other:index:Endpoint",
+		Properties: []*pulumiSchema.Property{
+			{Name: "host", Type: pulumiSchema.StringType},
+			{Name: "port", Type: &pulumiSchema.OptionalType{ElementType: pulumiSchema.IntType}},
+		},
+	}
+	shared := []*pulumiSchema.Property{
+		{Name: "endpoint", Type: endpoint},
+		{Name: "endpoints", Type: &pulumiSchema.ArrayType{ElementType: endpoint}},
+		{Name: "by_name", Type: &pulumiSchema.MapType{ElementType: endpoint}},
+	}
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"kind_a": {Properties: append([]*pulumiSchema.Property{
+			{Name: "zones", Type: &pulumiSchema.ArrayType{ElementType: pulumiSchema.StringType}},
+		}, shared...)},
+		"kind_b": {Properties: append([]*pulumiSchema.Property{
+			{Name: "tags", Type: &pulumiSchema.MapType{ElementType: pulumiSchema.StringType}},
+		}, shared...)},
+	}}
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	endpointSpec := &PropertySpec{
+		Type: TypeObject,
+		Properties: map[string]*PropertySpec{
+			"host": {Type: TypeString},
+			"port": {Type: TypeNumber},
+		},
+		Required: []string{"host"},
+	}
+	assert.Equal(t, map[string]*PropertySpec{
+		"endpoint":  endpointSpec,
+		"host":      {Type: TypeString},
+		"port":      {Type: TypeNumber},
+		"endpoints": {Type: TypeArray, Items: endpointSpec},
+		"by_name":   {Type: TypeObject, AdditionalProperties: endpointSpec},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"by_name", "endpoint", "endpoints", "host"}, moduleSchema.RequiredOutputs)
+}
+
 // TestConditionalUnionCrossesModuleBoundary shows that a child module output
 // typed as a union keeps its members through a module.<name>.<output>
 // reference, so the parent can still step into it.
