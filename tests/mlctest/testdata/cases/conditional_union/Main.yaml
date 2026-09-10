@@ -1,0 +1,8 @@
+resources:
+  a:
+    type: adopt:index:Module
+    properties:
+      create: false
+outputs:
+  selected_id: ${a.selectedId}
+  selected_result: ${a.selectedResult}

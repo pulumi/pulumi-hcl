@@ -1,0 +1,110 @@
+{
+  "name": "adopt",
+  "version": "0.0.0-dev",
+  "config": {},
+  "types": {
+    "adopt:index:Selected0": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "inputOne": {
+          "type": "string"
+        },
+        "resourceId": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "timeouts": {
+          "$ref": "#/types/adopt:index:Selected0Timeouts"
+        }
+      },
+      "type": "object",
+      "required": [
+        "resourceId",
+        "result"
+      ]
+    },
+    "adopt:index:Selected0Timeouts": {
+      "properties": {
+        "create": {
+          "type": "string"
+        },
+        "default": {
+          "type": "string"
+        },
+        "delete": {
+          "type": "string"
+        },
+        "update": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "adopt:index:Selected1": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "timeouts": {
+          "$ref": "#/types/adopt:index:Selected1Timeouts"
+        }
+      },
+      "type": "object",
+      "required": [
+        "id",
+        "result"
+      ]
+    },
+    "adopt:index:Selected1Timeouts": {
+      "properties": {
+        "read": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "resources": {
+    "adopt:index:Module": {
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "selected": {
+          "oneOf": [
+            {
+              "$ref": "#/types/adopt:index:Selected0"
+            },
+            {
+              "$ref": "#/types/adopt:index:Selected1"
+            }
+          ]
+        },
+        "selectedId": {
+          "type": "string"
+        },
+        "selectedResult": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "required": [
+        "selected",
+        "selectedResult"
+      ],
+      "inputProperties": {
+        "create": {
+          "type": "boolean"
+        }
+      },
+      "isComponent": true
+    }
+  }
+}
