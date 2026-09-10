@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Type a conditional whose branches do not unify, such as a resource against its data source, as a union instead of failing schema generation
-time: 2026-09-10T12:08:43Z
-custom:
-    Component: runtime
-    PR: "605"
