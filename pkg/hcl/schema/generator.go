@@ -21,6 +21,7 @@ import (
 	"fmt"
 	gotoken "go/token"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -147,6 +148,10 @@ type PropertySpec struct {
 
 	// Ref is a reference to another type definition.
 	Ref string `json:"$ref,omitempty"`
+
+	// OneOf lists the member types of a union; the property holds a value of
+	// one of them.
+	OneOf []*PropertySpec `json:"oneOf,omitempty"`
 }
 
 // GenerateModuleSchema generates a Pulumi schema from an HCL module
@@ -558,11 +563,14 @@ func outputToPropertySpec(o *ast.Output, val cty.Value) (*PropertySpec, error) {
 }
 
 // ctyValueToPropertySpec converts an inferred unknown value to a PropertySpec.
-// For object types it reads each attribute's nullability from the value's
-// refinements to populate Required; collections fall back to ctyTypeToPropertySpec,
-// where nested object fields' requiredness rides on optional-attribute metadata.
-// A union is of DynamicPseudoType, so it maps to the any type.
+// A union is one of its members' specs. For object types it reads each
+// attribute's nullability from the value's refinements to populate Required;
+// collections fall back to ctyTypeToPropertySpec, where nested object fields'
+// requiredness rides on optional-attribute metadata.
 func ctyValueToPropertySpec(v cty.Value) (*PropertySpec, error) {
+	if u, ok := asUnion(v); ok {
+		return unionPropertySpec(u)
+	}
 	v, _ = v.UnmarkDeep()
 	t := v.Type()
 	if !t.IsObjectType() {
@@ -583,6 +591,30 @@ func ctyValueToPropertySpec(v cty.Value) (*PropertySpec, error) {
 	}
 	sort.Strings(required)
 	return &PropertySpec{Type: TypeObject, Properties: props, Required: required}, nil
+}
+
+// unionPropertySpec converts a union to a property that is one of its members'
+// specs. A null member only affects nullability, so it contributes no spec.
+// Members whose specs coincide, such as a list and a set of one element type,
+// collapse into one, and a union left with one spec is that spec.
+func unionPropertySpec(u *union) (*PropertySpec, error) {
+	var members []*PropertySpec
+	for _, m := range u.members {
+		if m.IsNull() {
+			continue
+		}
+		spec, err := ctyValueToPropertySpec(m)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.ContainsFunc(members, func(seen *PropertySpec) bool { return reflect.DeepEqual(seen, spec) }) {
+			members = append(members, spec)
+		}
+	}
+	if len(members) == 1 {
+		return members[0], nil
+	}
+	return &PropertySpec{OneOf: members}, nil
 }
 
 // ctyTypeToPropertySpec converts a cty.Type to a PropertySpec.
@@ -724,14 +756,17 @@ func (s *ModuleSchema) OutputsToPulumi(outputs property.Map) property.Map {
 // convertPropertyNames recursively renames object-field names in v according to
 // spec, which describes v's type. Object fields (spec.Properties, snake_case)
 // are renamed between snake_case and camelCase; the dynamic keys of a map
-// (spec.AdditionalProperties) are user data and left unchanged. toPulumi selects
-// the direction: snake_case→camelCase when true, the reverse when false. A
-// value's secret flag and dependencies are preserved across the rename.
+// (spec.AdditionalProperties) are user data and left unchanged. A union renames
+// by the member v belongs to. toPulumi selects the direction:
+// snake_case→camelCase when true, the reverse when false. A value's secret flag
+// and dependencies are preserved across the rename.
 func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) property.Value {
 	if spec == nil || v.IsNull() || v.IsComputed() {
 		return v
 	}
 	switch {
+	case len(spec.OneOf) > 0:
+		return convertPropertyNames(v, unionMember(v, spec.OneOf, toPulumi), toPulumi)
 	case len(spec.Properties) > 0 && v.IsMap():
 		obj := v.AsMap()
 		out := make(map[string]property.Value, obj.Len())
@@ -762,6 +797,41 @@ func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) p
 	default:
 		return v
 	}
+}
+
+// unionMember picks the member of a union that v belongs to, for renaming its
+// object fields: the object member whose fields cover the most keys of v, or
+// else the first array or map member of v's kind. Keys of v are in the
+// direction's source case, as in convertPropertyNames. Nil when no member fits.
+func unionMember(v property.Value, members []*PropertySpec, toPulumi bool) *PropertySpec {
+	var best, fallback *PropertySpec
+	bestScore := 0
+	for _, m := range members {
+		switch {
+		case len(m.Properties) > 0 && v.IsMap():
+			score := 0
+			for snake := range m.Properties {
+				key := snake
+				if !toPulumi {
+					key = pulumiCase(snake)
+				}
+				if _, ok := v.AsMap().GetOk(key); ok {
+					score++
+				}
+			}
+			if score > bestScore {
+				best, bestScore = m, score
+			}
+		case (m.AdditionalProperties != nil && v.IsMap()) || (m.Items != nil && v.IsArray()):
+			if fallback == nil {
+				fallback = m
+			}
+		}
+	}
+	if best != nil {
+		return best
+	}
+	return fallback
 }
 
 // ToPulumiPackageSchema converts the module schema to a full Pulumi package
@@ -921,11 +991,18 @@ func (s *ModuleSchema) schemaProperty(
 // schemaType converts a PropertySpec to a Pulumi TypeSpec. An object type is
 // registered as a named type (keyed by a token derived from typeName) in types
 // and referenced via `$ref`; the dynamic keys of a map are not named, so its
-// value type recurses without registering field names.
+// value type recurses without registering field names. A union is a `oneOf`
+// of its members, named by their position.
 func (s *ModuleSchema) schemaType(
 	prop *PropertySpec, typeName string, types map[string]pulumischema.ComplexTypeSpec,
 ) pulumischema.TypeSpec {
 	switch {
+	case len(prop.OneOf) > 0:
+		oneOf := make([]pulumischema.TypeSpec, len(prop.OneOf))
+		for i, member := range prop.OneOf {
+			oneOf[i] = s.schemaType(member, fmt.Sprintf("%s%d", typeName, i), types)
+		}
+		return pulumischema.TypeSpec{OneOf: oneOf}
 	case prop.Properties != nil:
 		token := fmt.Sprintf("%s:%s:%s", s.PackageName, s.Module, typeName)
 		fields := make(map[string]pulumischema.PropertySpec, len(prop.Properties))

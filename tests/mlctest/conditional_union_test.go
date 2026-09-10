@@ -24,7 +24,8 @@ import (
 // A component selects between a resource and its data source, whose reference
 // types do not unify (their `timeouts` objects differ). The conditional types
 // as a union: an attribute both members share types as that attribute, and
-// the union itself types as any.
+// the union itself is a `oneOf` of the two object types, whose output value
+// renames its fields by the member it belongs to.
 func TestConditionalUnion(t *testing.T) {
 	t.Parallel()
 	mlctest.RunCase(t, "conditional_union", mlctest.Case{
@@ -33,7 +34,7 @@ func TestConditionalUnion(t *testing.T) {
 		},
 		ExpectedOutputs: map[string]string{
 			"result": "hello-done",
-			"thing":  `{"id":"timeoutable-id","input_one":"hello","resource_id":"timeoutable-id","result":"hello-done"}`,
+			"thing":  `{"id":"timeoutable-id","inputOne":"hello","resourceId":"timeoutable-id","result":"hello-done"}`,
 		},
 	})
 }

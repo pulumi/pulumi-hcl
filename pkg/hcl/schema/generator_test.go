@@ -69,6 +69,7 @@ func TestGenerateModuleSchemaGolden(t *testing.T) {
 		{name: "sensitive", pkgName: "sensitive", version: "0.0.0-dev", componentName: "sensitive", module: "index"},
 		{name: "required", pkgName: "required", version: "0.0.0-dev", componentName: "required", module: "index"},
 		{name: "inference", pkgName: "inference", version: "0.0.0-dev", componentName: "inference", module: "index"},
+		{name: "union", pkgName: "union", version: "0.0.0-dev", componentName: "union", module: "index"},
 	}
 
 	for _, tc := range cases {
@@ -377,8 +378,8 @@ output "missing" {
 // TestConditionalUnionOutputsAreTyped shows how a conditional over branches
 // whose types do not unify is typed: as a union, whose members a traversal
 // steps into one by one before the results unify again. Results of one type
-// unify to it; results of different types stay a union; a member the step does
-// not apply to is pruned.
+// unify to it; results of different types stay a union, which is one of its
+// members' specs; a member the step does not apply to is pruned.
 func TestConditionalUnionOutputsAreTyped(t *testing.T) {
 	t.Parallel()
 
@@ -459,14 +460,40 @@ output "evaluated" {
 		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
 	require.NoError(t, err)
 
+	nestedX := &PropertySpec{
+		Type: TypeObject, Properties: map[string]*PropertySpec{"x": {Type: TypeString}}, Required: []string{"x"},
+	}
+	nestedY := &PropertySpec{
+		Type: TypeObject, Properties: map[string]*PropertySpec{"y": {Type: TypeString}}, Required: []string{"y"},
+	}
+	kindA := &PropertySpec{
+		Type: TypeObject,
+		Properties: map[string]*PropertySpec{
+			"id":     {Type: TypeString},
+			"name":   {Type: TypeString},
+			"zones":  {Type: TypeArray, Items: &PropertySpec{Type: TypeString}},
+			"nested": nestedX,
+		},
+		Required: []string{"name", "nested", "zones"},
+	}
+	kindB := &PropertySpec{
+		Type: TypeObject,
+		Properties: map[string]*PropertySpec{
+			"id":     {Type: TypeString},
+			"name":   {Type: TypeString},
+			"tags":   {Type: TypeObject, AdditionalProperties: &PropertySpec{Type: TypeString}},
+			"nested": nestedY,
+		},
+		Required: []string{"name", "nested", "tags"},
+	}
 	assert.Equal(t, map[string]*PropertySpec{
-		"either":          {Type: TypeAny},
+		"either":          {OneOf: []*PropertySpec{kindA, kindB}},
 		"shared":          {Type: TypeString},
 		"indexed":         {Type: TypeString},
-		"nested":          {Type: TypeAny},
+		"nested":          {OneOf: []*PropertySpec{nestedX, nestedY}},
 		"pruned":          {Type: TypeArray, Items: &PropertySpec{Type: TypeString}},
 		"nullable_member": {Type: TypeString},
-		"nullable_union":  {Type: TypeAny},
+		"nullable_union":  {OneOf: []*PropertySpec{kindA, kindB}},
 		"same_type":       {Type: TypeString},
 		"evaluated":       {Type: TypeString},
 	}, moduleSchema.OutputProperties)
@@ -614,8 +641,27 @@ output "name" {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]*PropertySpec{
-		"either": {Type: TypeAny},
-		"name":   {Type: TypeString},
+		"either": {OneOf: []*PropertySpec{
+			{
+				Type: TypeObject,
+				Properties: map[string]*PropertySpec{
+					"id":    {Type: TypeString},
+					"name":  {Type: TypeString},
+					"zones": {Type: TypeArray, Items: &PropertySpec{Type: TypeString}},
+				},
+				Required: []string{"name", "zones"},
+			},
+			{
+				Type: TypeObject,
+				Properties: map[string]*PropertySpec{
+					"id":   {Type: TypeString},
+					"name": {Type: TypeString},
+					"tags": {Type: TypeObject, AdditionalProperties: &PropertySpec{Type: TypeString}},
+				},
+				Required: []string{"name", "tags"},
+			},
+		}},
+		"name": {Type: TypeString},
 	}, moduleSchema.OutputProperties)
 	assert.Equal(t, []string{"either", "name"}, moduleSchema.RequiredOutputs)
 }
@@ -998,7 +1044,8 @@ output "z" {
 
 // TestBoundaryNameConversion shows that the Construct boundary renames object
 // field names (snake_case ↔ camelCase) at every depth in both directions, while
-// leaving the dynamic keys of a map untouched.
+// leaving the dynamic keys of a map untouched, and through the member of a
+// union a value belongs to.
 func TestBoundaryNameConversion(t *testing.T) {
 	t.Parallel()
 
@@ -1014,6 +1061,19 @@ func TestBoundaryNameConversion(t *testing.T) {
 				"field_two": {Type: TypeString},
 			}},
 			"map_out": {Type: TypeObject, AdditionalProperties: &PropertySpec{Type: TypeString}},
+			"union_out": {OneOf: []*PropertySpec{
+				{Type: TypeObject, Properties: map[string]*PropertySpec{
+					"field_three": {Type: TypeString},
+					"only_here":   {Type: TypeString},
+				}},
+				{Type: TypeObject, Properties: map[string]*PropertySpec{
+					"field_three": {Type: TypeString},
+					"only_there":  {Type: TypeString},
+				}},
+				{Type: TypeArray, Items: &PropertySpec{Type: TypeObject, Properties: map[string]*PropertySpec{
+					"field_four": {Type: TypeString},
+				}}},
+			}},
 		},
 	}
 
@@ -1039,6 +1099,20 @@ func TestBoundaryNameConversion(t *testing.T) {
 	}), s.OutputsToPulumi(propMap(map[string]any{
 		"object_out": map[string]any{"field_two": "c"},
 		"map_out":    map[string]any{"user_key": "d"},
+	})))
+
+	// A union output renames by the member the value belongs to: the object
+	// member whose fields cover the most of the value's keys, or the member of
+	// the value's kind.
+	assert.Equal(t, propMap(map[string]any{
+		"unionOut": map[string]any{"fieldThree": "e", "onlyThere": "f"},
+	}), s.OutputsToPulumi(propMap(map[string]any{
+		"union_out": map[string]any{"field_three": "e", "only_there": "f"},
+	})))
+	assert.Equal(t, propMap(map[string]any{
+		"unionOut": []any{map[string]any{"fieldFour": "g"}},
+	}), s.OutputsToPulumi(propMap(map[string]any{
+		"union_out": []any{map[string]any{"field_four": "g"}},
 	})))
 }
 

@@ -1,0 +1,106 @@
+{
+  "name": "union",
+  "version": "0.0.0-dev",
+  "config": {},
+  "types": {
+    "union:index:Either0": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "zones": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "type": "object",
+      "required": [
+        "name",
+        "zones"
+      ]
+    },
+    "union:index:Either1": {
+      "properties": {
+        "name": {
+          "type": "number"
+        },
+        "nested": {
+          "$ref": "#/types/union:index:Either1Nested"
+        }
+      },
+      "type": "object",
+      "required": [
+        "name",
+        "nested"
+      ]
+    },
+    "union:index:Either1Nested": {
+      "properties": {
+        "deep": {
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "required": [
+        "deep"
+      ]
+    },
+    "union:index:Nested": {
+      "properties": {
+        "deep": {
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "required": [
+        "deep"
+      ]
+    }
+  },
+  "resources": {
+    "union:index:union": {
+      "properties": {
+        "either": {
+          "oneOf": [
+            {
+              "$ref": "#/types/union:index:Either0"
+            },
+            {
+              "$ref": "#/types/union:index:Either1"
+            }
+          ]
+        },
+        "flag": {
+          "type": "boolean"
+        },
+        "name": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "nested": {
+          "$ref": "#/types/union:index:Nested"
+        }
+      },
+      "type": "object",
+      "required": [
+        "either",
+        "name",
+        "nested"
+      ],
+      "inputProperties": {
+        "flag": {
+          "type": "boolean"
+        }
+      },
+      "isComponent": true
+    }
+  }
+}
