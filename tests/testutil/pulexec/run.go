@@ -15,6 +15,7 @@
 package pulexec
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -128,9 +129,36 @@ type Driver struct {
 // any stack config. Call Driver.Apply once per stage.
 func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
 	t.Helper()
+	return newDriver(t, provs, config, "hcl", "")
+}
+
+// NewYAMLDriver builds a project whose root program is YAML and whose
+// packages entry points at the local HCL component directory pkgDir. The
+// engine launches that component through the language host's RunPlugin RPC,
+// so the component provider also runs in the test process. `pulumi install`
+// runs before each stage and writes the SDK descriptors the component needs.
+func NewYAMLDriver(t *testing.T, pkgDir string, provs []Provider, config map[string]string) *Driver {
+	t.Helper()
+	return newDriver(t, provs, config, "yaml", pkgDir)
+}
+
+// newDriver builds the project with the given Pulumi.yaml runtime and the
+// local component directory the project consumes, if any.
+func newDriver(
+	t *testing.T, provs []Provider, config map[string]string, runtime, componentDir string,
+) *Driver {
+	t.Helper()
 
 	hostPort := serveLanguageHost(t)
 	dir := t.TempDir()
+
+	extraProject := ""
+	if componentDir != "" {
+		// TODO[https://github.com/pulumi/pulumi/pull/24596]: a plugin started
+		// inside the component resolves a relative package path against its
+		// own working directory, so the path is absolute.
+		extraProject = fmt.Sprintf("packages:\n  %s: %s\n", componentDir, filepath.Join(dir, componentDir))
+	}
 
 	reattach := map[string]*goplugin.ReattachConfig{}
 	for _, p := range provs {
@@ -149,10 +177,11 @@ func NewDriver(t *testing.T, provs []Provider, config map[string]string) *Driver
 	// The project name is used as the default namespace for user config. It
 	// must not collide with any attached provider name, or user config like
 	// "<project>:foo" would be misrouted to the provider.
-	pulumiYAML := `name: tfcompat
-runtime: hcl
+	pulumiYAML := fmt.Sprintf(`name: tfcompat
+runtime: %s
 backend:
-  url: file://` + filepath.Join(dir, "state") + "\n"
+  url: file://%s
+%s`, runtime, filepath.Join(dir, "state"), extraProject)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Pulumi.yaml"), []byte(pulumiYAML), 0o600))
 
 	env := [][2]string{
@@ -410,6 +439,41 @@ func converterShim(t *testing.T, port int) string {
 	return dir
 }
 
+// workspaceEnv returns the process env overlaid with the stack workspace's
+// env vars, for commands the harness must run itself rather than through
+// pulumitest.
+func (d *Driver) workspaceEnv(t *testing.T) []string {
+	t.Helper()
+	stack := d.pt.CurrentStack()
+	require.NotNil(t, stack, "driver has no stack")
+	// Go child processes resolve duplicate env entries last-wins, so
+	// appending overrides the test process env.
+	env := os.Environ()
+	for k, v := range stack.Workspace().GetEnvVars() {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// PackageSchema writes programFiles and returns the package schema of the
+// local package directory dir, as `pulumi package get-schema ./<dir>` prints
+// it on stdout. Its stderr goes to the test log.
+func (d *Driver) PackageSchema(t *testing.T, programFiles map[string]string, dir string) ([]byte, error) {
+	t.Helper()
+	d.writeFiles(t, programFiles)
+
+	cmd := exec.Command("pulumi", "package", "get-schema", "./"+dir)
+	cmd.Dir = d.dir
+	cmd.Env = append(d.workspaceEnv(t), d.attachedProvidersEnv(t))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if stderr.Len() > 0 {
+		t.Logf("pulumi package get-schema stderr:\n%s", stderr.String())
+	}
+	return out, err
+}
+
 // Import writes programFiles and runs `pulumi import --from hcl` with the
 // given converter arguments. The converter is served in-process behind a PATH
 // shim, and the CLI's mapper resolves mappings through the providers the
@@ -433,13 +497,10 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 	}, converterArgs...)
 	cmd := exec.Command("pulumi", args...)
 	cmd.Dir = d.dir
-	env := os.Environ()
+	env := d.workspaceEnv(t)
 	envPath := os.Getenv("PATH")
-	for k, v := range stack.Workspace().GetEnvVars() {
-		env = append(env, k+"="+v)
-		if k == "PATH" {
-			envPath = v
-		}
+	if p, ok := stack.Workspace().GetEnvVars()["PATH"]; ok {
+		envPath = p
 	}
 	shimDir := converterShim(t, d.serveConverter(t))
 	env = append(env, "PATH="+shimDir+string(os.PathListSeparator)+envPath)

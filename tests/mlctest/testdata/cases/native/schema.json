@@ -1,0 +1,27 @@
+{
+  "name": "greeter",
+  "version": "0.0.0-dev",
+  "config": {},
+  "resources": {
+    "greeter:index:Module": {
+      "properties": {
+        "greeting": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "required": [
+        "greeting"
+      ],
+      "inputProperties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "isComponent": true
+    }
+  }
+}

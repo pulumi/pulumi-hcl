@@ -1,0 +1,7 @@
+resources:
+  g:
+    type: greeter:index:Module
+    properties:
+      name: world
+outputs:
+  greeting: ${g.greeting}
