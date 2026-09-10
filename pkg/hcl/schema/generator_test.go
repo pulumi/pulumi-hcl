@@ -374,6 +374,198 @@ output "missing" {
 	require.EqualError(t, err, `typing output "missing": main.tf:7,26-34: Unsupported attribute; This object does not have an attribute named "missing".`)
 }
 
+// TestConditionalUnionOutputsAreTyped shows how a conditional over branches
+// whose types do not unify is typed: as a union, whose members a traversal
+// steps into one by one before the results unify again. Results of one type
+// unify to it; results of different types stay a union; a member the step does
+// not apply to is pruned.
+func TestConditionalUnionOutputsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "c" {
+  type = bool
+}
+
+resource "kind_a" "a" {}
+resource "kind_a" "a2" {}
+resource "kind_b" "b" {}
+
+locals {
+  either = var.c ? kind_a.a : kind_b.b
+}
+
+output "either" {
+  value = local.either
+}
+
+output "shared" {
+  value = local.either.name
+}
+
+output "indexed" {
+  value = (var.c ? kind_a.a.zones : kind_b.b.tags)[0]
+}
+
+output "nested" {
+  value = local.either.nested
+}
+
+output "pruned" {
+  value = local.either.zones
+}
+
+output "nullable_member" {
+  value = (var.c ? null : local.either).name
+}
+
+output "nullable_union" {
+  value = var.c ? null : local.either
+}
+
+output "same_type" {
+  value = (var.c ? kind_a.a : kind_a.a2).name
+}
+
+output "evaluated" {
+  value = upper(local.either)
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"kind_a": {
+			Properties: []*pulumiSchema.Property{
+				{Name: "name", Type: pulumiSchema.StringType},
+				{Name: "zones", Type: &pulumiSchema.ArrayType{ElementType: pulumiSchema.StringType}},
+				{Name: "nested", Type: &pulumiSchema.ObjectType{
+					Properties: []*pulumiSchema.Property{{Name: "x", Type: pulumiSchema.StringType}},
+				}},
+			},
+		},
+		"kind_b": {
+			Properties: []*pulumiSchema.Property{
+				{Name: "name", Type: pulumiSchema.StringType},
+				{Name: "tags", Type: &pulumiSchema.MapType{ElementType: pulumiSchema.StringType}},
+				{Name: "nested", Type: &pulumiSchema.ObjectType{
+					Properties: []*pulumiSchema.Property{{Name: "y", Type: pulumiSchema.StringType}},
+				}},
+			},
+		},
+	}}
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"either":          {Type: TypeAny},
+		"shared":          {Type: TypeString},
+		"indexed":         {Type: TypeString},
+		"nested":          {Type: TypeAny},
+		"pruned":          {Type: TypeArray, Items: &PropertySpec{Type: TypeString}},
+		"nullable_member": {Type: TypeString},
+		"nullable_union":  {Type: TypeAny},
+		"same_type":       {Type: TypeString},
+		"evaluated":       {Type: TypeString},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"either", "evaluated", "nested", "pruned", "same_type", "shared"}, moduleSchema.RequiredOutputs)
+}
+
+// TestConditionalUnionCrossesModuleBoundary shows that a child module output
+// typed as a union keeps its members through a module.<name>.<output>
+// reference, so the parent can still step into it.
+func TestConditionalUnionCrossesModuleBoundary(t *testing.T) {
+	t.Parallel()
+
+	child, childDiags := parser.NewParser().ParseSource("child.tf", []byte(`
+variable "c" {
+  type = bool
+}
+
+resource "kind_a" "a" {}
+resource "kind_b" "b" {}
+
+output "either" {
+  value = var.c ? kind_a.a : kind_b.b
+}
+`))
+	require.False(t, childDiags.HasErrors(), childDiags.Error())
+
+	const parent = `
+module "child" {
+  source = "./child"
+  c      = true
+}
+
+output "either" {
+  value = module.child.either
+}
+
+output "name" {
+  value = module.child.either.name
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(parent))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	binder := &Binder{
+		Resources: stubResolver{resources: map[string]*pulumiSchema.Resource{
+			"kind_a": {Properties: []*pulumiSchema.Property{
+				{Name: "name", Type: pulumiSchema.StringType},
+				{Name: "zones", Type: &pulumiSchema.ArrayType{ElementType: pulumiSchema.StringType}},
+			}},
+			"kind_b": {Properties: []*pulumiSchema.Property{
+				{Name: "name", Type: pulumiSchema.StringType},
+				{Name: "tags", Type: &pulumiSchema.MapType{ElementType: pulumiSchema.StringType}},
+			}},
+		}},
+		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./child": child}},
+		ModuleDir: ".",
+	}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, binder, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"either": {Type: TypeAny},
+		"name":   {Type: TypeString},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"either", "name"}, moduleSchema.RequiredOutputs)
+}
+
+// TestConditionalUnionMissingAttributeIsError shows that an attribute no union
+// member has is an error, as it is for a plain reference.
+func TestConditionalUnionMissingAttributeIsError(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "c" {
+  type = bool
+}
+
+resource "kind_a" "a" {}
+resource "kind_b" "b" {}
+
+output "missing" {
+  value = (var.c ? kind_a.a : kind_b.b).missing
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	resolver := stubResolver{resources: map[string]*pulumiSchema.Resource{
+		"kind_a": {Properties: []*pulumiSchema.Property{
+			{Name: "zones", Type: &pulumiSchema.ArrayType{ElementType: pulumiSchema.StringType}},
+		}},
+		"kind_b": {Properties: []*pulumiSchema.Property{{Name: "name", Type: pulumiSchema.StringType}}},
+	}}
+	_, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{Resources: resolver}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.EqualError(t, err, `typing output "missing": main.tf:10,40-48: Unsupported attribute; This object does not have an attribute named "missing"., and 1 other diagnostic(s)`)
+}
+
 // mappingResolver resolves resources and their bridge body mappings by TF type,
 // so output typing that depends on the mapping (e.g. MaxItemsOne block shape)
 // can be tested without a live provider.
