@@ -16,6 +16,7 @@ package run_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/blang/semver"
@@ -32,16 +33,19 @@ import (
 )
 
 // descriptorRecordingLoader records every descriptor the engine asks the
-// wrapped loader for.
+// wrapped loader for. The engine resolves blocks in parallel.
 type descriptorRecordingLoader struct {
 	schema.ReferenceLoader
+	mu          sync.Mutex
 	descriptors []schema.PackageDescriptor
 }
 
 func (l *descriptorRecordingLoader) LoadPackageReferenceV2(
 	ctx context.Context, d *schema.PackageDescriptor,
 ) (schema.PackageReference, error) {
+	l.mu.Lock()
 	l.descriptors = append(l.descriptors, *d)
+	l.mu.Unlock()
 	return l.ReferenceLoader.LoadPackageReferenceV2(ctx, d)
 }
 
