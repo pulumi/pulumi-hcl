@@ -1480,17 +1480,17 @@ func (e *Engine) registerProviderInContext(
 		logicalName = joinModuleName(modInst.Name, logicalName)
 	}
 
-	var override packageOverride
+	var version string
 	if provider.Version != nil {
 		val, vdiags := provider.Version.Value(hclCtx)
 		if vdiags.HasErrors() {
 			return fmt.Errorf("evaluating provider version: %s", vdiags.Error())
 		}
 		if val.Type() == cty.String {
-			override.Version = val.AsString()
+			version = val.AsString()
 		}
 	}
-	ident, err := e.packageIdentity(ctx, resSchema.PackageReference, override)
+	ident, err := e.packageIdentity(ctx, resSchema.PackageReference, version, "")
 	if err != nil {
 		return err
 	}
@@ -1668,7 +1668,8 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs, timeouts)
+	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping,
+		resSchema, resourceInputs, timeouts)
 	if err != nil {
 		return err
 	}
@@ -1711,11 +1712,6 @@ func (e *Engine) registerResourceInstanceInContext(
 	// contribute no dependency (a destroy-time provisioner's self-reference,
 	// say) stay excluded — widening only amplifies what was collected.
 	opts.DependsOn = e.cellURNs.widen(opts.DependsOn)
-
-	opts.Package, err = e.packageIdentity(ctx, resSchema.PackageReference, opts.packageOverride)
-	if err != nil {
-		return fmt.Errorf("resolving package for %s.%s: %w", res.Type, res.Name, err)
-	}
 
 	resourceName, err := e.resourceInstanceName(res, instance, hclCtx, modInst)
 	if err != nil {
@@ -1948,8 +1944,9 @@ func (e *Engine) buildResourceOptions(
 	ctx context.Context, node *graph.Node, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
-	inputProps, outputProps []*schema.Property, inputs property.Map, timeouts cty.Value,
+	resSchema *schema.Resource, inputs property.Map, timeouts cty.Value,
 ) (*ResourceOptions, error) {
+	inputProps, outputProps := resSchema.InputProperties, resSchema.Properties
 	modInfo := node.ModuleInfo
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
@@ -2233,11 +2230,12 @@ func (e *Engine) buildResourceOptions(
 		}
 	}
 
+	var version, pluginDownloadURL string
 	if res.Version != nil {
 		val, diags := res.Version.Value(hclCtx)
 		val, _ = val.Unmark()
 		if !diags.HasErrors() && val.Type() == cty.String && !val.IsNull() && val.IsKnown() {
-			opts.packageOverride.Version = val.AsString()
+			version = val.AsString()
 		}
 	}
 
@@ -2245,8 +2243,12 @@ func (e *Engine) buildResourceOptions(
 		val, diags := res.PluginDownloadURL.Value(hclCtx)
 		val, _ = val.Unmark()
 		if !diags.HasErrors() && val.Type() == cty.String && !val.IsNull() && val.IsKnown() {
-			opts.packageOverride.PluginDownloadURL = val.AsString()
+			pluginDownloadURL = val.AsString()
 		}
+	}
+	opts.Package, err = e.packageIdentity(ctx, resSchema.PackageReference, version, pluginDownloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolving package for %s.%s: %w", res.Type, res.Name, err)
 	}
 
 	if key, ok := graph.TraversalKey(node.Key.Module, res.ResourceParent); ok {
@@ -2984,20 +2986,13 @@ func packageNameFromResourceType(token string) string {
 	return strings.SplitN(token, "_", 2)[0]
 }
 
-// packageOverride holds a block's own `version` and `plugin_download_url`
-// options, which win over the package descriptor for a plain package.
-type packageOverride struct {
-	Version           string
-	PluginDownloadURL string
-}
-
 // packageDescriptor resolves the descriptor a block registers against: the
-// Packages entry for pkgName, with the block's override applied and the
-// schema's download URL as the last fallback. A parameterized or extension
-// entry is returned as is: its parameterization already fixes the plugin, and a
-// block cannot re-point it.
+// Packages entry for pkgName, overridden by the block's own `version` and
+// `plugin_download_url` options, with the schema's download URL as the last
+// fallback. A parameterized or extension entry is returned as is: its
+// parameterization already fixes the plugin, and a block cannot re-point it.
 func (e *Engine) packageDescriptor(
-	pkgName string, override packageOverride, schemaDownloadURL string,
+	pkgName, version, pluginDownloadURL, schemaDownloadURL string,
 ) (workspace.PackageDescriptor, error) {
 	desc, ok := e.packages[pkgName]
 	if ok && (desc.Parameterization != nil || desc.ExtensionParameterization != nil) {
@@ -3006,15 +3001,15 @@ func (e *Engine) packageDescriptor(
 	if !ok {
 		desc.Name = pkgName
 	}
-	if override.Version != "" {
-		v, err := semver.ParseTolerant(override.Version)
+	if version != "" {
+		v, err := semver.ParseTolerant(version)
 		if err != nil {
-			return desc, fmt.Errorf("invalid version %q for package %q: %w", override.Version, pkgName, err)
+			return desc, fmt.Errorf("invalid version %q for package %q: %w", version, pkgName, err)
 		}
 		desc.Version = &v
 	}
-	if override.PluginDownloadURL != "" {
-		desc.PluginDownloadURL = override.PluginDownloadURL
+	if pluginDownloadURL != "" {
+		desc.PluginDownloadURL = pluginDownloadURL
 	} else if desc.PluginDownloadURL == "" {
 		desc.PluginDownloadURL = schemaDownloadURL
 	}
@@ -3028,14 +3023,15 @@ func (e *Engine) packageDescriptor(
 // registered with a parameterization, and using it lets the engine record the
 // resource's ExtensionRef. A synthetic schema (terraform_data, a stack
 // reference's builtin) names no package; the engine's builtin provider serves
-// it, so its requests carry the zero identity.
+// it, so its requests carry the zero identity. version and pluginDownloadURL
+// are the block's own options, empty when the block sets none.
 func (e *Engine) packageIdentity(
-	ctx context.Context, ref schema.PackageReference, override packageOverride,
+	ctx context.Context, ref schema.PackageReference, version, pluginDownloadURL string,
 ) (pkgid.Identity, error) {
 	if ref == nil {
 		return pkgid.Identity{}, nil
 	}
-	desc, err := e.packageDescriptor(ref.Name(), override, ref.PluginDownloadURL())
+	desc, err := e.packageDescriptor(ref.Name(), version, pluginDownloadURL, ref.PluginDownloadURL())
 	if err != nil {
 		return pkgid.Identity{}, err
 	}
@@ -3444,10 +3440,6 @@ type ResourceOptions struct {
 	Package                 pkgid.Identity
 	Hooks                   *ResourceHookBinding
 
-	// packageOverride holds the block's own `version` and `plugin_download_url`
-	// options until Package is resolved from them.
-	packageOverride packageOverride
-
 	// PreventDestroy is enforced by the destroy dispatcher hook, not the
 	// engine: the guard must be re-evaluated from current configuration on
 	// every run, while an engine option would persist in state. Never
@@ -3646,20 +3638,20 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	}
 
-	var override packageOverride
+	var version, pluginDownloadURL string
 	if ds.Version != nil {
 		val, valDiags := ds.Version.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
-			override.Version = ctyAsString(val)
+			version = ctyAsString(val)
 		}
 	}
 	if ds.PluginDownloadURL != nil {
 		val, valDiags := ds.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
-			override.PluginDownloadURL = ctyAsString(val)
+			pluginDownloadURL = ctyAsString(val)
 		}
 	}
-	ident, err := e.packageIdentity(ctx, funcSchema.PackageReference, override)
+	ident, err := e.packageIdentity(ctx, funcSchema.PackageReference, version, pluginDownloadURL)
 	if err != nil {
 		return cty.NilVal, fmt.Errorf("resolving package for data %s.%s: %w", ds.Type, ds.Name, err)
 	}
@@ -3915,7 +3907,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("evaluating call arguments for %s.%s: %s", call.ResourceName, call.MethodName, diags.Error())
 	}
 
-	ident, err := e.packageIdentity(ctx, method.Function.PackageReference, packageOverride{})
+	ident, err := e.packageIdentity(ctx, method.Function.PackageReference, "", "")
 	if err != nil {
 		return fmt.Errorf("resolving package for %s.%s: %w", call.ResourceName, call.MethodName, err)
 	}
@@ -4038,7 +4030,7 @@ func (e *Engine) providerFunctionImpl(
 		if e.dryRun && property.New(args).HasComputed() {
 			return property.Map{}, nil
 		}
-		ident, err := e.packageIdentity(ctx, fnSchema.PackageReference, packageOverride{})
+		ident, err := e.packageIdentity(ctx, fnSchema.PackageReference, "", "")
 		if err != nil {
 			return property.Map{}, err
 		}
