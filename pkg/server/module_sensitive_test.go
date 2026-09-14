@@ -39,6 +39,14 @@ type captureMonitorServer struct {
 	pulumirpc.UnimplementedResourceMonitorServer
 }
 
+// RegisterPackage answers every registration with one fixed ref; these tests
+// exercise request forwarding, not package identity.
+func (*captureMonitorServer) RegisterPackage(
+	context.Context, *pulumirpc.RegisterPackageRequest,
+) (*pulumirpc.RegisterPackageResponse, error) {
+	return &pulumirpc.RegisterPackageResponse{Ref: "package-ref"}, nil
+}
+
 func (s *captureMonitorServer) RegisterResource(
 	_ context.Context, req *pulumirpc.RegisterResourceRequest,
 ) (*pulumirpc.RegisterResourceResponse, error) {

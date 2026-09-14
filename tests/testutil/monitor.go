@@ -19,22 +19,29 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/pkgid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"google.golang.org/grpc"
 )
 
 // MockResourceMonitor is a mock implementation of run.ResourceMonitor for testing.
 type MockResourceMonitor struct {
 	mu                  sync.Mutex
 	RegisteredResources []run.RegisterResourceRequest
-	ReadResources       []run.ReadResourceRequest
-	InvokedFunctions    []run.InvokeRequest
-	StackOutputs        property.Map
-	Warnings            []string
-	stackURN            urn.URN
-	hooks               map[string]registeredHook
+	// RegisteredPackages holds every RegisterPackage request the engine made,
+	// one per distinct package identity, in registration order.
+	RegisteredPackages []*pulumirpc.RegisterPackageRequest
+	packages           *pkgid.Registrar
+	ReadResources      []run.ReadResourceRequest
+	InvokedFunctions   []run.InvokeRequest
+	StackOutputs       property.Map
+	Warnings           []string
+	stackURN           urn.URN
+	hooks              map[string]registeredHook
 
 	// DryRun mirrors engine preview mode: hooks with OnDryRun=false are skipped.
 	DryRun bool
@@ -196,8 +203,29 @@ func (m *MockResourceMonitor) LogWarning(ctx context.Context, message string) er
 	return nil
 }
 
-func (m *MockResourceMonitor) RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (run.PackageRef, error) {
-	return "", nil
+// RegisterPackage registers pkg through a pkgid.Registrar backed by this mock,
+// so identities dedup and render exactly as they do against the engine.
+func (m *MockResourceMonitor) RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (pkgid.Identity, error) {
+	m.mu.Lock()
+	if m.packages == nil {
+		m.packages = pkgid.NewRegistrar(packageClient{m})
+	}
+	registrar := m.packages
+	m.mu.Unlock()
+	return registrar.Identity(ctx, pkg)
+}
+
+// packageClient is the pkgid.Client the mock's registrar registers through.
+// Refs name the request's position in RegisteredPackages.
+type packageClient struct{ m *MockResourceMonitor }
+
+func (c packageClient) RegisterPackage(
+	_ context.Context, req *pulumirpc.RegisterPackageRequest, _ ...grpc.CallOption,
+) (*pulumirpc.RegisterPackageResponse, error) {
+	c.m.mu.Lock()
+	defer c.m.mu.Unlock()
+	c.m.RegisteredPackages = append(c.m.RegisteredPackages, req)
+	return &pulumirpc.RegisterPackageResponse{Ref: fmt.Sprintf("package-%d", len(c.m.RegisteredPackages)-1)}, nil
 }
 
 func (m *MockResourceMonitor) RegisterResourceHook(

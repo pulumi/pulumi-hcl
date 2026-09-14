@@ -25,6 +25,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/pkgid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -169,6 +170,7 @@ func (a moduleLoaderAdapter) LoadModule(
 // actual component resource registration expected by the Pulumi engine.
 type constructResourceMonitor struct {
 	client          pulumirpc.ResourceMonitorClient
+	packages        *pkgid.Registrar
 	engine          pulumirpc.EngineClient
 	ctx             context.Context
 	parentURN       string
@@ -293,7 +295,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		return nil, fmt.Errorf("marshaling ignoreChanges: %w", err)
 	}
 
-	resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
+	rpcReq := &pulumirpc.RegisterResourceRequest{
 		Type:                req.Type,
 		Name:                name,
 		Custom:              req.Custom,
@@ -305,14 +307,13 @@ func (m *constructResourceMonitor) RegisterResource(
 		Protect:             &req.Protect,
 		DeleteBeforeReplace: req.DeleteBeforeReplace,
 		IgnoreChanges:       ignoreChanges,
-		PackageRef:          string(req.PackageRef),
-		Version:             req.Version,
-		PluginDownloadURL:   req.PluginDownloadURL,
 		Hooks:               hooksToProto(req.Hooks),
 		AcceptSecrets:       true,
 		AcceptResources:     true,
 		AcceptsByteString:   true,
-	})
+	}
+	req.Package.ApplyRegisterResource(rpcReq)
+	resp, err := m.client.RegisterResource(ctx, rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +351,7 @@ func (m *constructResourceMonitor) ReadResource(
 		parent = m.componentURN
 	}
 
-	resp, err := m.client.ReadResource(ctx, &pulumirpc.ReadResourceRequest{
+	rpcReq := &pulumirpc.ReadResourceRequest{
 		Id:                      req.ID,
 		Type:                    req.Type,
 		Name:                    m.componentName + "-" + req.Name,
@@ -358,14 +359,13 @@ func (m *constructResourceMonitor) ReadResource(
 		Properties:              properties,
 		Dependencies:            req.Dependencies,
 		Provider:                req.Provider,
-		Version:                 req.Version,
 		AdditionalSecretOutputs: req.AdditionalSecretOutputs,
-		PluginDownloadURL:       req.PluginDownloadURL,
-		PackageRef:              string(req.PackageRef),
 		AcceptSecrets:           true,
 		AcceptResources:         true,
 		AcceptsByteString:       true,
-	})
+	}
+	req.Package.ApplyReadResource(rpcReq)
+	resp, err := m.client.ReadResource(ctx, rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -423,17 +423,16 @@ func (m *constructResourceMonitor) Invoke(
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
 
-	resp, err := m.client.Invoke(ctx, &pulumirpc.ResourceInvokeRequest{
+	rpcReq := &pulumirpc.ResourceInvokeRequest{
 		Tok:               req.Token,
 		Args:              argsStruct,
 		Provider:          req.Provider,
-		Version:           req.Version,
-		PluginDownloadURL: req.PluginDownloadURL,
-		PackageRef:        string(req.PackageRef),
 		AcceptResources:   true,
 		AcceptsByteString: true,
 		DependsOn:         req.DependsOn,
-	})
+	}
+	req.Package.ApplyInvoke(rpcReq)
+	resp, err := m.client.Invoke(ctx, rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -465,12 +464,13 @@ func (m *constructResourceMonitor) Call(
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
 
-	resp, err := m.client.Call(ctx, &pulumirpc.ResourceCallRequest{
+	rpcReq := &pulumirpc.ResourceCallRequest{
 		Tok:               req.Token,
 		Args:              argsStruct,
-		PackageRef:        string(req.PackageRef),
 		AcceptsByteString: true,
-	})
+	}
+	req.Package.ApplyCall(rpcReq)
+	resp, err := m.client.Call(ctx, rpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("calling method: %w", err)
 	}
@@ -499,8 +499,8 @@ func (m *constructResourceMonitor) CheckPulumiVersion(ctx context.Context, versi
 func (m *constructResourceMonitor) RegisterPackage(
 	ctx context.Context,
 	pkg workspace.PackageDescriptor,
-) (run.PackageRef, error) {
-	return registerPackage(ctx, m.client, pkg)
+) (pkgid.Identity, error) {
+	return m.packages.Identity(ctx, pkg)
 }
 
 // RegisterResourceHook hosts the callback on the provider-owned callback server

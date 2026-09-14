@@ -34,6 +34,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -4047,8 +4048,7 @@ resource "aws_instance" "web" {
 	retain := true
 	assert.Equal(t, &run.CustomTimeouts{Create: 600}, instanceReq.CustomTimeouts)
 	assert.Equal(t, &retain, instanceReq.RetainOnDelete)
-	assert.Equal(t, "1.2.3", instanceReq.Version)
-	assert.Equal(t, "https://example.com/plugins", instanceReq.PluginDownloadURL)
+	assert.Equal(t, "aws@1.2.3 https://example.com/plugins", instanceReq.Package.String())
 	assert.Equal(t, map[string]string{"AWS_REGION": "10m"}, instanceReq.EnvVarMappings)
 }
 
@@ -5399,6 +5399,11 @@ resource "simple_resource" "r" {
 	}
 	sort.Slice(providerRegs, func(i, j int) bool { return providerRegs[i].Name < providerRegs[j].Name })
 
+	// The mock dedups registrations, so this is the identity the engine got.
+	simplePkg, err := mock.RegisterPackage(t.Context(), workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{Name: "simple"},
+	})
+	require.NoError(t, err)
 	assert.Equal(t, []run.RegisterResourceRequest{
 		{
 			Type:                 "pulumi:providers:simple",
@@ -5407,6 +5412,7 @@ resource "simple_resource" "r" {
 			PropertyDependencies: map[string][]string{"prefix": nil},
 			Custom:               true,
 			Parent:               stackURN,
+			Package:              simplePkg,
 		},
 		{
 			Type:                 "pulumi:providers:simple",
@@ -5415,6 +5421,7 @@ resource "simple_resource" "r" {
 			PropertyDependencies: map[string][]string{"prefix": nil},
 			Custom:               true,
 			Parent:               stackURN,
+			Package:              simplePkg,
 		},
 	}, providerRegs)
 
