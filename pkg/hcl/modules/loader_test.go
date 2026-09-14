@@ -15,15 +15,19 @@
 package modules
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	regaddr "github.com/opentofu/registry-address/v2"
 	"github.com/opentofu/svchost"
@@ -545,4 +549,119 @@ func TestLoaderResolvesPackageOnce(t *testing.T) {
 	_, err = l.LoadModule(t.Context(), "acme/widget/cloud", "~> 2", ".")
 	require.NoError(t, err)
 	require.Equal(t, 2, count)
+}
+
+const fetchHelperEnv = "PULUMI_HCL_TEST_FETCH_HELPER"
+
+// TestFetchRemote_ConcurrentProcessesCloneOnce models `pulumi install` with
+// several packages that point at subdirectories of one repository. The CLI runs
+// one provider process per package, so each package fetches from its own
+// process into one shared cache directory.
+func TestFetchRemote_ConcurrentProcessesCloneOnce(t *testing.T) {
+	t.Parallel()
+
+	repo := initGitRepo(t, "modules/a/main.tf", `output "ok" { value = "a" }`)
+	git(t, repo, "tag", "v1")
+	cacheDir := t.TempDir()
+	readyDir := t.TempDir()
+
+	const n = 8
+	cmds := make([]*exec.Cmd, n)
+	outs := make([]bytes.Buffer, n)
+	starts := make([]io.WriteCloser, n)
+	for i := range cmds {
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestFetchRemoteHelperProcess$")
+		cmd.Stdout, cmd.Stderr = &outs[i], &outs[i]
+		cmd.Env = append(os.Environ(),
+			fetchHelperEnv+"=1",
+			"HELPER_SOURCE=git::file://"+repo+"?ref=v1",
+			"HELPER_CACHE="+cacheDir,
+			"HELPER_READY="+filepath.Join(readyDir, strconv.Itoa(i)),
+		)
+		stdin, err := cmd.StdinPipe()
+		require.NoError(t, err)
+		starts[i] = stdin
+		cmds[i] = cmd
+		require.NoError(t, cmd.Start())
+	}
+	// Every child blocks on stdin once it is ready; closing the pipes back to
+	// back releases them within microseconds of each other, so their clones
+	// overlap.
+	for i := range cmds {
+		waitForFile(t, filepath.Join(readyDir, strconv.Itoa(i)))
+	}
+	for _, start := range starts {
+		require.NoError(t, start.Close())
+	}
+
+	for i, cmd := range cmds {
+		assert.NoErrorf(t, cmd.Wait(), "child %d: %s", i, outs[i].String())
+	}
+
+	entries, err := os.ReadDir(filepath.Join(cacheDir, "remote"))
+	require.NoError(t, err)
+	var clones []string
+	for _, e := range entries {
+		if e.IsDir() {
+			clones = append(clones, e.Name())
+		}
+	}
+	assert.Len(t, clones, 1, "one repository must be cloned exactly once")
+}
+
+// TestFetchRemoteHelperProcess is the body of one child process of
+// TestFetchRemote_ConcurrentProcessesCloneOnce. It is a no-op under `go test`.
+func TestFetchRemoteHelperProcess(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(fetchHelperEnv) == "" {
+		t.Skip()
+	}
+	require.NoError(t, os.WriteFile(os.Getenv("HELPER_READY"), nil, 0o600))
+	_, err := io.ReadAll(os.Stdin)
+	require.NoError(t, err)
+
+	r := &networkResolver{
+		cacheDir: os.Getenv("HELPER_CACHE"),
+		fetcher:  getmodules.NewPackageFetcher(t.Context(), nil),
+	}
+	dir, err := r.fetchRemote(os.Getenv("HELPER_SOURCE"), "remote")
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(dir, "modules", "a", "main.tf"))
+	require.NoError(t, err, "clone incomplete after successful fetch")
+}
+
+// TestFetchRemote_RecoversFromInterruptedFetch seeds the cache with what a
+// fetch that died part-way leaves behind, and checks the next fetch succeeds.
+func TestFetchRemote_RecoversFromInterruptedFetch(t *testing.T) {
+	t.Parallel()
+
+	repo := initGitRepo(t, "modules/a/main.tf", `output "ok" { value = "a" }`)
+	git(t, repo, "tag", "v1")
+	r := newTestNetworkResolver(t, "http://invalid.example")
+	source := "git::file://" + repo + "?ref=v1"
+
+	pkgAddr, _, err := getmodules.NormalizePackageAddress(source)
+	require.NoError(t, err)
+	cacheDir := filepath.Join(r.cacheDir, "remote", hashSource(pkgAddr))
+	require.NoError(t, os.MkdirAll(cacheDir, 0o755))
+	require.NoError(t, os.MkdirAll(cacheDir+".partial", 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheDir+".partial", "stale"), nil, 0o600))
+
+	dir, err := r.fetchRemote(source, "remote")
+	require.NoError(t, err)
+	assert.Equal(t, cacheDir, dir)
+	assert.FileExists(t, filepath.Join(dir, "modules", "a", "main.tf"))
+	assert.NoDirExists(t, cacheDir+".partial")
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		require.Less(t, time.Now(), deadline, "timed out waiting for %s", path)
+		time.Sleep(time.Millisecond)
+	}
 }

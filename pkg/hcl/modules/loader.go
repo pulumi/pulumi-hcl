@@ -44,6 +44,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/potel"
 	"github.com/pulumi/pulumi-hcl/vendored/getmodules"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
@@ -54,6 +55,10 @@ import (
 // go-getter mutates those getters on every fetch, which upstream OpenTofu
 // only gets away with because it installs modules sequentially. We hold this
 // lock to enforce that same single-flight contract.
+//
+// fetchMu guards process memory only. The per-cacheDir file lock in
+// fetchRemote guards the cache directory across processes, and is always
+// taken before fetchMu.
 var fetchMu sync.Mutex
 
 // Loader loads and parses module configurations.
@@ -269,28 +274,44 @@ func (l *networkResolver) fetchRemote(source, kind string) (string, error) {
 	}
 
 	cacheDir := filepath.Join(l.cacheDir, kind, hashSource(pkgAddr))
-	if info, statErr := os.Stat(cacheDir); statErr == nil && info.IsDir() {
-		if dirHasFiles(cacheDir) {
-			return cacheDir, nil
-		}
-		// Empty cache dir from a prior failed fetch — go-getter errors if
-		// the target already exists, so wipe before retrying.
-		if rmErr := os.RemoveAll(cacheDir); rmErr != nil {
-			return "", fmt.Errorf("clearing stale cache dir %s: %w", cacheDir, rmErr)
-		}
-	}
-
 	if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
 		return "", fmt.Errorf("creating cache parent directory: %w", err)
 	}
 
-	// Grab a **package** level lock on using **any** [getmodules.PackageFetcher].
+	// `pulumi install` runs one provider process per package, so sibling
+	// subdirectories of one repository fetch into this cacheDir from separate
+	// processes. The file lock serializes them, and the second one takes the
+	// cache-hit path below.
+	mu := fsutil.NewFileMutex(cacheDir + ".lock")
+	if err := mu.Lock(); err != nil {
+		return "", fmt.Errorf("locking module cache %s: %w", cacheDir, err)
+	}
+	defer func() { contract.IgnoreError(mu.Unlock()) }()
+
+	if dirHasFiles(cacheDir) {
+		return cacheDir, nil
+	}
+	// An empty cacheDir is a leftover from a failed fetch, and go-getter
+	// refuses to clone into an existing directory.
+	if err := os.RemoveAll(cacheDir); err != nil {
+		return "", fmt.Errorf("clearing stale cache dir %s: %w", cacheDir, err)
+	}
+
+	// Fetch into a sibling and rename it into place, so a fetch that dies
+	// part-way never leaves a cacheDir that a later run mistakes for a hit.
+	partial := cacheDir + ".partial"
+	if err := os.RemoveAll(partial); err != nil {
+		return "", fmt.Errorf("clearing partial fetch %s: %w", partial, err)
+	}
 	fetchMu.Lock()
-	defer fetchMu.Unlock()
-	err = l.fetcher.FetchPackage(context.Background(), cacheDir, pkgAddr)
+	err = l.fetcher.FetchPackage(context.Background(), partial, pkgAddr)
+	fetchMu.Unlock()
 	if err != nil {
-		contract.IgnoreError(os.RemoveAll(cacheDir))
+		contract.IgnoreError(os.RemoveAll(partial))
 		return "", fmt.Errorf("fetching module from %q: %w", pkgAddr, err)
+	}
+	if err := os.Rename(partial, cacheDir); err != nil {
+		return "", fmt.Errorf("publishing module cache %s: %w", cacheDir, err)
 	}
 	return cacheDir, nil
 }

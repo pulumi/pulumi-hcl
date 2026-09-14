@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Lock the module cache directory across processes, so `pulumi install` no longer fails when several packages share one repository
+time: 2026-09-14T00:00:00Z
+custom:
+    Component: runtime
+    PR: "606"
