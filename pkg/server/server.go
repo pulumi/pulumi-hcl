@@ -509,6 +509,23 @@ func sdkDescriptors(infos map[string]sdkInfo) map[string]workspace.PackageDescri
 	return descs
 }
 
+// programPackages returns the descriptors the blocks of config, and of the
+// modules it loads, register against: the local SDK descriptors plus a pin for
+// every pulumi/-sourced required_providers entry no SDK covers. The same map
+// drives the schema loader and the engine, so type checking and registration
+// resolve the same plugin version. It also returns the non-Pulumi provider
+// requirements for the missing-SDK check.
+func programPackages(
+	ctx context.Context, loader *modules.Loader, config *ast.Config, dir string, sdkInfos map[string]sdkInfo,
+) (map[string]workspace.PackageDescriptor, map[string]*tfRequirement, error) {
+	descs := sdkDescriptors(sdkInfos)
+	tfReqs, pulumiPkgs, _ := collectRequirements(ctx, loader, config, dir)
+	if err := addPinnedPulumiPackages(pulumiPkgs, descs); err != nil {
+		return nil, nil, err
+	}
+	return descs, tfReqs, nil
+}
+
 // addPinnedPulumiPackages adds a name-and-version descriptor to descs for
 // every Pulumi package that pulumiPkgs (see collectRequirements) pins to a
 // version and that no local SDK already describes. descs feeds both the
@@ -626,7 +643,12 @@ func collectRequirementsRec(
 			return
 		}
 		if req.IsPulumi() {
-			pulumi[packageName(alias, req.Source)] = req.Version
+			// The root is walked first, so its pin wins; a module's pin fills
+			// in only when no earlier declaration named a version.
+			name := packageName(alias, req.Source)
+			if cur, seen := pulumi[name]; !seen || cur == "" {
+				pulumi[name] = req.Version
+			}
 			return
 		}
 		source := tfProviderSource(alias, req)
@@ -766,19 +788,17 @@ func (host *LanguageHost) Run(
 	if err != nil {
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
-	paramDescriptors := sdkDescriptors(sdkInfos)
-
-	tfReqs, pulumiPkgs, _ := collectRequirements(
-		ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, req.Info.ProgramDirectory)
+	paramDescriptors, tfReqs, err := programPackages(
+		ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, req.Info.ProgramDirectory, sdkInfos)
+	if err != nil {
+		return &pulumirpc.RunResponse{Error: err.Error()}, nil
+	}
 	if missing := missingSDKs(tfReqs, sdkInfos); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(
 				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",
 				missing),
 		}, nil
-	}
-	if err := addPinnedPulumiPackages(pulumiPkgs, paramDescriptors); err != nil {
-		return &pulumirpc.RunResponse{Error: err.Error()}, nil
 	}
 
 	// Cache the underlying loader, then wrap with the parameterization-aware
@@ -1708,6 +1728,7 @@ func (r *resourceMonitorAdapter) Call(
 	rpcReq := &pulumirpc.ResourceCallRequest{
 		Tok:               req.Token,
 		Args:              argsStruct,
+		Provider:          req.Provider,
 		AcceptsByteString: true,
 	}
 	req.Package.ApplyCall(rpcReq)

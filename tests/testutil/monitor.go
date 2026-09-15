@@ -38,6 +38,7 @@ type MockResourceMonitor struct {
 	packages           *pkgid.Registrar
 	ReadResources      []run.ReadResourceRequest
 	InvokedFunctions   []run.InvokeRequest
+	Calls              []run.CallRequest
 	StackOutputs       property.Map
 	Warnings           []string
 	stackURN           urn.URN
@@ -184,6 +185,9 @@ func (m *MockResourceMonitor) RegisterResourceOutputs(ctx context.Context, urn u
 }
 
 func (m *MockResourceMonitor) Call(ctx context.Context, req run.CallRequest) (*run.CallResponse, error) {
+	m.mu.Lock()
+	m.Calls = append(m.Calls, req)
+	m.mu.Unlock()
 	return &run.CallResponse{
 		Return: property.NewMap(nil),
 	}, nil

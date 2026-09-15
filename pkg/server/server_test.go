@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -1382,4 +1383,85 @@ terraform {
 		assert.EqualError(t, err,
 			`invalid version "~> 4.0" for Pulumi provider "random": Invalid character(s) found in major number "~> 4"`)
 	})
+}
+
+// The root's required_providers pin applies to the whole program. A module's
+// entry for the same provider must not clear it or replace it.
+func TestAddPinnedPulumiPackagesModuleDoesNotOverrideRootPin(t *testing.T) {
+	t.Parallel()
+
+	root := `
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "4.18.5"
+    }
+  }
+}
+
+resource "random_uuid" "root" {}
+
+module "child" {
+  source = "./child"
+}
+`
+	tests := []struct {
+		name  string
+		child string
+	}{
+		{
+			name: "module declares no version",
+			child: `
+terraform {
+  required_providers {
+    random = {
+      source = "pulumi/random"
+    }
+  }
+}
+
+resource "random_uuid" "child" {}
+`,
+		},
+		{
+			name: "module pins a different version",
+			child: `
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "4.19.0"
+    }
+  }
+}
+
+resource "random_uuid" "child" {}
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(root), 0o600))
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "child", "main.tf"), []byte(tt.child), 0o600))
+
+			config, diags := parser.NewParser().ParseDirectory(dir)
+			require.False(t, diags.HasErrors(), diags.Error())
+
+			descs, _, err := programPackages(t.Context(), modules.NewLoader(modules.LiveResolver(t.Context())), config, dir, nil)
+			require.NoError(t, err)
+
+			v := semver.MustParse("4.18.5")
+			assert.Equal(t, map[string]workspace.PackageDescriptor{
+				"random": {PluginDescriptor: workspace.PluginDescriptor{
+					Name: "random", Kind: apitype.ResourcePlugin, Version: &v,
+				}},
+			}, descs)
+		})
+	}
 }

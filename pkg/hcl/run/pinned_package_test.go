@@ -115,10 +115,15 @@ data "random_uuid" "newer" {
 	})
 	require.NoError(t, engine.Run(t.Context()))
 
-	require.NotEmpty(t, inner.descriptors)
+	// Type checking follows the block's version option where one is set, and
+	// the required_providers pin otherwise.
+	loaded := map[string]bool{}
 	for _, d := range inner.descriptors {
-		assert.Equal(t, schema.PackageDescriptor{Name: "random", Version: &pinned}, d)
+		assert.Equal(t, "random", d.Name)
+		require.NotNil(t, d.Version)
+		loaded[d.Version.String()] = true
 	}
+	assert.Equal(t, map[string]bool{"4.18.5": true, "4.19.0": true}, loaded)
 	registered := map[string]int{}
 	for _, req := range mock.RegisteredPackages {
 		registered[req.Name+"@"+req.Version]++
@@ -140,4 +145,78 @@ data "random_uuid" "newer" {
 		invoked[inv.Package.String()]++
 	}
 	assert.Equal(t, map[string]int{"random@4.18.5": 1, "random@4.19.0": 1}, invoked)
+}
+
+// A method call runs against the provider and package the resource registered
+// with, so a resource-level version option reaches its methods too.
+func TestEngine_CallUsesTheResourcePackage(t *testing.T) {
+	t.Parallel()
+
+	src := []byte(`
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "4.18.5"
+    }
+  }
+}
+
+resource "random_thing" "newer" {
+  pulumi {
+    version = "4.19.0"
+  }
+}
+
+call "newer" "ping" {}
+`)
+	p := parser.NewParser()
+	config, diags := p.ParseSource("test.hcl", src)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	pinned := semver.MustParse("4.18.5")
+	pkgs := map[string]workspace.PackageDescriptor{"random": {PluginDescriptor: workspace.PluginDescriptor{
+		Name: "random", Kind: apitype.ResourcePlugin, Version: &pinned,
+	}}}
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name: "random",
+		Meta: &schema.MetadataSpec{ModuleFormat: `(.*)(?:/[^/]*)`},
+		Resources: map[string]schema.ResourceSpec{
+			"random:index/thing:Thing": {
+				Methods: map[string]string{"ping": "random:index/thing:Thing/ping"},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"random:index/thing:Thing/ping": {
+				Inputs: &schema.ObjectTypeSpec{
+					Type: "object",
+					Properties: map[string]schema.PropertySpec{
+						"__self__": {TypeSpec: schema.TypeSpec{Ref: "#/resources/random:index/thing:Thing"}},
+					},
+					Required: []string{"__self__"},
+				},
+				ReturnType: &schema.ReturnTypeSpec{ObjectTypeSpec: &schema.ObjectTypeSpec{
+					Type:       "object",
+					Properties: map[string]schema.PropertySpec{"result": {TypeSpec: schema.TypeSpec{Type: "string"}}},
+				}},
+			},
+		},
+	})
+
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    packages.NewParameterizationAwareLoader(loader, pkgs),
+		Packages:        pkgs,
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	require.Len(t, mock.Calls, 1)
+	assert.Equal(t, "random:index/thing:Thing/ping", mock.Calls[0].Token)
+	assert.Equal(t, "random@4.19.0", mock.Calls[0].Package.String())
 }

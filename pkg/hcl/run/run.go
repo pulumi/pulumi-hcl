@@ -236,9 +236,10 @@ type InvokeResponse struct {
 
 // CallRequest contains the parameters for invoking a method on a resource.
 type CallRequest struct {
-	Token   string
-	Args    property.Map
-	Package pkgid.Identity
+	Token    string
+	Args     property.Map
+	Provider string
+	Package  pkgid.Identity
 }
 
 // CallResponse contains the result of invoking a method on a resource.
@@ -384,6 +385,11 @@ type Engine struct {
 
 	// resourceOutputs maps resource keys to their output values.
 	resourceOutputs *util.SyncMap[graph.InstanceKey, cty.Value]
+
+	// callTargets maps a registered resource's node to the provider and
+	// package its instances registered against, so a method call on the
+	// resource runs where the resource lives.
+	callTargets *util.SyncMap[graph.NodeKey, callTarget]
 
 	// resourceInheritableOpts maps resource keys to the options that children can inherit.
 	resourceInheritableOpts *util.SyncMap[graph.InstanceKey, inheritableOpts]
@@ -628,6 +634,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		resmon:                  opts.ResourceMonitor,
 		resourceOutputs:         util.NewSyncMap[graph.InstanceKey, cty.Value](),
 		resourceInheritableOpts: util.NewSyncMap[graph.InstanceKey, inheritableOpts](),
+		callTargets:             util.NewSyncMap[graph.NodeKey, callTarget](),
 		defaultProviders:        util.NewSyncMap[string, string](),
 		stackOutputs:            make(map[string]property.Value),
 		projectName:             opts.ProjectName,
@@ -1673,6 +1680,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	if err != nil {
 		return err
 	}
+	e.callTargets.Set(node.Key, callTarget{provider: opts.Provider, pkg: opts.Package})
 	// The options are built from the unboxed inputs: terraform_data's
 	// {type, value} boxing would hide the value shapes that
 	// ignoreChangesApplies inspects.
@@ -2986,6 +2994,32 @@ func packageNameFromResourceType(token string) string {
 	return strings.SplitN(token, "_", 2)[0]
 }
 
+// callTarget is where a resource's instances registered: the provider they
+// bound to and the package identity they carried.
+type callTarget struct {
+	provider string
+	pkg      pkgid.Identity
+}
+
+// blockVersion evaluates a block's `version` option for schema resolution, in
+// the module's own context. An absent option, or a value unknown in that
+// context, pins nothing and the package descriptor's version applies.
+func blockVersion(expr hcl.Expression, hclCtx *hcl.EvalContext) (*semver.Version, error) {
+	if expr == nil {
+		return nil, nil
+	}
+	val, diags := expr.Value(hclCtx)
+	val, _ = val.Unmark()
+	if diags.HasErrors() || val.Type() != cty.String || val.IsNull() || !val.IsKnown() {
+		return nil, nil
+	}
+	v, err := semver.ParseTolerant(val.AsString())
+	if err != nil {
+		return nil, fmt.Errorf("invalid version %q: %w", val.AsString(), err)
+	}
+	return &v, nil
+}
+
 // packageDescriptor resolves the descriptor a block registers against: the
 // Packages entry for pkgName, overridden by the block's own `version` and
 // `plugin_download_url` options, with the schema's download URL as the last
@@ -3804,8 +3838,11 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	for k, res := range e.config.Resources {
 		if res.Name == call.ResourceName {
 			resKey = k
-			var err error
-			resSchema, err = e.resolver.ResolveResource(ctx, res.Type)
+			version, err := blockVersion(res.Version, e.evaluator.Context().HCLContext())
+			if err != nil {
+				return fmt.Errorf("resource %s.%s: %w", res.Type, res.Name, err)
+			}
+			resSchema, err = e.resolver.ResolveResourceAt(ctx, res.Type, version)
 			if err != nil {
 				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 					return diag
@@ -3907,14 +3944,21 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("evaluating call arguments for %s.%s: %s", call.ResourceName, call.MethodName, diags.Error())
 	}
 
-	ident, err := e.packageIdentity(ctx, method.Function.PackageReference, "", "")
-	if err != nil {
-		return fmt.Errorf("resolving package for %s.%s: %w", call.ResourceName, call.MethodName, err)
+	// A provider block registers no call target; its methods run on the
+	// provider's own package.
+	target, ok := e.callTargets.Get(graph.NodeKey{ID: resKey})
+	if !ok {
+		var err error
+		target.pkg, err = e.packageIdentity(ctx, method.Function.PackageReference, "", "")
+		if err != nil {
+			return fmt.Errorf("resolving package for %s.%s: %w", call.ResourceName, call.MethodName, err)
+		}
 	}
 	ret, err := e.callMethod(ctx, CallRequest{
-		Token:   method.Function.Token,
-		Args:    userArgs.Set("__self__", selfRef),
-		Package: ident,
+		Token:    method.Function.Token,
+		Args:     userArgs.Set("__self__", selfRef),
+		Provider: target.provider,
+		Package:  target.pkg,
 	})
 	if err != nil {
 		return fmt.Errorf("calling method %s.%s: %w", call.ResourceName, call.MethodName, err)

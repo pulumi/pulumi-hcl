@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/blang/semver"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
@@ -61,37 +62,53 @@ func NewResolver(
 // preferring the bridge mapping and falling back to the convention-based
 // resolver. The synthetic terraform_data type resolves to its builtin schema.
 func (r *Resolver) ResolveResource(ctx context.Context, tfType string) (*schema.Resource, error) {
+	return r.ResolveResourceAt(ctx, tfType, nil)
+}
+
+// ResolveResourceAt is ResolveResource against one version of the type's
+// package, the version a block's own `version` option names. nil leaves the
+// version to the schema loader, which applies the required_providers pin.
+func (r *Resolver) ResolveResourceAt(
+	ctx context.Context, tfType string, version *semver.Version,
+) (*schema.Resource, error) {
 	if tfType == TerraformDataType {
 		return TerraformDataSchema(), nil
 	}
 	if info := r.providerInfoForType(ctx, tfType); info != nil {
 		if res, ok := info.Resources[tfType]; ok && res != nil && string(res.Tok) != "" {
-			schemaRes, err := r.loadResourceByToken(ctx, info.Name, string(res.Tok))
+			schemaRes, err := r.loadResourceByToken(ctx, info.Name, string(res.Tok), version)
 			if err == nil {
 				return schemaRes, nil
 			}
 			logging.V(5).Infof("bridge resource token %q (from %q) not loadable: %v", res.Tok, tfType, err)
 		}
 	}
-	return ResolveResource(ctx, r.loader, r.knownProviders, tfType)
+	return resolveResource(ctx, r.loader, r.knownProviders, tfType, version)
 }
 
 // ResolveFunction mirrors ResolveResource for TF data sources and functions. The
 // synthetic terraform_remote_state type resolves to its builtin schema.
 func (r *Resolver) ResolveFunction(ctx context.Context, tfType string) (*schema.Function, error) {
+	return r.ResolveFunctionAt(ctx, tfType, nil)
+}
+
+// ResolveFunctionAt mirrors ResolveResourceAt for TF data sources.
+func (r *Resolver) ResolveFunctionAt(
+	ctx context.Context, tfType string, version *semver.Version,
+) (*schema.Function, error) {
 	if tfType == RemoteStateType {
 		return TerraformRemoteStateSchema(), nil
 	}
 	if info := r.providerInfoForType(ctx, tfType); info != nil {
 		if d, ok := info.DataSources[tfType]; ok && d != nil && string(d.Tok) != "" {
-			fn, err := r.loadFunctionByToken(ctx, info.Name, string(d.Tok))
+			fn, err := r.loadFunctionByToken(ctx, info.Name, string(d.Tok), version)
 			if err == nil {
 				return fn, nil
 			}
 			logging.V(5).Infof("bridge data source token %q (from %q) not loadable: %v", d.Tok, tfType, err)
 		}
 	}
-	return ResolveFunction(ctx, r.loader, r.knownProviders, tfType)
+	return resolveFunction(ctx, r.loader, r.knownProviders, tfType, version)
 }
 
 // ResourceBodyMapping returns the bridge BodyMapping for a TF resource type, or
@@ -193,7 +210,7 @@ func (r *Resolver) ProviderFunctions(ctx context.Context, providerName string) (
 			if f == nil || string(f.Tok) == "" {
 				continue
 			}
-			fn, err := r.loadFunctionByToken(ctx, pkgName, string(f.Tok))
+			fn, err := r.loadFunctionByToken(ctx, pkgName, string(f.Tok), nil)
 			if err != nil {
 				logging.V(5).Infof("bridge function token %q (for %q) not loadable: %v", f.Tok, tfName, err)
 				continue
@@ -253,8 +270,10 @@ func preferFunctionToken(pkg schema.PackageReference, tok, prev string) bool {
 }
 
 // loadResourceByToken loads the Pulumi schema for an exact Pulumi token.
-func (r *Resolver) loadResourceByToken(ctx context.Context, pkgName, tok string) (*schema.Resource, error) {
-	pkg, err := r.loader.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{Name: pkgName})
+func (r *Resolver) loadResourceByToken(
+	ctx context.Context, pkgName, tok string, version *semver.Version,
+) (*schema.Resource, error) {
+	pkg, err := r.loader.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{Name: pkgName, Version: version})
 	if err != nil {
 		return nil, err
 	}
@@ -269,8 +288,10 @@ func (r *Resolver) loadResourceByToken(ctx context.Context, pkgName, tok string)
 }
 
 // loadFunctionByToken loads the Pulumi schema for an exact Pulumi function token.
-func (r *Resolver) loadFunctionByToken(ctx context.Context, pkgName, tok string) (*schema.Function, error) {
-	pkg, err := r.loader.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{Name: pkgName})
+func (r *Resolver) loadFunctionByToken(
+	ctx context.Context, pkgName, tok string, version *semver.Version,
+) (*schema.Function, error) {
+	pkg, err := r.loader.LoadPackageReferenceV2(ctx, &schema.PackageDescriptor{Name: pkgName, Version: version})
 	if err != nil {
 		return nil, err
 	}
