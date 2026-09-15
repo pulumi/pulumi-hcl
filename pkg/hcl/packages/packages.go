@@ -190,7 +190,15 @@ func isStackReferenceToken(token string) bool {
 }
 
 func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Resource, error) {
-	pkg, err := resolvePackageForToken(ctx, loader, knownProviders, token)
+	return resolveResource(ctx, loader, knownProviders, token, nil)
+}
+
+// resolveResource is ResolveResource against one version of the token's
+// package; nil resolves whatever version the loader picks.
+func resolveResource(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string, version *semver.Version,
+) (*schema.Resource, error) {
+	pkg, err := resolvePackageForToken(ctx, loader, knownProviders, token, version)
 	if err != nil {
 		return nil, err
 	}
@@ -244,13 +252,13 @@ func extensionReference(
 // resolvePackageForToken collapses package-load failures to ErrNotFound;
 // structural errors (InvalidToken, ambiguous matches) propagate.
 func resolvePackageForToken(
-	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string, version *semver.Version,
 ) (schema.PackageReference, error) {
 	if token == "" {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
 	}
 	if provider, ok := strings.CutPrefix(token, "pulumi_providers_"); ok {
-		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: provider})
+		pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: provider, Version: version})
 		if err != nil {
 			return nil, ErrNotFound
 		}
@@ -267,7 +275,7 @@ func resolvePackageForToken(
 	if err != nil {
 		return nil, err
 	}
-	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
+	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName, Version: version})
 	if err != nil {
 		return nil, ErrNotFound
 	}
@@ -456,6 +464,14 @@ func (l *ParameterizationAwareLoader) LoadPackageReferenceV2(ctx context.Context
 var _ schema.ReferenceLoader = (*ParameterizationAwareLoader)(nil)
 
 func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Function, error) {
+	return resolveFunction(ctx, loader, knownProviders, token, nil)
+}
+
+// resolveFunction is ResolveFunction against one version of the token's
+// package; nil resolves whatever version the loader picks.
+func resolveFunction(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string, version *semver.Version,
+) (*schema.Function, error) {
 	if token == "" {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
 	}
@@ -465,7 +481,7 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 		return nil, err
 	}
 
-	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
+	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName, Version: version})
 	if err != nil {
 		return nil, ErrNotFound
 	}

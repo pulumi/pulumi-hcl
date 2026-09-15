@@ -39,6 +39,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/pkgid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-hcl/pkg/version"
 	"github.com/pulumi/pulumi-hcl/vendored/addrs"
@@ -508,6 +509,46 @@ func sdkDescriptors(infos map[string]sdkInfo) map[string]workspace.PackageDescri
 	return descs
 }
 
+// programPackages returns the descriptors the blocks of config, and of the
+// modules it loads, register against: the local SDK descriptors plus a pin for
+// every pulumi/-sourced required_providers entry no SDK covers. The same map
+// drives the schema loader and the engine, so type checking and registration
+// resolve the same plugin version. It also returns the non-Pulumi provider
+// requirements for the missing-SDK check.
+func programPackages(
+	ctx context.Context, loader *modules.Loader, config *ast.Config, dir string, sdkInfos map[string]sdkInfo,
+) (map[string]workspace.PackageDescriptor, map[string]*tfRequirement, error) {
+	descs := sdkDescriptors(sdkInfos)
+	tfReqs, pulumiPkgs, _ := collectRequirements(ctx, loader, config, dir)
+	if err := addPinnedPulumiPackages(pulumiPkgs, descs); err != nil {
+		return nil, nil, err
+	}
+	return descs, tfReqs, nil
+}
+
+// addPinnedPulumiPackages adds a name-and-version descriptor to descs for
+// every Pulumi package that pulumiPkgs (see collectRequirements) pins to a
+// version and that no local SDK already describes. descs feeds both the
+// schema loader and the engine's package registration, so type checking and
+// resource registration resolve the same plugin version.
+func addPinnedPulumiPackages(pulumiPkgs map[string]string, descs map[string]workspace.PackageDescriptor) error {
+	for name, version := range pulumiPkgs {
+		if _, ok := descs[name]; ok || version == "" {
+			continue
+		}
+		v, err := semver.ParseTolerant(version)
+		if err != nil {
+			return fmt.Errorf("invalid version %q for Pulumi provider %q: %w", version, name, err)
+		}
+		descs[name] = workspace.PackageDescriptor{PluginDescriptor: workspace.PluginDescriptor{
+			Name:    name,
+			Kind:    apitype.ResourcePlugin,
+			Version: &v,
+		}}
+	}
+	return nil
+}
+
 // missingNonPulumiSDKs returns the sorted non-Pulumi provider sources used
 // by config (and its transitively-loaded modules) that no on-disk SDK
 // satisfies. Empty workDir skips module recursion.
@@ -515,6 +556,10 @@ func missingNonPulumiSDKs(
 	ctx context.Context, config *ast.Config, sdks map[string]sdkInfo, workDir string,
 ) []string {
 	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
+	return missingSDKs(tfReqs, sdks)
+}
+
+func missingSDKs(tfReqs map[string]*tfRequirement, sdks map[string]sdkInfo) []string {
 	var missing []string
 	for _, source := range sortedKeys(tfReqs) {
 		if _, _, ok := descriptorForSource(source, sdks); !ok {
@@ -598,7 +643,12 @@ func collectRequirementsRec(
 			return
 		}
 		if req.IsPulumi() {
-			pulumi[packageName(alias, req.Source)] = req.Version
+			// The root is walked first, so its pin wins; a module's pin fills
+			// in only when no earlier declaration named a version.
+			name := packageName(alias, req.Source)
+			if cur, seen := pulumi[name]; !seen || cur == "" {
+				pulumi[name] = req.Version
+			}
 			return
 		}
 		source := tfProviderSource(alias, req)
@@ -697,6 +747,7 @@ func (host *LanguageHost) Run(
 	monitorClient := pulumirpc.NewResourceMonitorClient(monitorConn)
 	resmon := &resourceMonitorAdapter{
 		monitorClient: monitorClient,
+		packages:      pkgid.NewRegistrar(monitorClient),
 		engineClient:  host.engine,
 		ctx:           ctx,
 		stack:         req.Stack,
@@ -737,9 +788,12 @@ func (host *LanguageHost) Run(
 	if err != nil {
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
-	paramDescriptors := sdkDescriptors(sdkInfos)
-
-	if missing := missingNonPulumiSDKs(ctx, config, sdkInfos, req.Info.ProgramDirectory); len(missing) > 0 {
+	paramDescriptors, tfReqs, err := programPackages(
+		ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, req.Info.ProgramDirectory, sdkInfos)
+	if err != nil {
+		return &pulumirpc.RunResponse{Error: err.Error()}, nil
+	}
+	if missing := missingSDKs(tfReqs, sdkInfos); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(
 				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",
@@ -1351,6 +1405,7 @@ var _ run.ResourceMonitor = (*resourceMonitorAdapter)(nil)
 // resourceMonitorAdapter adapts the Pulumi gRPC resource monitor to our interface.
 type resourceMonitorAdapter struct {
 	monitorClient pulumirpc.ResourceMonitorClient
+	packages      *pkgid.Registrar
 	engineClient  pulumirpc.EngineClient
 	ctx           context.Context
 
@@ -1371,51 +1426,13 @@ func (r *resourceMonitorAdapter) ResolveURN(parent urn.URN, token, name string) 
 	return urn.New(tokens.QName(r.stack), tokens.PackageName(r.project), parentType, tokens.Type(token), name), name
 }
 
-// RegisterPackage registers a parameterized package with the engine.
+// RegisterPackage registers a package with the engine, once per distinct
+// descriptor, and returns its identity.
 func (r *resourceMonitorAdapter) RegisterPackage(
 	ctx context.Context,
 	pkg workspace.PackageDescriptor,
-) (run.PackageRef, error) {
-	return registerPackage(ctx, r.monitorClient, pkg)
-}
-
-// registerPackage registers a parameterized package with the engine via the
-// resource monitor and returns the ref that routes subsequent resource
-// registrations to the matching provider instance. Shared by the Run-path
-// monitor and the Construct-path monitor so a component's bridged providers
-// register the same way a root program's do.
-func registerPackage(
-	ctx context.Context,
-	client pulumirpc.ResourceMonitorClient,
-	pkg workspace.PackageDescriptor,
-) (run.PackageRef, error) {
-	versionStr := ""
-	if pkg.Version != nil {
-		versionStr = pkg.Version.String()
-	}
-	req := &pulumirpc.RegisterPackageRequest{
-		Name:    pkg.Name,
-		Version: versionStr,
-	}
-	if pkg.Parameterization != nil {
-		req.Parameterization = &pulumirpc.Parameterization{
-			Name:    pkg.Parameterization.Name,
-			Version: pkg.Parameterization.Version.String(),
-			Value:   pkg.Parameterization.Value,
-		}
-	}
-	if pkg.ExtensionParameterization != nil {
-		req.Extension = &pulumirpc.Parameterization{
-			Name:    pkg.ExtensionParameterization.Name,
-			Version: pkg.ExtensionParameterization.Version.String(),
-			Value:   pkg.ExtensionParameterization.Value,
-		}
-	}
-	resp, err := client.RegisterPackage(ctx, req)
-	if err != nil {
-		return "", fmt.Errorf("registering package %s: %w", pkg.Name, err)
-	}
-	return run.PackageRef(resp.Ref), nil
+) (pkgid.Identity, error) {
+	return r.packages.Identity(ctx, pkg)
 }
 
 // globsToPropertyPaths marshals property globs to the dotted/bracketed
@@ -1522,10 +1539,8 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		HideDiffs:                  hideDiffs,
 		ReplaceOnChanges:           replaceOnChanges,
 		EnvVarMappings:             req.EnvVarMappings,
-		Version:                    req.Version,
-		PluginDownloadURL:          req.PluginDownloadURL,
-		PackageRef:                 string(req.PackageRef),
 	}
+	req.Package.ApplyRegisterResource(registerReq)
 
 	// Add custom timeouts if specified
 	if req.CustomTimeouts != nil {
@@ -1580,7 +1595,7 @@ func (r *resourceMonitorAdapter) ReadResource(
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
 	}
 
-	resp, err := r.monitorClient.ReadResource(ctx, &pulumirpc.ReadResourceRequest{
+	rpcReq := &pulumirpc.ReadResourceRequest{
 		Id:                      req.ID,
 		Type:                    req.Type,
 		Name:                    req.Name,
@@ -1588,14 +1603,13 @@ func (r *resourceMonitorAdapter) ReadResource(
 		Properties:              inputsStruct,
 		Dependencies:            req.Dependencies,
 		Provider:                req.Provider,
-		Version:                 req.Version,
 		AcceptSecrets:           true,
 		AdditionalSecretOutputs: req.AdditionalSecretOutputs,
 		AcceptResources:         true,
 		AcceptsByteString:       true,
-		PluginDownloadURL:       req.PluginDownloadURL,
-		PackageRef:              string(req.PackageRef),
-	})
+	}
+	req.Package.ApplyReadResource(rpcReq)
+	resp, err := r.monitorClient.ReadResource(ctx, rpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("reading resource: %w", err)
 	}
@@ -1628,13 +1642,11 @@ func (r *resourceMonitorAdapter) Invoke(
 		Tok:               req.Token,
 		Args:              argsStruct,
 		Provider:          req.Provider,
-		Version:           req.Version,
-		PluginDownloadURL: req.PluginDownloadURL,
 		AcceptResources:   true,
 		AcceptsByteString: true,
-		PackageRef:        string(req.PackageRef),
 		DependsOn:         req.DependsOn,
 	}
+	req.Package.ApplyInvoke(invokeReq)
 
 	// Call the resource monitor
 	resp, err := r.monitorClient.Invoke(ctx, invokeReq)
@@ -1713,12 +1725,14 @@ func (r *resourceMonitorAdapter) Call(
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
 
-	resp, err := r.monitorClient.Call(ctx, &pulumirpc.ResourceCallRequest{
+	rpcReq := &pulumirpc.ResourceCallRequest{
 		Tok:               req.Token,
 		Args:              argsStruct,
-		PackageRef:        string(req.PackageRef),
+		Provider:          req.Provider,
 		AcceptsByteString: true,
-	})
+	}
+	req.Package.ApplyCall(rpcReq)
+	resp, err := r.monitorClient.Call(ctx, rpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("calling method: %w", err)
 	}

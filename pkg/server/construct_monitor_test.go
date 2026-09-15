@@ -19,7 +19,9 @@ import (
 	"net"
 	"testing"
 
+	"github.com/blang/semver"
 	"github.com/google/go-cmp/cmp"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
@@ -29,6 +31,7 @@ import (
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/pkgid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 )
 
@@ -38,6 +41,12 @@ type routingCaptureMonitorServer struct {
 	pulumirpc.UnimplementedResourceMonitorServer
 	invokeReq *pulumirpc.ResourceInvokeRequest
 	callReq   *pulumirpc.ResourceCallRequest
+}
+
+func (s *routingCaptureMonitorServer) RegisterPackage(
+	context.Context, *pulumirpc.RegisterPackageRequest,
+) (*pulumirpc.RegisterPackageResponse, error) {
+	return &pulumirpc.RegisterPackageResponse{Ref: "package-ref-uuid"}, nil
 }
 
 func (s *routingCaptureMonitorServer) Invoke(
@@ -67,12 +76,10 @@ func TestConstructMonitorForwardsInvokeRouting(t *testing.T) {
 	m := newTestConstructMonitor(t, capture)
 
 	_, err := m.Invoke(t.Context(), run.InvokeRequest{
-		Token:             "aws:index/getIamPolicyDocument:getIamPolicyDocument",
-		Args:              property.NewMap(map[string]property.Value{"name": property.New("x")}),
-		Provider:          "urn:pulumi:test::proj::pulumi:providers:aws::default::uuid",
-		Version:           "1.2.3",
-		PluginDownloadURL: "https://example.com/download",
-		PackageRef:        "package-ref-uuid",
+		Token:    "aws:index/getIamPolicyDocument:getIamPolicyDocument",
+		Args:     property.NewMap(map[string]property.Value{"name": property.New("x")}),
+		Provider: "urn:pulumi:test::proj::pulumi:providers:aws::default::uuid",
+		Package:  testPackageIdentity(t, m),
 	})
 	require.NoError(t, err)
 
@@ -99,9 +106,9 @@ func TestConstructMonitorForwardsCallRouting(t *testing.T) {
 	m := newTestConstructMonitor(t, capture)
 
 	_, err := m.Call(t.Context(), run.CallRequest{
-		Token:      "aws:index:Module/getOutput",
-		Args:       property.NewMap(map[string]property.Value{"name": property.New("x")}),
-		PackageRef: "package-ref-uuid",
+		Token:   "aws:index:Module/getOutput",
+		Args:    property.NewMap(map[string]property.Value{"name": property.New("x")}),
+		Package: testPackageIdentity(t, m),
 	})
 	require.NoError(t, err)
 
@@ -110,9 +117,26 @@ func TestConstructMonitorForwardsCallRouting(t *testing.T) {
 	assert.Empty(t, cmp.Diff(&pulumirpc.ResourceCallRequest{
 		Tok:               "aws:index:Module/getOutput",
 		Args:              args,
+		Version:           "1.2.3",
+		PluginDownloadURL: "https://example.com/download",
 		PackageRef:        "package-ref-uuid",
 		AcceptsByteString: true,
 	}, capture.callReq, protocmp.Transform()))
+}
+
+// testPackageIdentity registers aws@1.2.3 from https://example.com/download
+// through m; the capture server answers every registration with
+// "package-ref-uuid".
+func testPackageIdentity(t *testing.T, m *constructResourceMonitor) pkgid.Identity {
+	t.Helper()
+	v := semver.MustParse("1.2.3")
+	ident, err := m.RegisterPackage(t.Context(), workspace.PackageDescriptor{
+		PluginDescriptor: workspace.PluginDescriptor{
+			Name: "aws", Version: &v, PluginDownloadURL: "https://example.com/download",
+		},
+	})
+	require.NoError(t, err)
+	return ident
 }
 
 // serveResourceMonitor serves the given monitor implementation over gRPC for
@@ -138,5 +162,6 @@ func newTestConstructMonitor(t *testing.T, srv pulumirpc.ResourceMonitorServer) 
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	return &constructResourceMonitor{client: pulumirpc.NewResourceMonitorClient(conn)}
+	client := pulumirpc.NewResourceMonitorClient(conn)
+	return &constructResourceMonitor{client: client, packages: pkgid.NewRegistrar(client)}
 }

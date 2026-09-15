@@ -42,6 +42,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/pkgid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/resolve"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
@@ -384,6 +385,7 @@ func (m *moduleProvider) newConstructMonitor(
 ) *constructResourceMonitor {
 	return &constructResourceMonitor{
 		client:                  client,
+		packages:                pkgid.NewRegistrar(client),
 		engine:                  m.engine,
 		hooks:                   hooks,
 		ctx:                     ctx,

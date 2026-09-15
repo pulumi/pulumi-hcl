@@ -51,6 +51,14 @@ type hookInvokingMonitor struct {
 	registered []*pulumirpc.RegisterResourceRequest
 }
 
+// RegisterPackage answers every registration with one fixed ref; these tests
+// exercise request forwarding, not package identity.
+func (*hookInvokingMonitor) RegisterPackage(
+	context.Context, *pulumirpc.RegisterPackageRequest,
+) (*pulumirpc.RegisterPackageResponse, error) {
+	return &pulumirpc.RegisterPackageResponse{Ref: "package-ref"}, nil
+}
+
 // registeredType returns the recorded registration for the given type token.
 func (s *hookInvokingMonitor) registeredType(typ string) *pulumirpc.RegisterResourceRequest {
 	s.mu.Lock()
