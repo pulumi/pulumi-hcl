@@ -2,9 +2,10 @@
 
 ## Release process
 
-Releasing requires an unreleased fragment. A release PR should be [maintained by CI](.github/workflows/maintain-release-pr.yml)
-when a release is available. To release, merge the PR. Renovate should open a PR to bump
-the version of HCL bundled with [pulumi/pulumi](https://github.com/pulumi/pulumi) in the next day or so.
+Releasing requires an unreleased fragment. When a release is available, a weekly job opens a
+release PR every Monday at 09:00 UTC, then approves it and queues it to merge. Renovate should
+open a PR to bump the version of HCL bundled with [pulumi/pulumi](https://github.com/pulumi/pulumi)
+in the next day or so.
 
 ### Release Mechanics
 
@@ -52,11 +53,10 @@ The `Release` workflow fires on any push to `master` that touches `CHANGELOG.md`
 
 The workflow no-ops if the tag already exists, so re-running it is safe.
 
-Step (2) is fully automated via
-[`maintain-release-pr.yml`](.github/workflows/maintain-release-pr.yml), which maintains a
-release PR on every push to `master` that adds unreleased changes. Step (3) is fully
-automated by a weekly job, which merges the open release PR every Monday at 09:00 UTC
-and pings Slack (or pings that no release is needed).
+Steps (2) and (3) are fully automated by a weekly job, which every Monday at 09:00 UTC
+batches any unreleased changes into a release PR, approves it and queues it to merge, and
+pings Slack (or pings that no release is needed). To release sooner, follow step (2) by
+hand and merge the result.
 
 ### Versioning
 
