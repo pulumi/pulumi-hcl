@@ -99,6 +99,14 @@ type captureMonitor struct {
 	registered []*pulumirpc.RegisterResourceRequest
 }
 
+// RegisterPackage answers every registration with one fixed ref; these tests
+// exercise request forwarding, not package identity.
+func (*captureMonitor) RegisterPackage(
+	context.Context, *pulumirpc.RegisterPackageRequest,
+) (*pulumirpc.RegisterPackageResponse, error) {
+	return &pulumirpc.RegisterPackageResponse{Ref: "package-ref"}, nil
+}
+
 func (s *captureMonitor) RegisterResource(
 	_ context.Context, req *pulumirpc.RegisterResourceRequest,
 ) (*pulumirpc.RegisterResourceResponse, error) {

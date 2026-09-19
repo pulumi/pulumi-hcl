@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -1327,4 +1328,140 @@ terraform {
 }
 `), 0o644))
 	assert.Equal(t, "", link(), "a program declaring every package needs no instructions")
+}
+
+// A pulumi/-sourced required_providers entry that pins a version yields a
+// name-and-version descriptor, so the schema loader and the engine resolve the
+// pinned plugin rather than the newest installed one. An unpinned entry adds
+// nothing, and a local SDK descriptor for the same package wins over the pin.
+func TestAddPinnedPulumiPackages(t *testing.T) {
+	t.Parallel()
+
+	src := `
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "4.18.5"
+    }
+    aws = {
+      source = "pulumi/aws"
+    }
+  }
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+	_, pulumiPkgs, _ := collectRequirements(t.Context(), nil, config, "")
+
+	t.Run("pin", func(t *testing.T) {
+		t.Parallel()
+		descs := map[string]workspace.PackageDescriptor{}
+		require.NoError(t, addPinnedPulumiPackages(pulumiPkgs, descs))
+		v := semver.MustParse("4.18.5")
+		assert.Equal(t, map[string]workspace.PackageDescriptor{
+			"random": {PluginDescriptor: workspace.PluginDescriptor{
+				Name: "random", Kind: apitype.ResourcePlugin, Version: &v,
+			}},
+		}, descs)
+	})
+
+	t.Run("sdk wins", func(t *testing.T) {
+		t.Parallel()
+		v := semver.MustParse("4.19.0")
+		sdk := workspace.PackageDescriptor{PluginDescriptor: workspace.PluginDescriptor{
+			Name: "random", Kind: apitype.ResourcePlugin, Version: &v, PluginDownloadURL: "example.com",
+		}}
+		descs := map[string]workspace.PackageDescriptor{"random": sdk}
+		require.NoError(t, addPinnedPulumiPackages(pulumiPkgs, descs))
+		assert.Equal(t, map[string]workspace.PackageDescriptor{"random": sdk}, descs)
+	})
+
+	t.Run("invalid version", func(t *testing.T) {
+		t.Parallel()
+		err := addPinnedPulumiPackages(map[string]string{"random": "~> 4.0"}, map[string]workspace.PackageDescriptor{})
+		assert.EqualError(t, err,
+			`invalid version "~> 4.0" for Pulumi provider "random": Invalid character(s) found in major number "~> 4"`)
+	})
+}
+
+// The root's required_providers pin applies to the whole program. A module's
+// entry for the same provider must not clear it or replace it.
+func TestAddPinnedPulumiPackagesModuleDoesNotOverrideRootPin(t *testing.T) {
+	t.Parallel()
+
+	root := `
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "4.18.5"
+    }
+  }
+}
+
+resource "random_uuid" "root" {}
+
+module "child" {
+  source = "./child"
+}
+`
+	tests := []struct {
+		name  string
+		child string
+	}{
+		{
+			name: "module declares no version",
+			child: `
+terraform {
+  required_providers {
+    random = {
+      source = "pulumi/random"
+    }
+  }
+}
+
+resource "random_uuid" "child" {}
+`,
+		},
+		{
+			name: "module pins a different version",
+			child: `
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "4.19.0"
+    }
+  }
+}
+
+resource "random_uuid" "child" {}
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(root), 0o600))
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "child"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "child", "main.tf"), []byte(tt.child), 0o600))
+
+			config, diags := parser.NewParser().ParseDirectory(dir)
+			require.False(t, diags.HasErrors(), diags.Error())
+
+			descs, _, err := programPackages(t.Context(), modules.NewLoader(modules.LiveResolver(t.Context())), config, dir, nil)
+			require.NoError(t, err)
+
+			v := semver.MustParse("4.18.5")
+			assert.Equal(t, map[string]workspace.PackageDescriptor{
+				"random": {PluginDescriptor: workspace.PluginDescriptor{
+					Name: "random", Kind: apitype.ResourcePlugin, Version: &v,
+				}},
+			}, descs)
+		})
+	}
 }

@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
@@ -37,6 +38,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/pkgid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-hcl/pkg/potel"
 	"github.com/pulumi/pulumi-hcl/pkg/util"
@@ -57,16 +59,12 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 )
 
-// PackageRef is an opaque reference returned by RegisterPackage that routes
-// resource registrations to the correct parameterized provider instance.
-type PackageRef string
-
 // ResourceMonitor is the interface for registering resources with Pulumi.
 // This matches the resource monitor interface used by the Pulumi engine.
 type ResourceMonitor interface {
-	// RegisterPackage registers a parameterized package with the engine and returns
-	// a PackageRef that must be passed in subsequent resource registrations.
-	RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (PackageRef, error)
+	// RegisterPackage registers a package with the engine and returns the
+	// identity every request against that package carries.
+	RegisterPackage(ctx context.Context, pkg workspace.PackageDescriptor) (pkgid.Identity, error)
 
 	// RegisterResource registers a resource with Pulumi.
 	RegisterResource(ctx context.Context, req RegisterResourceRequest) (*RegisterResourceResponse, error)
@@ -184,9 +182,7 @@ type RegisterResourceRequest struct {
 	ReplaceOnChanges        []property.Glob // Property paths that if changed should force a replacement
 	ReplacementTrigger      property.Value  // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
-	Version                 string
-	PluginDownloadURL       string
-	PackageRef              PackageRef
+	Package                 pkgid.Identity
 	Hooks                   *ResourceHookBinding
 }
 
@@ -210,10 +206,8 @@ type ReadResourceRequest struct {
 	Parent                  urn.URN
 	Dependencies            []string
 	Provider                string
-	Version                 string
 	AdditionalSecretOutputs []string
-	PluginDownloadURL       string
-	PackageRef              PackageRef
+	Package                 pkgid.Identity
 }
 
 // ReadResourceResponse contains the result of reading a resource. ID echoes the
@@ -226,13 +220,11 @@ type ReadResourceResponse struct {
 
 // InvokeRequest contains the parameters for invoking a function.
 type InvokeRequest struct {
-	Token             string
-	Args              property.Map
-	Provider          string
-	Version           string
-	PluginDownloadURL string
-	PackageRef        PackageRef
-	DependsOn         []string
+	Token     string
+	Args      property.Map
+	Provider  string
+	Package   pkgid.Identity
+	DependsOn []string
 }
 
 // InvokeResponse contains the result of invoking a function.
@@ -244,9 +236,10 @@ type InvokeResponse struct {
 
 // CallRequest contains the parameters for invoking a method on a resource.
 type CallRequest struct {
-	Token      string
-	Args       property.Map
-	PackageRef PackageRef
+	Token    string
+	Args     property.Map
+	Provider string
+	Package  pkgid.Identity
 }
 
 // CallResponse contains the result of invoking a method on a resource.
@@ -393,6 +386,11 @@ type Engine struct {
 	// resourceOutputs maps resource keys to their output values.
 	resourceOutputs *util.SyncMap[graph.InstanceKey, cty.Value]
 
+	// callTargets maps a registered resource's node to the provider and
+	// package its instances registered against, so a method call on the
+	// resource runs where the resource lives.
+	callTargets *util.SyncMap[graph.NodeKey, callTarget]
+
 	// resourceInheritableOpts maps resource keys to the options that children can inherit.
 	resourceInheritableOpts *util.SyncMap[graph.InstanceKey, inheritableOpts]
 
@@ -417,11 +415,10 @@ type Engine struct {
 	// organization is the current organization name.
 	organization string
 
-	// packages maps parameterized package alias to its descriptor, for registration at startup.
+	// packages maps a Pulumi package name to its descriptor: local SDKs,
+	// resolved packages, and required_providers pins. It is the only source of
+	// pinned versions; blocks may override it (see packageDescriptor).
 	packages map[string]workspace.PackageDescriptor
-
-	// packageRefs maps parameterized package alias to its RegisterPackage ref.
-	packageRefs map[string]PackageRef
 
 	// dryRun indicates if this is a preview operation.
 	dryRun bool
@@ -637,6 +634,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		resmon:                  opts.ResourceMonitor,
 		resourceOutputs:         util.NewSyncMap[graph.InstanceKey, cty.Value](),
 		resourceInheritableOpts: util.NewSyncMap[graph.InstanceKey, inheritableOpts](),
+		callTargets:             util.NewSyncMap[graph.NodeKey, callTarget](),
 		defaultProviders:        util.NewSyncMap[string, string](),
 		stackOutputs:            make(map[string]property.Value),
 		projectName:             opts.ProjectName,
@@ -648,7 +646,6 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		pulumiConfig:            opts.Config,
 		tfvars:                  tfvars,
 		packages:                opts.Packages,
-		packageRefs:             make(map[string]PackageRef),
 		moduleLoader:            opts.ModuleLoader,
 		moduleInstances:         util.NewSyncMap[modulepath.Path, []*moduleInstance](),
 		parallel:                opts.Parallel,
@@ -674,14 +671,6 @@ func newEvalContext(absolutePaths bool, moduleDir, rootDir, rootModuleDir, stack
 func (e *Engine) Run(ctx context.Context) error {
 	ctx, span := potel.Start(ctx, "Engine.Run")
 	defer span.End()
-	for alias, pkg := range e.packages {
-		ref, err := e.resmon.RegisterPackage(ctx, pkg)
-		if err != nil {
-			return fmt.Errorf("registering package %s: %w", alias, err)
-		}
-		e.packageRefs[alias] = ref
-	}
-
 	// Register the root stack resource to get its URN for outputs
 	if err := e.registerStack(ctx); err != nil {
 		return fmt.Errorf("registering stack: %w", err)
@@ -1498,7 +1487,6 @@ func (e *Engine) registerProviderInContext(
 		logicalName = joinModuleName(modInst.Name, logicalName)
 	}
 
-	// Version comes from an explicit attribute, else required_providers.
 	var version string
 	if provider.Version != nil {
 		val, vdiags := provider.Version.Value(hclCtx)
@@ -1509,22 +1497,17 @@ func (e *Engine) registerProviderInContext(
 			version = val.AsString()
 		}
 	}
-	if version == "" && e.config.Terraform != nil {
-		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && req.IsPulumi() {
-			version = req.Version
-		}
+	ident, err := e.packageIdentity(ctx, resSchema.PackageReference, version, "")
+	if err != nil {
+		return err
 	}
 
 	req := RegisterResourceRequest{
-		Type:       typeToken,
-		Name:       logicalName,
-		Custom:     true,
-		Parent:     parentURN,
-		Version:    version,
-		PackageRef: e.packageRefs[pkgName],
-	}
-	if resSchema.PackageReference != nil {
-		req.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
+		Type:    typeToken,
+		Name:    logicalName,
+		Custom:  true,
+		Parent:  parentURN,
+		Package: ident,
 	}
 
 	if provider.EnvVarMappings != nil {
@@ -1692,10 +1675,12 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 	}
 
-	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs, timeouts)
+	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping,
+		resSchema, resourceInputs, timeouts)
 	if err != nil {
 		return err
 	}
+	e.callTargets.Set(node.Key, callTarget{provider: opts.Provider, pkg: opts.Package})
 	// The options are built from the unboxed inputs: terraform_data's
 	// {type, value} boxing would hide the value shapes that
 	// ignoreChangesApplies inspects.
@@ -1735,21 +1720,6 @@ func (e *Engine) registerResourceInstanceInContext(
 	// contribute no dependency (a destroy-time provisioner's self-reference,
 	// say) stay excluded — widening only amplifies what was collected.
 	opts.DependsOn = e.cellURNs.widen(opts.DependsOn)
-
-	if opts.Version == "" {
-		pkgName := packageNameFromResourceType(res.Type)
-		if e.config.Terraform != nil {
-			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.IsPulumi() {
-				opts.Version = req.Version
-			}
-		}
-	}
-
-	if opts.PluginDownloadURL == "" && resSchema.PackageReference != nil {
-		opts.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
-	}
-
-	opts.PackageRef = e.packageRefForResource(res.Type, resSchema)
 
 	resourceName, err := e.resourceInstanceName(res, instance, hclCtx, modInst)
 	if err != nil {
@@ -1982,8 +1952,9 @@ func (e *Engine) buildResourceOptions(
 	ctx context.Context, node *graph.Node, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
-	inputProps, outputProps []*schema.Property, inputs property.Map, timeouts cty.Value,
+	resSchema *schema.Resource, inputs property.Map, timeouts cty.Value,
 ) (*ResourceOptions, error) {
+	inputProps, outputProps := resSchema.InputProperties, resSchema.Properties
 	modInfo := node.ModuleInfo
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
@@ -2267,11 +2238,12 @@ func (e *Engine) buildResourceOptions(
 		}
 	}
 
+	var version, pluginDownloadURL string
 	if res.Version != nil {
 		val, diags := res.Version.Value(hclCtx)
 		val, _ = val.Unmark()
 		if !diags.HasErrors() && val.Type() == cty.String && !val.IsNull() && val.IsKnown() {
-			opts.Version = val.AsString()
+			version = val.AsString()
 		}
 	}
 
@@ -2279,8 +2251,12 @@ func (e *Engine) buildResourceOptions(
 		val, diags := res.PluginDownloadURL.Value(hclCtx)
 		val, _ = val.Unmark()
 		if !diags.HasErrors() && val.Type() == cty.String && !val.IsNull() && val.IsKnown() {
-			opts.PluginDownloadURL = val.AsString()
+			pluginDownloadURL = val.AsString()
 		}
+	}
+	opts.Package, err = e.packageIdentity(ctx, resSchema.PackageReference, version, pluginDownloadURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolving package for %s.%s: %w", res.Type, res.Name, err)
 	}
 
 	if key, ok := graph.TraversalKey(node.Key.Module, res.ResourceParent); ok {
@@ -3018,23 +2994,82 @@ func packageNameFromResourceType(token string) string {
 	return strings.SplitN(token, "_", 2)[0]
 }
 
-// packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
-func (e *Engine) packageRefForType(hclToken string) PackageRef {
-	return e.packageRefs[packageNameFromResourceType(hclToken)]
+// callTarget is where a resource's instances registered: the provider they
+// bound to and the package identity they carried.
+type callTarget struct {
+	provider string
+	pkg      pkgid.Identity
 }
 
-// packageRefForResource returns the registered package ref for a resource. An
-// extension resource's token lives in the base provider's namespace, but its
-// resolved schema names the extension package (e.g. "myext"), which is the one
-// registered as a parameterized package — using it lets the engine record the
-// resource's ExtensionRef.
-func (e *Engine) packageRefForResource(hclToken string, resSchema *schema.Resource) PackageRef {
-	if resSchema != nil && resSchema.PackageReference != nil {
-		if ref, ok := e.packageRefs[resSchema.PackageReference.Name()]; ok {
-			return ref
-		}
+// blockVersion evaluates a block's `version` option for schema resolution, in
+// the module's own context. An absent option, or a value unknown in that
+// context, pins nothing and the package descriptor's version applies.
+func blockVersion(expr hcl.Expression, hclCtx *hcl.EvalContext) (*semver.Version, error) {
+	if expr == nil {
+		return nil, nil
 	}
-	return e.packageRefForType(hclToken)
+	val, diags := expr.Value(hclCtx)
+	val, _ = val.Unmark()
+	if diags.HasErrors() || val.Type() != cty.String || val.IsNull() || !val.IsKnown() {
+		return nil, nil
+	}
+	v, err := semver.ParseTolerant(val.AsString())
+	if err != nil {
+		return nil, fmt.Errorf("invalid version %q: %w", val.AsString(), err)
+	}
+	return &v, nil
+}
+
+// packageDescriptor resolves the descriptor a block registers against: the
+// Packages entry for pkgName, overridden by the block's own `version` and
+// `plugin_download_url` options, with the schema's download URL as the last
+// fallback. A parameterized or extension entry is returned as is: its
+// parameterization already fixes the plugin, and a block cannot re-point it.
+func (e *Engine) packageDescriptor(
+	pkgName, version, pluginDownloadURL, schemaDownloadURL string,
+) (workspace.PackageDescriptor, error) {
+	desc, ok := e.packages[pkgName]
+	if ok && (desc.Parameterization != nil || desc.ExtensionParameterization != nil) {
+		return desc, nil
+	}
+	if !ok {
+		desc.Name = pkgName
+	}
+	if version != "" {
+		v, err := semver.ParseTolerant(version)
+		if err != nil {
+			return desc, fmt.Errorf("invalid version %q for package %q: %w", version, pkgName, err)
+		}
+		desc.Version = &v
+	}
+	if pluginDownloadURL != "" {
+		desc.PluginDownloadURL = pluginDownloadURL
+	} else if desc.PluginDownloadURL == "" {
+		desc.PluginDownloadURL = schemaDownloadURL
+	}
+	return desc, nil
+}
+
+// packageIdentity resolves and registers the package that serves the schema
+// ref names, returning the identity the block's requests carry. The package is
+// the schema's own: an extension resource's token lives in the base provider's
+// namespace, but its schema names the extension package, which is the one
+// registered with a parameterization, and using it lets the engine record the
+// resource's ExtensionRef. A synthetic schema (terraform_data, a stack
+// reference's builtin) names no package; the engine's builtin provider serves
+// it, so its requests carry the zero identity. version and pluginDownloadURL
+// are the block's own options, empty when the block sets none.
+func (e *Engine) packageIdentity(
+	ctx context.Context, ref schema.PackageReference, version, pluginDownloadURL string,
+) (pkgid.Identity, error) {
+	if ref == nil {
+		return pkgid.Identity{}, nil
+	}
+	desc, err := e.packageDescriptor(ref.Name(), version, pluginDownloadURL, ref.PluginDownloadURL())
+	if err != nil {
+		return pkgid.Identity{}, err
+	}
+	return e.resmon.RegisterPackage(ctx, desc)
 }
 
 // providerPackageName maps a provider's required_providers local name to its
@@ -3436,9 +3471,7 @@ type ResourceOptions struct {
 	ReplaceOnChanges        []property.Glob // Property paths that if changed should force a replacement
 	ReplacementTrigger      property.Value  // Value whose change triggers replacement
 	EnvVarMappings          map[string]string
-	Version                 string
-	PluginDownloadURL       string
-	PackageRef              PackageRef
+	Package                 pkgid.Identity
 	Hooks                   *ResourceHookBinding
 
 	// PreventDestroy is enforced by the destroy dispatcher hook, not the
@@ -3493,9 +3526,7 @@ func (e *Engine) registerResource(
 		ReplaceOnChanges:        opts.ReplaceOnChanges,
 		ReplacementTrigger:      opts.ReplacementTrigger,
 		EnvVarMappings:          opts.EnvVarMappings,
-		Version:                 opts.Version,
-		PluginDownloadURL:       opts.PluginDownloadURL,
-		PackageRef:              opts.PackageRef,
+		Package:                 opts.Package,
 		Hooks:                   opts.Hooks,
 	})
 	if err != nil {
@@ -3534,10 +3565,8 @@ func (e *Engine) readResource(
 		Parent:                  opts.Parent,
 		Dependencies:            opts.DependsOn,
 		Provider:                opts.Provider,
-		Version:                 opts.Version,
 		AdditionalSecretOutputs: opts.AdditionalSecretOutputs,
-		PluginDownloadURL:       opts.PluginDownloadURL,
-		PackageRef:              opts.PackageRef,
+		Package:                 opts.Package,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err
@@ -3614,9 +3643,8 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	invokeReq := InvokeRequest{
-		Token:      funcSchema.Token,
-		Args:       inputs,
-		PackageRef: e.packageRefForType(ds.Type),
+		Token: funcSchema.Token,
+		Args:  inputs,
 	}
 
 	if ds.Provider != nil {
@@ -3644,12 +3672,24 @@ func (e *Engine) invokeDataSourceOnce(
 		}
 	}
 
+	var version, pluginDownloadURL string
+	if ds.Version != nil {
+		val, valDiags := ds.Version.Value(hclCtx)
+		if !valDiags.HasErrors() && val.Type() == cty.String {
+			version = ctyAsString(val)
+		}
+	}
 	if ds.PluginDownloadURL != nil {
 		val, valDiags := ds.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
-			invokeReq.PluginDownloadURL = ctyAsString(val)
+			pluginDownloadURL = ctyAsString(val)
 		}
 	}
+	ident, err := e.packageIdentity(ctx, funcSchema.PackageReference, version, pluginDownloadURL)
+	if err != nil {
+		return cty.NilVal, fmt.Errorf("resolving package for data %s.%s: %w", ds.Type, ds.Name, err)
+	}
+	invokeReq.Package = ident
 
 	// depends_on marks the outputs with every registered instance URN of the
 	// target block, keyed or not — dependency metadata is resource-wide (see
@@ -3792,16 +3832,17 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 
 	// Find the resource or provider being called by logical name
 	var resKey string
-	var resType string
 	var resSchema *schema.Resource
 	var isProviderResource bool // true for resource "pulumi_providers_*" blocks
 
 	for k, res := range e.config.Resources {
 		if res.Name == call.ResourceName {
 			resKey = k
-			resType = res.Type
-			var err error
-			resSchema, err = e.resolver.ResolveResource(ctx, res.Type)
+			version, err := blockVersion(res.Version, e.evaluator.Context().HCLContext())
+			if err != nil {
+				return fmt.Errorf("resource %s.%s: %w", res.Type, res.Name, err)
+			}
+			resSchema, err = e.resolver.ResolveResourceAt(ctx, res.Type, version)
 			if err != nil {
 				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 					return diag
@@ -3826,7 +3867,6 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		if matched != nil {
 			resKey = matched.Key()
 			providerToken := "pulumi_providers_" + e.providerPackageName(matched.Name)
-			resType = providerToken
 			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), providerToken)
 			if err != nil {
 				return fmt.Errorf("resolving provider package for call: %w", err)
@@ -3904,10 +3944,21 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		return fmt.Errorf("evaluating call arguments for %s.%s: %s", call.ResourceName, call.MethodName, diags.Error())
 	}
 
+	// A provider block registers no call target; its methods run on the
+	// provider's own package.
+	target, ok := e.callTargets.Get(graph.NodeKey{ID: resKey})
+	if !ok {
+		var err error
+		target.pkg, err = e.packageIdentity(ctx, method.Function.PackageReference, "", "")
+		if err != nil {
+			return fmt.Errorf("resolving package for %s.%s: %w", call.ResourceName, call.MethodName, err)
+		}
+	}
 	ret, err := e.callMethod(ctx, CallRequest{
-		Token:      method.Function.Token,
-		Args:       userArgs.Set("__self__", selfRef),
-		PackageRef: e.packageRefForType(resType),
+		Token:    method.Function.Token,
+		Args:     userArgs.Set("__self__", selfRef),
+		Provider: target.provider,
+		Package:  target.pkg,
 	})
 	if err != nil {
 		return fmt.Errorf("calling method %s.%s: %w", call.ResourceName, call.MethodName, err)
@@ -4023,10 +4074,14 @@ func (e *Engine) providerFunctionImpl(
 		if e.dryRun && property.New(args).HasComputed() {
 			return property.Map{}, nil
 		}
+		ident, err := e.packageIdentity(ctx, fnSchema.PackageReference, "", "")
+		if err != nil {
+			return property.Map{}, err
+		}
 		req := InvokeRequest{
-			Token:      fnSchema.Token,
-			Args:       args,
-			PackageRef: e.packageRefs[e.providerPackageName(providerName)],
+			Token:   fnSchema.Token,
+			Args:    args,
+			Package: ident,
 		}
 		if modInfo != nil {
 			if ref := e.resolvePassThroughProvider(modInfo, providerName); ref != "" {

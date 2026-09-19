@@ -34,6 +34,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -208,10 +209,16 @@ output emptyInner {
 
 		mock := testConvertedPCL(t, pclSource, testSchema)
 
+		// The mock dedups registrations, so this is the identity the engine got.
+		testPkg, err := mock.RegisterPackage(t.Context(), workspace.PackageDescriptor{
+			PluginDescriptor: workspace.PluginDescriptor{Name: "test"},
+		})
+		require.NoError(t, err)
 		assert.ElementsMatch(t, mock.InvokedFunctions, []hclrun.InvokeRequest{
 			{
-				Token: "test:index:blockInvoke",
-				Args:  property.Map{},
+				Token:   "test:index:blockInvoke",
+				Args:    property.Map{},
+				Package: testPkg,
 			},
 			{
 				Token: "test:index:blockInvoke",
@@ -220,9 +227,11 @@ output emptyInner {
 						property.New(property.Map{}),
 					}),
 				}),
+				Package: testPkg,
 			},
 			{
-				Token: "test:index:blockInvoke",
+				Token:   "test:index:blockInvoke",
+				Package: testPkg,
 				Args: property.NewMap(map[string]property.Value{
 					"outer": property.New([]property.Value{
 						property.New(map[string]property.Value{

@@ -377,7 +377,11 @@ func (e *Engine) expandResourceCell(
 	}
 	evalCtx, parentURN, modInst := cellEvalState(e, mi)
 
-	resSchema, err := e.resolver.ResolveResource(ctx, res.Type)
+	version, err := blockVersion(res.Version, evalCtx.HCLContext())
+	if err != nil {
+		return fmt.Errorf("resource %s.%s: %w", res.Type, res.Name, err)
+	}
+	resSchema, err := e.resolver.ResolveResourceAt(ctx, res.Type, version)
 	if err != nil {
 		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
 			return diag
@@ -459,7 +463,11 @@ func (e *Engine) expandDataCell(
 	}
 	evalCtx, _, _ := cellEvalState(e, mi)
 
-	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
+	version, err := blockVersion(ds.Version, evalCtx.HCLContext())
+	if err != nil {
+		return fmt.Errorf("data %s.%s: %w", ds.Type, ds.Name, err)
+	}
+	funcSchema, err := e.resolver.ResolveFunctionAt(ctx, ds.Type, version)
 	if err != nil {
 		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
 			return diag

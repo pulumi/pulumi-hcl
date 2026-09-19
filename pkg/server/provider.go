@@ -25,6 +25,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/pkgid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -59,22 +60,9 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 	}
 	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
 
-	// A component's own bridged providers carry parameterization descriptors in
-	// its sdks folder, mirroring how `Run` loads them for a root program.
-	sdkInfos, err := readSDKInfos(modulePath)
+	comps, resolvedVersion, err := localComponents(ctx, loader, modulePath)
 	if err != nil {
-		return nil, fmt.Errorf("reading parameterization: %w", err)
-	}
-	paramDescriptors := sdkDescriptors(sdkInfos)
-
-	comps, resolvedVersion, err := loadComponents(ctx, loader, modulePath, "")
-	if err != nil {
-		return nil, fmt.Errorf("loading module: %w", err)
-	}
-	// The sdks folder is the package's shared descriptor pool; every component
-	// draws from it.
-	for i := range comps {
-		comps[i].packages = paramDescriptors
+		return nil, err
 	}
 	pkgName, rootToken, version, err := packageIdentity(comps, filepath.Base(modulePath), false, resolvedVersion)
 	if err != nil {
@@ -100,6 +88,30 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 		name:       pkgName,
 	}
 	return p.RawServer(pkgName, version.String(), m.asProvider())(nil)
+}
+
+// localComponents loads the components of the module package at modulePath
+// and resolves the packages each registers against: the package's sdks folder
+// is the shared descriptor pool, and each component's own required_providers
+// pins fill in what the folder does not cover, as Run does for a root program.
+func localComponents(
+	ctx context.Context, loader *modules.Loader, modulePath string,
+) ([]loadedComponent, string, error) {
+	sdkInfos, err := readSDKInfos(modulePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("reading parameterization: %w", err)
+	}
+	comps, resolvedVersion, err := loadComponents(ctx, loader, modulePath, "")
+	if err != nil {
+		return nil, "", fmt.Errorf("loading module: %w", err)
+	}
+	for i := range comps {
+		comps[i].packages, _, err = programPackages(ctx, loader, comps[i].loaded.Config, comps[i].loaded.SourcePath, sdkInfos)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return comps, resolvedVersion, nil
 }
 
 // moduleIdentity derives a module's component token and version. The terraform
@@ -169,6 +181,7 @@ func (a moduleLoaderAdapter) LoadModule(
 // actual component resource registration expected by the Pulumi engine.
 type constructResourceMonitor struct {
 	client          pulumirpc.ResourceMonitorClient
+	packages        *pkgid.Registrar
 	engine          pulumirpc.EngineClient
 	ctx             context.Context
 	parentURN       string
@@ -293,7 +306,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		return nil, fmt.Errorf("marshaling ignoreChanges: %w", err)
 	}
 
-	resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
+	rpcReq := &pulumirpc.RegisterResourceRequest{
 		Type:                req.Type,
 		Name:                name,
 		Custom:              req.Custom,
@@ -305,14 +318,13 @@ func (m *constructResourceMonitor) RegisterResource(
 		Protect:             &req.Protect,
 		DeleteBeforeReplace: req.DeleteBeforeReplace,
 		IgnoreChanges:       ignoreChanges,
-		PackageRef:          string(req.PackageRef),
-		Version:             req.Version,
-		PluginDownloadURL:   req.PluginDownloadURL,
 		Hooks:               hooksToProto(req.Hooks),
 		AcceptSecrets:       true,
 		AcceptResources:     true,
 		AcceptsByteString:   true,
-	})
+	}
+	req.Package.ApplyRegisterResource(rpcReq)
+	resp, err := m.client.RegisterResource(ctx, rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +362,7 @@ func (m *constructResourceMonitor) ReadResource(
 		parent = m.componentURN
 	}
 
-	resp, err := m.client.ReadResource(ctx, &pulumirpc.ReadResourceRequest{
+	rpcReq := &pulumirpc.ReadResourceRequest{
 		Id:                      req.ID,
 		Type:                    req.Type,
 		Name:                    m.componentName + "-" + req.Name,
@@ -358,14 +370,13 @@ func (m *constructResourceMonitor) ReadResource(
 		Properties:              properties,
 		Dependencies:            req.Dependencies,
 		Provider:                req.Provider,
-		Version:                 req.Version,
 		AdditionalSecretOutputs: req.AdditionalSecretOutputs,
-		PluginDownloadURL:       req.PluginDownloadURL,
-		PackageRef:              string(req.PackageRef),
 		AcceptSecrets:           true,
 		AcceptResources:         true,
 		AcceptsByteString:       true,
-	})
+	}
+	req.Package.ApplyReadResource(rpcReq)
+	resp, err := m.client.ReadResource(ctx, rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -423,17 +434,16 @@ func (m *constructResourceMonitor) Invoke(
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
 
-	resp, err := m.client.Invoke(ctx, &pulumirpc.ResourceInvokeRequest{
+	rpcReq := &pulumirpc.ResourceInvokeRequest{
 		Tok:               req.Token,
 		Args:              argsStruct,
 		Provider:          req.Provider,
-		Version:           req.Version,
-		PluginDownloadURL: req.PluginDownloadURL,
-		PackageRef:        string(req.PackageRef),
 		AcceptResources:   true,
 		AcceptsByteString: true,
 		DependsOn:         req.DependsOn,
-	})
+	}
+	req.Package.ApplyInvoke(rpcReq)
+	resp, err := m.client.Invoke(ctx, rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -465,12 +475,14 @@ func (m *constructResourceMonitor) Call(
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
 
-	resp, err := m.client.Call(ctx, &pulumirpc.ResourceCallRequest{
+	rpcReq := &pulumirpc.ResourceCallRequest{
 		Tok:               req.Token,
 		Args:              argsStruct,
-		PackageRef:        string(req.PackageRef),
+		Provider:          req.Provider,
 		AcceptsByteString: true,
-	})
+	}
+	req.Package.ApplyCall(rpcReq)
+	resp, err := m.client.Call(ctx, rpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("calling method: %w", err)
 	}
@@ -499,8 +511,8 @@ func (m *constructResourceMonitor) CheckPulumiVersion(ctx context.Context, versi
 func (m *constructResourceMonitor) RegisterPackage(
 	ctx context.Context,
 	pkg workspace.PackageDescriptor,
-) (run.PackageRef, error) {
-	return registerPackage(ctx, m.client, pkg)
+) (pkgid.Identity, error) {
+	return m.packages.Identity(ctx, pkg)
 }
 
 // RegisterResourceHook hosts the callback on the provider-owned callback server
