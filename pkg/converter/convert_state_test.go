@@ -1084,7 +1084,7 @@ func TestConvertStateViaMapper(t *testing.T) {
 			convert.MapperRegistration(convert.NewMapperServer(ecosystemAssertingMapper{t}))(srv)
 			loader := schemaloader.New(t, schema.PackageSpec{
 				Name:    "random",
-				Version: "1.0.0",
+				Version: "6.0.0",
 				Meta:    &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
 				Resources: map[string]schema.ResourceSpec{
 					"random:index/randomUuid:RandomUuid": {ObjectTypeSpec: schema.ObjectTypeSpec{
