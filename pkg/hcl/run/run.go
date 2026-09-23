@@ -417,7 +417,9 @@ type Engine struct {
 	// organization is the current organization name.
 	organization string
 
-	// packages maps parameterized package alias to its descriptor, for registration at startup.
+	// packages maps a Pulumi package name to its descriptor: local SDKs and
+	// required_providers pins. It is the source of the version a block's
+	// requests carry (see pinnedVersion).
 	packages map[string]workspace.PackageDescriptor
 
 	// packageRefs maps parameterized package alias to its RegisterPackage ref.
@@ -675,6 +677,11 @@ func (e *Engine) Run(ctx context.Context) error {
 	ctx, span := potel.Start(ctx, "Engine.Run")
 	defer span.End()
 	for alias, pkg := range e.packages {
+		// A bare pin names no plugin beyond its version, which every request
+		// carries; a ref would displace the schema's download URL.
+		if pkg.Parameterization == nil && pkg.ExtensionParameterization == nil && pkg.PluginDownloadURL == "" {
+			continue
+		}
 		ref, err := e.resmon.RegisterPackage(ctx, pkg)
 		if err != nil {
 			return fmt.Errorf("registering package %s: %w", alias, err)
@@ -1509,10 +1516,8 @@ func (e *Engine) registerProviderInContext(
 			version = val.AsString()
 		}
 	}
-	if version == "" && e.config.Terraform != nil {
-		if req, ok := e.config.Terraform.RequiredProviders[provider.Name]; ok && req.IsPulumi() {
-			version = req.Version
-		}
+	if version == "" {
+		version = e.pinnedVersion(provider.Name)
 	}
 
 	req := RegisterResourceRequest{
@@ -1737,12 +1742,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	opts.DependsOn = e.cellURNs.widen(opts.DependsOn)
 
 	if opts.Version == "" {
-		pkgName := packageNameFromResourceType(res.Type)
-		if e.config.Terraform != nil {
-			if req, ok := e.config.Terraform.RequiredProviders[pkgName]; ok && req.IsPulumi() {
-				opts.Version = req.Version
-			}
-		}
+		opts.Version = e.pinnedVersion(packageNameFromResourceType(res.Type))
 	}
 
 	if opts.PluginDownloadURL == "" && resSchema.PackageReference != nil {
@@ -3018,6 +3018,18 @@ func packageNameFromResourceType(token string) string {
 	return strings.SplitN(token, "_", 2)[0]
 }
 
+// pinnedVersion returns the version the program pins for the provider with
+// the required_providers local name local, or "" when it pins none. The pin
+// reaches the schema loader through the same package map, so a block is type
+// checked against the version its requests carry.
+func (e *Engine) pinnedVersion(local string) string {
+	desc, ok := e.packages[e.providerPackageName(local)]
+	if !ok || desc.Version == nil {
+		return ""
+	}
+	return desc.Version.String()
+}
+
 // packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
 func (e *Engine) packageRefForType(hclToken string) PackageRef {
 	return e.packageRefs[packageNameFromResourceType(hclToken)]
@@ -3616,6 +3628,7 @@ func (e *Engine) invokeDataSourceOnce(
 	invokeReq := InvokeRequest{
 		Token:      funcSchema.Token,
 		Args:       inputs,
+		Version:    e.pinnedVersion(packageNameFromResourceType(ds.Type)),
 		PackageRef: e.packageRefForType(ds.Type),
 	}
 
@@ -4026,6 +4039,7 @@ func (e *Engine) providerFunctionImpl(
 		req := InvokeRequest{
 			Token:      fnSchema.Token,
 			Args:       args,
+			Version:    e.pinnedVersion(providerName),
 			PackageRef: e.packageRefs[e.providerPackageName(providerName)],
 		}
 		if modInfo != nil {

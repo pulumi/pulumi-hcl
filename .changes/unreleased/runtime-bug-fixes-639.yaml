@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Type check against the `required_providers` version of a pinned Pulumi provider instead of the newest installed plugin
+time: 2026-09-14T15:44:54.285741+02:00
+custom:
+    Component: runtime
+    PR: "639"

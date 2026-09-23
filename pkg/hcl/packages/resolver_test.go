@@ -15,12 +15,15 @@
 package packages
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"testing"
 
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,4 +116,55 @@ func TestResolverProviderFunctions_UnknownProvider(t *testing.T) {
 
 	_, err := r.ProviderFunctions(t.Context(), "unknown")
 	require.Error(t, err)
+}
+
+type staticInfoSource struct{ info *tfbridge.ProviderInfo }
+
+func (s staticInfoSource) GetProviderInfo(
+	context.Context, string, *workspace.PackageDescriptor,
+) (*tfbridge.ProviderInfo, error) {
+	return s.info, nil
+}
+
+// The bridge mapping comes from whichever plugin the engine's mapper picks,
+// while the schema is pinned by required_providers. A TF type the mapping
+// knows but the pinned schema lacks must resolve to not-found, never to a nil
+// schema without an error.
+func TestResolver_MappedTokenMissingFromSchema(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name:      "random",
+		Meta:      &schema.MetadataSpec{ModuleFormat: `(.*)(?:/[^/]*)`},
+		Resources: map[string]schema.ResourceSpec{"random:index/uuid:Uuid": {}},
+		Functions: map[string]schema.FunctionSpec{"random:index/getUuid:getUuid": {}},
+	})
+	info := &tfbridge.ProviderInfo{
+		Name: "random",
+		Resources: map[string]*tfbridge.ResourceInfo{
+			"random_uuid4": {Tok: "random:index/randomUuid4:RandomUuid4"},
+		},
+		DataSources: map[string]*tfbridge.DataSourceInfo{
+			"random_uuid4": {Tok: "random:index/getRandomUuid4:getRandomUuid4"},
+		},
+	}
+	r := NewResolver(loader, staticInfoSource{info}, nil, []string{"random"})
+
+	res, err := r.ResolveResource(t.Context(), "random_uuid4")
+	assert.Nil(t, res)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	fn, err := r.ResolveFunction(t.Context(), "random_uuid4")
+	assert.Nil(t, fn)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// A mapping whose package the loader cannot serve at all is not-found too.
+	info.Name = "missing"
+	res, err = r.ResolveResource(t.Context(), "random_uuid4")
+	assert.Nil(t, res)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	fn, err = r.ResolveFunction(t.Context(), "random_uuid4")
+	assert.Nil(t, fn)
+	assert.ErrorIs(t, err, ErrNotFound)
 }

@@ -16,6 +16,7 @@ package packages
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
@@ -257,8 +258,14 @@ func (r *Resolver) loadResourceByToken(ctx context.Context, pkgName, tok string)
 	if err != nil {
 		return nil, err
 	}
-	res, _, err := pkg.Resources().Get(tok)
-	return res, err
+	res, ok, err := pkg.Resources().Get(tok)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: %s is not in the %s schema", ErrNotFound, tok, pkgName)
+	}
+	return res, nil
 }
 
 // loadFunctionByToken loads the Pulumi schema for an exact Pulumi function token.
@@ -267,6 +274,12 @@ func (r *Resolver) loadFunctionByToken(ctx context.Context, pkgName, tok string)
 	if err != nil {
 		return nil, err
 	}
-	fn, _, err := pkg.Functions().Get(tok)
-	return fn, err
+	fn, ok, err := pkg.Functions().Get(tok)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: %s is not in the %s schema", ErrNotFound, tok, pkgName)
+	}
+	return fn, nil
 }

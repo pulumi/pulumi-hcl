@@ -508,6 +508,39 @@ func sdkDescriptors(infos map[string]sdkInfo) map[string]workspace.PackageDescri
 	return descs
 }
 
+// programPackages returns the descriptors the blocks of config, and of the
+// modules it loads, register against: the local SDK descriptors plus a pin for
+// every pulumi/-sourced required_providers entry no SDK covers. The same map
+// drives the schema loader and the engine, so type checking and registration
+// resolve the same plugin version. It also returns the non-Pulumi provider
+// requirements for the missing-SDK check.
+func programPackages(
+	ctx context.Context, loader *modules.Loader, config *ast.Config, dir string, sdkInfos map[string]sdkInfo,
+) (map[string]workspace.PackageDescriptor, map[string]*tfRequirement) {
+	descs := sdkDescriptors(sdkInfos)
+	tfReqs, pulumiPkgs, _ := collectRequirements(ctx, loader, config, dir)
+	addPinnedPulumiPackages(pulumiPkgs, descs)
+	return descs, tfReqs
+}
+
+// addPinnedPulumiPackages adds a name-and-version descriptor to descs for
+// every Pulumi package that pulumiPkgs (see collectRequirements) pins to a
+// version and that no local SDK already describes.
+func addPinnedPulumiPackages(pulumiPkgs map[string]string, descs map[string]workspace.PackageDescriptor) {
+	for name, version := range pulumiPkgs {
+		if _, ok := descs[name]; ok || version == "" {
+			continue
+		}
+		v, err := semver.ParseTolerant(version)
+		contract.AssertNoErrorf(err, "the parser rejects a Pulumi provider version that is not semver")
+		descs[name] = workspace.PackageDescriptor{PluginDescriptor: workspace.PluginDescriptor{
+			Name:    name,
+			Kind:    apitype.ResourcePlugin,
+			Version: &v,
+		}}
+	}
+}
+
 // missingNonPulumiSDKs returns the sorted non-Pulumi provider sources used
 // by config (and its transitively-loaded modules) that no on-disk SDK
 // satisfies. Empty workDir skips module recursion.
@@ -515,6 +548,10 @@ func missingNonPulumiSDKs(
 	ctx context.Context, config *ast.Config, sdks map[string]sdkInfo, workDir string,
 ) []string {
 	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
+	return missingSDKs(tfReqs, sdks)
+}
+
+func missingSDKs(tfReqs map[string]*tfRequirement, sdks map[string]sdkInfo) []string {
 	var missing []string
 	for _, source := range sortedKeys(tfReqs) {
 		if _, _, ok := descriptorForSource(source, sdks); !ok {
@@ -598,7 +635,12 @@ func collectRequirementsRec(
 			return
 		}
 		if req.IsPulumi() {
-			pulumi[packageName(alias, req.Source)] = req.Version
+			// The root is walked first, so its pin wins; a module's pin fills
+			// in only when no earlier declaration named a version.
+			name := packageName(alias, req.Source)
+			if cur, seen := pulumi[name]; !seen || cur == "" {
+				pulumi[name] = req.Version
+			}
 			return
 		}
 		source := tfProviderSource(alias, req)
@@ -737,9 +779,9 @@ func (host *LanguageHost) Run(
 	if err != nil {
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
-	paramDescriptors := sdkDescriptors(sdkInfos)
-
-	if missing := missingNonPulumiSDKs(ctx, config, sdkInfos, req.Info.ProgramDirectory); len(missing) > 0 {
+	paramDescriptors, tfReqs := programPackages(
+		ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, req.Info.ProgramDirectory, sdkInfos)
+	if missing := missingSDKs(tfReqs, sdkInfos); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(
 				"missing local SDK for non-Pulumi provider(s) %v; run `pulumi install` to fetch them",

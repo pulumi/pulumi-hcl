@@ -59,22 +59,9 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 	}
 	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
 
-	// A component's own bridged providers carry parameterization descriptors in
-	// its sdks folder, mirroring how `Run` loads them for a root program.
-	sdkInfos, err := readSDKInfos(modulePath)
+	comps, resolvedVersion, err := localComponents(ctx, loader, modulePath)
 	if err != nil {
-		return nil, fmt.Errorf("reading parameterization: %w", err)
-	}
-	paramDescriptors := sdkDescriptors(sdkInfos)
-
-	comps, resolvedVersion, err := loadComponents(ctx, loader, modulePath, "")
-	if err != nil {
-		return nil, fmt.Errorf("loading module: %w", err)
-	}
-	// The sdks folder is the package's shared descriptor pool; every component
-	// draws from it.
-	for i := range comps {
-		comps[i].packages = paramDescriptors
+		return nil, err
 	}
 	pkgName, rootToken, version, err := packageIdentity(comps, filepath.Base(modulePath), false, resolvedVersion)
 	if err != nil {
@@ -100,6 +87,27 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 		name:       pkgName,
 	}
 	return p.RawServer(pkgName, version.String(), m.asProvider())(nil)
+}
+
+// localComponents loads the components of the module package at modulePath
+// and resolves the packages each registers against: the package's sdks folder
+// is the shared descriptor pool, and each component's own required_providers
+// pins fill in what the folder does not cover, as Run does for a root program.
+func localComponents(
+	ctx context.Context, loader *modules.Loader, modulePath string,
+) ([]loadedComponent, string, error) {
+	sdkInfos, err := readSDKInfos(modulePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("reading parameterization: %w", err)
+	}
+	comps, resolvedVersion, err := loadComponents(ctx, loader, modulePath, "")
+	if err != nil {
+		return nil, "", fmt.Errorf("loading module: %w", err)
+	}
+	for i := range comps {
+		comps[i].packages, _ = programPackages(ctx, loader, comps[i].loaded.Config, comps[i].loaded.SourcePath, sdkInfos)
+	}
+	return comps, resolvedVersion, nil
 }
 
 // moduleIdentity derives a module's component token and version. The terraform

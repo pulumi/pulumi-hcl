@@ -1328,3 +1328,51 @@ terraform {
 `), 0o644))
 	assert.Equal(t, "", link(), "a program declaring every package needs no instructions")
 }
+
+// A pulumi/-sourced required_providers entry that pins a version yields a
+// name-and-version descriptor, so the schema loader and the engine resolve the
+// pinned plugin rather than the newest installed one. An unpinned entry adds
+// nothing, and a local SDK descriptor for the same package wins over the pin.
+func TestAddPinnedPulumiPackages(t *testing.T) {
+	t.Parallel()
+
+	src := `
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "4.18.5"
+    }
+    aws = {
+      source = "pulumi/aws"
+    }
+  }
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+	_, pulumiPkgs, _ := collectRequirements(t.Context(), nil, config, "")
+
+	t.Run("pin", func(t *testing.T) {
+		t.Parallel()
+		descs := map[string]workspace.PackageDescriptor{}
+		addPinnedPulumiPackages(pulumiPkgs, descs)
+		v := semver.MustParse("4.18.5")
+		assert.Equal(t, map[string]workspace.PackageDescriptor{
+			"random": {PluginDescriptor: workspace.PluginDescriptor{
+				Name: "random", Kind: apitype.ResourcePlugin, Version: &v,
+			}},
+		}, descs)
+	})
+
+	t.Run("sdk wins", func(t *testing.T) {
+		t.Parallel()
+		v := semver.MustParse("4.19.0")
+		sdk := workspace.PackageDescriptor{PluginDescriptor: workspace.PluginDescriptor{
+			Name: "random", Kind: apitype.ResourcePlugin, Version: &v, PluginDownloadURL: "example.com",
+		}}
+		descs := map[string]workspace.PackageDescriptor{"random": sdk}
+		addPinnedPulumiPackages(pulumiPkgs, descs)
+		assert.Equal(t, map[string]workspace.PackageDescriptor{"random": sdk}, descs)
+	})
+}
