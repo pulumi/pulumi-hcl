@@ -156,6 +156,15 @@ resource "aws_instance" "web" {
 
 The first label is the resource type (Terraform-style, e.g. `aws_instance`). The second label is the logical name. The body contains the resource's input properties.
 
+For a Pulumi provider, the type is `<package>_<module>_<member>`, built from the resource's Pulumi type token. The module
+is the one the package schema defines: for bridged providers such as `pulumi/aws`, `aws:ec2/vpc:Vpc` has module `ec2`.
+The module and member become `snake_case`, `/` and `.` in the module become `_`, and the `index` module is omitted. So
+`aws:ec2/vpc:Vpc` is `aws_ec2_vpc`, `kubernetes:core/v1:ConfigMap` is `kubernetes_core_v1_config_map` and
+`kubernetes:helm.sh/v3:Release` is `kubernetes_helm_sh_v3_release`. Data sources also drop the function's `get` prefix. A
+type written with a `.`, such as `kubernetes_helm.sh_v3_release`, still declares the resource but cannot be referenced,
+because a reference splits at every `.`. Both spellings name the same Pulumi type, so switching to the underscore spelling
+keeps the resource's URN.
+
 ### Meta-Arguments
 
 | Argument     | Type       | Description                                                |

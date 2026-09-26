@@ -42,25 +42,39 @@ func TestNearestHCLToken(t *testing.T) {
 			"aws:ec2/getVpc:getVpc":                             {},
 			"aws:index/getAvailabilityZone:getAvailabilityZone": {},
 		},
+	}, schema.PackageSpec{
+		Name: "kubernetes",
+		Resources: map[string]schema.ResourceSpec{
+			"kubernetes:helm.sh/v3:Release":                       {},
+			"kubernetes:networking.k8s.io/v1:Ingress":             {},
+			"kubernetes:rbac.authorization.k8s.io/v1:ClusterRole": {},
+		},
 	})
-	pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: "aws"})
-	require.NoError(t, err)
 
 	tests := []struct {
 		name       string
+		pkg        string
 		hclToken   string
 		isFunction bool
 		want       string
 	}{
-		{"one-character typo on resource", "aws_ec2_vpd", false, "aws_ec2_vpc"},
-		{"camelCase expansion", "aws_lb_load_balancr", false, "aws_lb_load_balancer"},
-		{"unrelated returns empty", "aws_completely_unrelated_thing_xyz", false, ""},
-		{"function typo strips get", "aws_availability_zonee", true, "aws_availability_zone"},
+		{"one-character typo on resource", "aws", "aws_ec2_vpd", false, "aws_ec2_vpc"},
+		{"camelCase expansion", "aws", "aws_lb_load_balancr", false, "aws_lb_load_balancer"},
+		{"unrelated returns empty", "aws", "aws_completely_unrelated_thing_xyz", false, ""},
+		{"function typo strips get", "aws", "aws_availability_zonee", true, "aws_availability_zone"},
+		{"dotted module suggests underscores", "kubernetes", "kubernetes_helm_sh_v3_relase", false, "kubernetes_helm_sh_v3_release"},
+		{"dotted typo suggests underscores", "kubernetes", "kubernetes_helm.sh_v3_relase", false, "kubernetes_helm_sh_v3_release"},
+		{
+			"multi-dot typo suggests underscores", "kubernetes", "kubernetes_rbac.authorization.k8s.io_v1_cluster_rol", false,
+			"kubernetes_rbac_authorization_k8s_io_v1_cluster_role",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: tt.pkg})
+			require.NoError(t, err)
 			got := nearestHCLToken(pkg, tt.hclToken, tt.isFunction)
 			require.Equal(t, tt.want, got)
 		})
@@ -82,25 +96,39 @@ func TestPulumiTokenToHCLForm(t *testing.T) {
 				"aws:index/instance:Instance":      {},
 			},
 		},
+		schema.PackageSpec{
+			Name: "kubernetes",
+			Resources: map[string]schema.ResourceSpec{
+				"kubernetes:helm.sh/v3:Release":             {},
+				"kubernetes:storage.k8s.io/v1:StorageClass": {},
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"kubernetes:helm.sh/v3:getRelease": {},
+			},
+		},
 	)
-	pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: "aws"})
-	require.NoError(t, err)
 
 	tests := []struct {
 		name       string
+		pkg        string
 		token      string
 		isFunction bool
 		want       string
 	}{
-		{"resource with snake-case name", "aws:ec2/vpc:Vpc", false, "aws_ec2_vpc"},
-		{"resource with camelCase name", "aws:lb/loadBalancer:LoadBalancer", false, "aws_lb_load_balancer"},
-		{"index module omitted", "aws:index/instance:Instance", false, "aws_instance"},
-		{"function strips get prefix", "aws:ec2/getVpc:getVpc", true, "aws_ec2_vpc"},
+		{"resource with snake-case name", "aws", "aws:ec2/vpc:Vpc", false, "aws_ec2_vpc"},
+		{"resource with camelCase name", "aws", "aws:lb/loadBalancer:LoadBalancer", false, "aws_lb_load_balancer"},
+		{"index module omitted", "aws", "aws:index/instance:Instance", false, "aws_instance"},
+		{"function strips get prefix", "aws", "aws:ec2/getVpc:getVpc", true, "aws_ec2_vpc"},
+		{"dotted module", "kubernetes", "kubernetes:helm.sh/v3:Release", false, "kubernetes_helm_sh_v3_release"},
+		{"multi-dot module", "kubernetes", "kubernetes:storage.k8s.io/v1:StorageClass", false, "kubernetes_storage_k8s_io_v1_storage_class"},
+		{"dotted module function", "kubernetes", "kubernetes:helm.sh/v3:getRelease", true, "kubernetes_helm_sh_v3_release"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: tt.pkg})
+			require.NoError(t, err)
 			got := pulumiTokenToHCLForm(pkg, tt.token, tt.isFunction)
 			require.Equal(t, tt.want, got)
 		})

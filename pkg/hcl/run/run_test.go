@@ -3465,6 +3465,327 @@ resource "kubernetes_networking.k8s.io_v1_ingress" "ingress" {
 	assert.Equal(t, "ingress", ingress.Name)
 }
 
+// dottedModuleSchema models the pulumi/kubernetes types from #646, whose
+// modules contain dots.
+func dottedModuleSchema(t *testing.T) schema.ReferenceLoader {
+	str := schema.PropertySpec{TypeSpec: schema.TypeSpec{Type: "string"}}
+	props := func(names ...string) map[string]schema.PropertySpec {
+		m := map[string]schema.PropertySpec{}
+		for _, n := range names {
+			m[n] = str
+		}
+		return m
+	}
+	resource := func(names ...string) schema.ResourceSpec {
+		return schema.ResourceSpec{
+			InputProperties: props(names...),
+			ObjectTypeSpec:  schema.ObjectTypeSpec{Properties: props(names...)},
+		}
+	}
+	return schemaloader.New(t, schema.PackageSpec{
+		Name:    "kubernetes",
+		Version: "4.30.0",
+		Resources: map[string]schema.ResourceSpec{
+			"kubernetes:helm.sh/v3:Release":           resource("chart"),
+			"kubernetes:helm.sh/v4:Chart":             resource("chart", "resources"),
+			"kubernetes:networking.k8s.io/v1:Ingress": resource("host"),
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"kubernetes:helm.sh/v3:getRelease": {
+				Inputs:  &schema.ObjectTypeSpec{Properties: props("name")},
+				Outputs: &schema.ObjectTypeSpec{Properties: props("id")},
+			},
+		},
+	})
+}
+
+// runDottedModuleProgram runs src against dottedModuleSchema.
+func runDottedModuleProgram(t *testing.T, src string) (*testutil.MockResourceMonitor, error) {
+	t.Helper()
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         t.TempDir(),
+		RootDir:         t.TempDir(),
+		SchemaLoader:    dottedModuleSchema(t),
+	})
+	return mock, engine.Run(t.Context())
+}
+
+// TestEngine_DottedModuleTypes covers Pulumi types whose module contains a dot,
+// such as "kubernetes:helm.sh/v3:Release". They are written with underscores,
+// "kubernetes_helm_sh_v3_release", so they can be referenced; the legacy dotted
+// spelling still declares the same type, silently. Regression test for #646.
+func TestEngine_DottedModuleTypes(t *testing.T) {
+	t.Parallel()
+
+	// The header shared by the programs in #646.
+	const header = `terraform {
+  required_providers {
+    kubernetes = {
+      source  = "pulumi/kubernetes"
+      version = "4.30.0"
+    }
+  }
+}
+`
+	const releaseURN = "urn:pulumi:test::project::kubernetes:helm.sh/v3:Release::"
+
+	tests := []struct {
+		name        string
+		src         string
+		wantErr     string              // substring; "" means Run succeeds
+		wantTypes   map[string]string   // resource name -> registered type
+		wantDeps    map[string][]string // resource name -> Dependencies
+		wantOutputs map[string]string
+	}{
+		{
+			name: "#646 dotted reference",
+			src: header + `
+resource "kubernetes_helm.sh_v4_chart" "nginx" {
+  chart = "oci://registry-1.docker.io/bitnamicharts/nginx"
+}
+
+output "chart_resources" {
+  value = kubernetes_helm.sh_v4_chart.nginx.resources
+}
+`,
+			// A reference splits at every dot, so it can never reach the
+			// dotted type; only the underscore spelling can.
+			wantErr: `unknown node "kubernetes_helm.sh_v4_chart"`,
+		},
+		{
+			name: "#646 dotted declaration",
+			src: header + `
+resource "kubernetes_helm.sh_v4_chart" "nginx" {
+  chart = "oci://registry-1.docker.io/bitnamicharts/nginx"
+}
+`,
+			wantTypes: map[string]string{"nginx": "kubernetes:helm.sh/v4:Chart"},
+		},
+		{
+			name: "#646 underscore spelling",
+			src: header + `
+resource "kubernetes_helm_sh_v4_chart" "nginx" {
+  chart = "oci://registry-1.docker.io/bitnamicharts/nginx"
+}
+
+output "chart_resources" {
+  value = kubernetes_helm_sh_v4_chart.nginx.resources
+}
+`,
+			wantTypes: map[string]string{"nginx": "kubernetes:helm.sh/v4:Chart"},
+		},
+		{
+			name: "underscore spelling references",
+			src: `
+resource "kubernetes_helm_sh_v3_release" "crds" {
+  count = 1
+  chart = "crds"
+}
+
+resource "kubernetes_helm_sh_v3_release" "app" {
+  chart      = "app-${kubernetes_helm_sh_v3_release.crds[0].chart}"
+  depends_on = [kubernetes_helm_sh_v3_release.crds]
+}
+
+resource "kubernetes_networking_k8s_io_v1_ingress" "web" {
+  for_each = toset(["a"])
+  host     = "${each.key}.${kubernetes_helm_sh_v3_release.app.chart}"
+}
+
+data "kubernetes_helm_sh_v3_release" "info" {
+  name = kubernetes_helm_sh_v3_release.app.chart
+}
+
+output "app"  { value = kubernetes_helm_sh_v3_release.app.chart }
+output "host" { value = kubernetes_networking_k8s_io_v1_ingress.web["a"].host }
+output "info" { value = data.kubernetes_helm_sh_v3_release.info.id }
+`,
+			wantTypes: map[string]string{
+				"crds[0]":  "kubernetes:helm.sh/v3:Release",
+				"app":      "kubernetes:helm.sh/v3:Release",
+				`web["a"]`: "kubernetes:networking.k8s.io/v1:Ingress",
+			},
+			wantDeps: map[string][]string{
+				"app":      {releaseURN + "crds[0]"},
+				`web["a"]`: {releaseURN + "app"},
+			},
+			wantOutputs: map[string]string{"app": "app-crds", "host": "a.app-crds", "info": "mock-id"},
+		},
+		{
+			name: "dotted declaration, underscore reference",
+			src: `
+resource "kubernetes_helm.sh_v3_release" "crds" {
+  chart = "crds"
+}
+
+output "chart" { value = kubernetes_helm_sh_v3_release.crds.chart }
+`,
+			wantErr: `unknown node "kubernetes_helm_sh_v3_release.crds"`,
+		},
+		{
+			// Unresolvable labels get the unknown-type error's suggestion.
+			name: "dotted typo",
+			src: `
+resource "kubernetes_helm.sh_v3_relase" "crds" {
+  chart = "crds"
+}
+`,
+			wantErr: `unknown resource type "kubernetes_helm.sh_v3_relase"; did you mean "kubernetes_helm_sh_v3_release"?`,
+		},
+		{
+			name: "dotted data source",
+			src: `
+data "kubernetes_helm.sh_v3_release" "info" {
+  name = "crds"
+}
+`,
+			wantTypes: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mock, err := runDottedModuleProgram(t, tt.src)
+			assert.Empty(t, mock.Warnings, "dotted labels resolve silently")
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			gotTypes, gotDeps := map[string]string{}, map[string][]string{}
+			for _, r := range mock.RegisteredResources {
+				if !r.Custom {
+					continue
+				}
+				gotTypes[r.Name] = r.Type
+				if len(r.Dependencies) > 0 {
+					gotDeps[r.Name] = r.Dependencies
+				}
+			}
+			assert.Equal(t, tt.wantTypes, gotTypes)
+			if tt.wantDeps != nil {
+				assert.Equal(t, tt.wantDeps, gotDeps)
+			}
+			for k, v := range tt.wantOutputs {
+				assert.Equal(t, property.New(v), mock.StackOutputs.Get(k), "output %q", k)
+			}
+		})
+	}
+}
+
+// TestEngine_DottedModuleTypeModulesAndChecks checks that a legacy dotted type
+// label resolves silently through both a module source that several module
+// blocks inline and a check-scoped data source. Regression test for #646.
+func TestEngine_DottedModuleTypeModulesAndChecks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile := func(name, content string) {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+	writeFile("modules/child/main.tf", `resource "kubernetes_helm.sh_v3_release" "crds" {
+  chart = "crds"
+}
+`)
+	writeFile("main.tf", `module "a" {
+  source = "./modules/child"
+}
+
+module "b" {
+  source = "./modules/child"
+}
+
+check "c" {
+  data "kubernetes_helm.sh_v3_release" "info" {
+    name = "x"
+  }
+  assert {
+    condition     = true
+    error_message = "unreachable"
+  }
+}
+`)
+
+	config, diags := parser.NewParser().ParseDirectory(dir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testLiveModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         dir,
+		RootDir:         dir,
+		SchemaLoader:    dottedModuleSchema(t),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	var releases int
+	for _, r := range mock.RegisteredResources {
+		if r.Type == "kubernetes:helm.sh/v3:Release" {
+			releases++
+		}
+	}
+	assert.Equal(t, 2, releases)
+	assert.Empty(t, mock.Warnings, "dotted labels resolve silently")
+}
+
+// TestEngine_DottedModuleTypeURN checks that switching a type from its dotted
+// spelling to its underscore spelling registers the same resources, so their
+// URNs do not change.
+func TestEngine_DottedModuleTypeURN(t *testing.T) {
+	t.Parallel()
+
+	program := func(typ string) string {
+		return fmt.Sprintf(`
+provider "kubernetes" {}
+
+resource %q "crds" {
+  count = 2
+  chart = "crds-${count.index}"
+}
+`, typ)
+	}
+	// registered drops the fields that legitimately differ between runs, such
+	// as hook names, which embed the HCL type.
+	type registered struct {
+		URN, Parent, Provider string
+		Aliases               []run.Alias
+	}
+	register := func(typ string) []registered {
+		mock, err := runDottedModuleProgram(t, program(typ))
+		require.NoError(t, err)
+		var out []registered
+		for _, r := range mock.RegisteredResources {
+			if !r.Custom {
+				continue
+			}
+			urn, _ := mock.ResolveURN(r.Parent, r.Type, r.Name)
+			out = append(out, registered{string(urn), string(r.Parent), r.Provider, r.Aliases})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].URN < out[j].URN })
+		return out
+	}
+
+	dotted := register("kubernetes_helm.sh_v3_release")
+	underscore := register("kubernetes_helm_sh_v3_release")
+	require.Len(t, underscore, 3) // two releases and the provider
+	assert.Equal(t, "urn:pulumi:test::project::kubernetes:helm.sh/v3:Release::crds[0]", underscore[0].URN)
+	assert.NotEmpty(t, underscore[0].Provider)
+	assert.Equal(t, dotted, underscore)
+}
+
 // runSensitiveMetaArgTest is a shared driver for the four "sensitive value
 // rejected by count/for_each" tests. It writes the given root.hcl into a
 // temp dir, runs the engine, and returns the resulting error.
