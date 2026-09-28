@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Name the keys of an object literal after the schema of the input, and keep the keys of a map literal
+time: 2026-09-28T10:39:57.177788+01:00
+custom:
+    Component: converter
+    PR: "648"

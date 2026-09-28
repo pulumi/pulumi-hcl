@@ -698,10 +698,13 @@ func (ft *fileTransformer) emitFile(
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
 			}
 			var rangeExpr, providersExpr hclsyntax.Expression
+			var rangeType schema.Type
 			for _, attr := range block.Body.Attributes {
 				switch attr.Name {
-				case "count", "for_each":
+				case "count":
 					rangeExpr = attr.Expr
+				case "for_each":
+					rangeExpr, rangeType = attr.Expr, forEachType
 				case "providers":
 					providersExpr = attr.Expr
 				}
@@ -714,7 +717,7 @@ func (ft *fileTransformer) emitFile(
 			if rangeExpr != nil || providersExpr != nil {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
 				if rangeExpr != nil {
-					optBlk.Body().SetAttributeRaw("range", ft.transformExpr(rangeExpr))
+					optBlk.Body().SetAttributeRaw("range", ft.transformTypedExpr(rangeExpr, rangeType))
 				}
 				if providersExpr != nil {
 					optBlk.Body().SetAttributeRaw("providers", ft.transformExpr(providersExpr))
@@ -757,10 +760,11 @@ func (ft *fileTransformer) emitFile(
 
 			// Emit input properties first (skip resource option attributes).
 			for _, attr := range inputAttributes(block.Body, isResourceMeta) {
-				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, res.InputProperties)
+				name, prop := transform.PulumiCaseFromSnakeCase(attr.Name, res.InputProperties)
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
-				blk.Body().SetAttributeRaw(name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
+				value := ft.transformTypedExpr(attr.Expr, propertyType(prop))
+				blk.Body().SetAttributeRaw(name, ft.withTrailing(value, start))
 			}
 
 			// Collect resource options from attributes and sub-blocks.
@@ -951,10 +955,11 @@ func (ft *fileTransformer) emitFile(
 				opts = append(opts, optEntry{"range", ft.transformForEachExpr(forEach.Expr)})
 			}
 			for _, attr := range inputAttributes(block.Body, isProviderMeta) {
-				name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, providerRes.InputProperties)
+				name, prop := transform.PulumiCaseFromSnakeCase(attr.Name, providerRes.InputProperties)
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
-				blk.Body().SetAttributeRaw(name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
+				value := ft.transformTypedExpr(attr.Expr, propertyType(prop))
+				blk.Body().SetAttributeRaw(name, ft.withTrailing(value, start))
 			}
 			// Pulumi-specific provider options live in a nested `pulumi` block.
 			for _, subBlock := range block.Body.Blocks {
@@ -1096,6 +1101,14 @@ func convertHCLTypeExprInner(src []byte, expr hclsyntax.Expression, inCollection
 
 // transformExpr converts an HCL expression to PCL hclwrite tokens by walking the AST.
 func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tokens {
+	return ft.transformTypedExpr(expr, nil)
+}
+
+// transformTypedExpr converts an HCL expression that is assigned to the schema
+// type t. The keys of an object literal get their names from t. This is the
+// inverse of the generator, which also passes the type through object and tuple
+// literals only. A nil t is an unknown type.
+func (ft *fileTransformer) transformTypedExpr(expr hclsyntax.Expression, t schema.Type) hclwrite.Tokens {
 	switch e := expr.(type) {
 	case *hclsyntax.ScopeTraversalExpr:
 		return ft.transformTraversal(e)
@@ -1148,25 +1161,21 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 	case *hclsyntax.TemplateWrapExpr:
 		return ft.transformExpr(e.Wrapped)
 	case *hclsyntax.TupleConsExpr:
+		elemType := elementTypeOf(t)
 		var elems []hclwrite.Tokens
 		for _, item := range e.Exprs {
-			elems = append(elems, ft.transformExpr(item))
+			elems = append(elems, ft.transformTypedExpr(item, elemType))
 		}
 		return hclwrite.TokensForTuple(elems)
 	case *hclsyntax.ObjectConsKeyExpr:
-		// Identifier keys (e.g., bool_array) are property names: convert snake_case → camelCase.
-		// Quoted string keys (e.g., "my key") are map keys: pass through the wrapped expression.
-		if name := hcl.ExprAsKeyword(e); name != "" {
-			camel, _ := transform.PulumiCaseFromSnakeCase(name, nil)
-			return hclwrite.TokensForIdentifier(camel)
-		}
 		return ft.transformExpr(e.Wrapped)
 	case *hclsyntax.ObjectConsExpr:
 		var attrs []hclwrite.ObjectAttrTokens
 		for _, item := range e.Items {
+			key, valueType := ft.transformObjectKey(item.KeyExpr, t)
 			attrs = append(attrs, hclwrite.ObjectAttrTokens{
-				Name:  ft.transformExpr(item.KeyExpr),
-				Value: ft.transformExpr(item.ValueExpr),
+				Name:  key,
+				Value: ft.transformTypedExpr(item.ValueExpr, valueType),
 			})
 		}
 		return hclwrite.TokensForObject(attrs)
@@ -1220,6 +1229,36 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: ft.srcBytes(r)},
 		}
 	}
+}
+
+// transformObjectKey converts the key of an object literal that is assigned to
+// the schema type t. It returns the tokens of the key and the schema type of the
+// value that the key holds.
+//
+// An identifier key (e.g. bool_array) is the snake_case name of a property,
+// unless t is a map. A key of a map is data, so it does not change. A quoted key
+// (e.g. "my key") is a map key for all types.
+func (ft *fileTransformer) transformObjectKey(key hclsyntax.Expression, t schema.Type) (hclwrite.Tokens, schema.Type) {
+	name := hcl.ExprAsKeyword(key)
+	if m, ok := codegen.UnwrapType(t).(*schema.MapType); ok {
+		if name != "" {
+			return hclwrite.TokensForIdentifier(name), m.ElementType
+		}
+		return ft.transformExpr(key), m.ElementType
+	}
+	if name != "" {
+		pclName, prop := transform.PulumiCaseFromSnakeCase(name, propertiesOf(t))
+		return hclwrite.TokensForIdentifier(pclName), propertyType(prop)
+	}
+	return ft.transformExpr(key), nil
+}
+
+// propertyType returns the schema type of p. It returns nil when p is nil.
+func propertyType(p *schema.Property) schema.Type {
+	if p == nil {
+		return nil
+	}
+	return p.Type
 }
 
 // transformIndexExpr converts an HCL index expression (collection[key]) to PCL tokens.
@@ -1872,10 +1911,10 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 	var argAttrs, optAttrs []hclwrite.ObjectAttrTokens
 	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok {
 		for _, attr := range inputAttributes(body, isDataMeta) {
-			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, inputProps)
+			name, prop := transform.PulumiCaseFromSnakeCase(attr.Name, inputProps)
 			argAttrs = append(argAttrs, hclwrite.ObjectAttrTokens{
 				Name:  hclwrite.TokensForIdentifier(name),
-				Value: ft.transformExpr(attr.Expr),
+				Value: ft.transformTypedExpr(attr.Expr, propertyType(prop)),
 			})
 		}
 		for _, attr := range sortedAttributes(body.Attributes) {
@@ -1948,10 +1987,10 @@ func (ft *fileTransformer) blocksToObjectAttrs(blocks []*hclsyntax.Block, props 
 		for _, block := range g.blocks {
 			var objAttrs []hclwrite.ObjectAttrTokens
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
-				attrName, _ := transform.PulumiCaseFromSnakeCase(attr.Name, elemProps)
+				attrName, prop := transform.PulumiCaseFromSnakeCase(attr.Name, elemProps)
 				objAttrs = append(objAttrs, hclwrite.ObjectAttrTokens{
 					Name:  hclwrite.TokensForIdentifier(attrName),
-					Value: ft.transformExpr(attr.Expr),
+					Value: ft.transformTypedExpr(attr.Expr, propertyType(prop)),
 				})
 			}
 			objAttrs = append(objAttrs, ft.blocksToObjectAttrs(block.Body.Blocks, elemProps)...)
@@ -2032,9 +2071,9 @@ func (ft *fileTransformer) convertDynamicBlock(
 	// Build the for-expression body: an object with each attribute from the content block.
 	var objAttrs []hclwrite.ObjectAttrTokens
 	for _, attr := range sortedAttributes(contentBlock.Body.Attributes) {
-		attrName, _ := transform.PulumiCaseFromSnakeCase(attr.Name, elemProps)
+		attrName, prop := transform.PulumiCaseFromSnakeCase(attr.Name, elemProps)
 		// Transform the value expression, rewriting iterator references.
-		valueTokens := ft.transformExprWithIterator(attr.Expr, iteratorName)
+		valueTokens := ft.transformExprWithIterator(attr.Expr, iteratorName, propertyType(prop))
 		objAttrs = append(objAttrs, hclwrite.ObjectAttrTokens{
 			Name:  hclwrite.TokensForIdentifier(attrName),
 			Value: valueTokens,
@@ -2042,7 +2081,7 @@ func (ft *fileTransformer) convertDynamicBlock(
 	}
 
 	// Build: [for __key, __value in <collection> : { <attrs> }]
-	collectionTokens := ft.transformExpr(forEachAttr.Expr)
+	collectionTokens := ft.transformTypedExpr(forEachAttr.Expr, forEachType)
 	objTokens := hclwrite.TokensForObject(objAttrs)
 
 	forExprTokens := buildForExprTokens(collectionTokens, objTokens)
@@ -2073,15 +2112,18 @@ func buildForExprTokens(collection, value hclwrite.Tokens) hclwrite.Tokens {
 	return tokens
 }
 
-// transformExprWithIterator transforms an expression while rewriting references to the
-// dynamic block iterator. <iteratorName>.value.x → __value.x, <iteratorName>.key → __key.
-func (ft *fileTransformer) transformExprWithIterator(expr hclsyntax.Expression, iteratorName string) hclwrite.Tokens {
+// transformExprWithIterator transforms an expression that is assigned to the schema type t,
+// while rewriting references to the dynamic block iterator.
+// <iteratorName>.value.x → __value.x, <iteratorName>.key → __key.
+func (ft *fileTransformer) transformExprWithIterator(
+	expr hclsyntax.Expression, iteratorName string, t schema.Type,
+) hclwrite.Tokens {
 	if e, ok := expr.(*hclsyntax.ScopeTraversalExpr); ok && e.Traversal.RootName() == iteratorName {
 		return ft.transformDynamicIteratorTraversal(e.Traversal, iteratorName)
 	}
 	// For non-traversal expressions, fall through to normal transform.
 	// TODO: recursively handle nested expressions containing iterator references.
-	return ft.transformExpr(expr)
+	return ft.transformTypedExpr(expr, t)
 }
 
 // transformDynamicIteratorTraversal rewrites a traversal rooted at the dynamic block iterator.
@@ -2201,8 +2243,13 @@ func (ft *fileTransformer) transformForEachExpr(expr hclsyntax.Expression) hclwr
 	if forExpr, ok := expr.(*hclsyntax.ForExpr); ok && forExpr.KeyExpr != nil {
 		return ft.transformExpr(forExpr.CollExpr)
 	}
-	return ft.transformExpr(expr)
+	return ft.transformTypedExpr(expr, forEachType)
 }
+
+// forEachType is the schema type of a `for_each` argument. A key of the map is
+// the value of `each.key`, so it is data and not the name of a property. The
+// type of an element is unknown.
+var forEachType schema.Type = &schema.MapType{}
 
 // unwrapSingletonTupleExpr returns the transformed expression for the single
 // element of a 1-element tuple, or the whole transformed tuple otherwise.

@@ -2,7 +2,7 @@
 resource "first" "snake_names:cool_module:some_resource" {
   the_input = true
   nested = {
-    nestedValue = "nested"
+    nested_value = "nested"
   }
 }
 
