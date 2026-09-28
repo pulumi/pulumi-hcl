@@ -31,3 +31,9 @@ output "lookupObjectOutput" {
 output "lookupObjectOutputDefault" {
   value = lookup(output_complex_resource.res.output_object, "missing", "default")
 }
+output "lengthOutput" {
+  value = length(output_complex_resource.res.output_map)
+}
+output "lengthObjectOutput" {
+  value = length(output_complex_resource.res.output_object)
+}

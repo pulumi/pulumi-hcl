@@ -26,3 +26,11 @@ output "lookupObjectOutputDefault" {
   value = lookup(res.outputObject, "missing", "default")
 }
 
+output "lengthOutput" {
+  value = length(res.outputMap)
+}
+
+output "lengthObjectOutput" {
+  value = length(res.outputObject)
+}
+

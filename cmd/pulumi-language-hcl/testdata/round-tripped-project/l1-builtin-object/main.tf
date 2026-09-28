@@ -19,3 +19,9 @@ variable "alternativeNames" {
 output "names" {
   value = [for entry in entries(var.alternativeNames) : entry.value]
 }
+output "lengthOutput" {
+  value = length(var.aMap)
+}
+output "lengthDynamicOutput" {
+  value = length(var.alternativeNames)
+}
