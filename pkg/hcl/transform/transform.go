@@ -995,7 +995,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		}
 		return property.New(m), nil
 	case *schema.UnionType:
-		if chosen, err := selectUnionMemberByConst(val, prop); err != nil {
+		if chosen, err := SelectUnionMemberByConst(val, prop); err != nil {
 			summary := fmt.Sprintf("cannot determine union variant for %q", path)
 			if expr != nil {
 				return property.Value{}, &rangedDiagError{
@@ -2134,12 +2134,12 @@ func (e *nonObjectDiscriminatorError) Error() string {
 		e.Discriminator, strings.Join(e.Allowed, ", "), e.GotType)
 }
 
-// selectUnionMemberByConst picks the union member whose const-pinned
+// SelectUnionMemberByConst picks the union member whose const-pinned
 // discriminator matches val. Returns (nil, nil) if no member is
 // const-discriminated (caller falls back to shape-based matching);
 // otherwise either a chosen type or one of *missingDiscriminatorError,
 // *unrecognizedDiscriminatorError, *nonObjectDiscriminatorError.
-func selectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, error) {
+func SelectUnionMemberByConst(val cty.Value, u *schema.UnionType) (schema.Type, error) {
 	candidates := slices.Clone(u.ElementTypes)
 	if u.DefaultType != nil {
 		candidates = append([]schema.Type{u.DefaultType}, candidates...)

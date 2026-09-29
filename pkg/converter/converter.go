@@ -259,6 +259,14 @@ type fileTransformer struct {
 	// comments holds leading comments lexed from the source file, keyed by
 	// the source start byte of the syntactic element that should carry them.
 	comments *comments.Map
+	// callMethods maps each call block to the schema of its method. A method
+	// that does not resolve has no entry.
+	callMethods map[callReference]*schema.Method
+	// resourceTypes maps the logical name of each resource to its HCL type.
+	resourceTypes map[string]string
+	// providerPackages maps the name of each provider, which is its alias if
+	// it has one, to the name of its package.
+	providerPackages map[string]string
 }
 
 // emitLeadingComments writes any source comments that immediately precede the
@@ -304,6 +312,9 @@ func newProjectTransformer(
 		knownHCLTypes:     make(map[string]bool),
 		stackRefNames:     make(map[string]bool),
 		callBlocks:        make(map[callReference]*hclsyntax.Body),
+		callMethods:       make(map[callReference]*schema.Method),
+		resourceTypes:     make(map[string]string),
+		providerPackages:  make(map[string]string),
 		dataBlocks:        make(map[dataReference]*hclsyntax.Body),
 		dataTokens:        make(map[string]string),
 		loader:            loader,
@@ -323,6 +334,9 @@ func newProjectTransformer(
 	for _, body := range bodies {
 		diags = append(diags, ft.scanSymbols(ctx, body)...)
 	}
+	// Phase 2.25: resolve the method of each call block. A call block can be
+	// before the block of its resource, so this needs the full symbol scan.
+	diags = append(diags, ft.scanCallMethods(ctx, bodies)...)
 	// Phase 2.5: resolve provider-defined function calls (provider::<local>::<fn>)
 	// that appear anywhere in expressions, so they eject as positional invokes.
 	for _, body := range bodies {
@@ -362,6 +376,13 @@ func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body
 	for _, block := range body.Blocks {
 		if block.Type == "resource" && len(block.Labels) >= 1 {
 			ft.knownHCLTypes[block.Labels[0]] = true
+			// A reference can be before the block of its resource, so the
+			// schema must be available before the converter emits a block.
+			// The emit step reports a type that does not resolve.
+			_, _ = ft.resolveHCLType(ctx, block.Labels[0])
+			if len(block.Labels) >= 2 {
+				ft.resourceTypes[block.Labels[1]] = block.Labels[0]
+			}
 			if block.Labels[0] == "pulumi_stackreference" && len(block.Labels) >= 2 {
 				ft.stackRefNames[block.Labels[1]] = true
 			}
@@ -374,6 +395,7 @@ func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body
 				}
 			}
 			ft.providerAliases[block.Labels[0]+"."+alias] = true
+			ft.providerPackages[alias] = block.Labels[0]
 		}
 		if block.Type == "call" && len(block.Labels) == 2 {
 			ft.callBlocks[callReference{block.Labels[0], block.Labels[1]}] = block.Body
@@ -400,6 +422,61 @@ func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body
 		}
 	}
 	return diags
+}
+
+// scanCallMethods resolves the schema of the method of each call block. The
+// target of a call is a resource or a provider, as in the runtime.
+func (ft *fileTransformer) scanCallMethods(ctx context.Context, bodies []*hclsyntax.Body) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, body := range bodies {
+		for _, block := range body.Blocks {
+			if block.Type != "call" || len(block.Labels) != 2 {
+				continue
+			}
+			ref := callReference{block.Labels[0], block.Labels[1]}
+			method, err := ft.resolveCallMethod(ctx, ref)
+			if err != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "unknown method",
+					Detail:   fmt.Sprintf("cannot convert call %q to a PCL call: %v", ref.resourceName+"."+ref.methodName, err),
+					Subject:  block.TypeRange.Ptr(),
+				})
+				continue
+			}
+			ft.callMethods[ref] = method
+		}
+	}
+	return diags
+}
+
+func (ft *fileTransformer) resolveCallMethod(ctx context.Context, ref callReference) (*schema.Method, error) {
+	var target *schema.Resource
+	if hclType, ok := ft.resourceTypes[ref.resourceName]; ok {
+		res, err := ft.resolveHCLType(ctx, hclType)
+		if err != nil {
+			return nil, err
+		}
+		target = res
+	} else if pkgName, ok := ft.providerPackages[ref.resourceName]; ok {
+		pkg, err := packages.ResolvePackage(ctx, ft.loader, ft.knownProviders, "pulumi_providers_"+pkgName)
+		if err != nil {
+			return nil, fmt.Errorf("resolving provider %q: %w", pkgName, err)
+		}
+		provider, err := pkg.Provider()
+		if err != nil {
+			return nil, fmt.Errorf("loading provider schema for %q: %w", pkgName, err)
+		}
+		target = provider
+	} else {
+		return nil, fmt.Errorf("unknown resource or provider %q", ref.resourceName)
+	}
+	for _, m := range target.Methods {
+		if transform.SnakeCaseFromPulumiCase(m.Name) == ref.methodName {
+			return m, nil
+		}
+	}
+	return nil, fmt.Errorf("%q has no method %q", ref.resourceName, ref.methodName)
 }
 
 // scanProviderFunctions walks every expression in body, resolving each
@@ -564,6 +641,19 @@ var resourceOptionHCLToPCL = map[string]string{
 	"version":                   "version",
 }
 
+// aliasesType is the type of the `aliases` option. An element is a URN or an
+// object with the properties that the runtime reads.
+var aliasesType schema.Type = &schema.ArrayType{ElementType: &schema.ObjectType{
+	Properties: []*schema.Property{
+		{Name: "name", Type: schema.StringType},
+		{Name: "type", Type: schema.StringType},
+		{Name: "stack", Type: schema.StringType},
+		{Name: "project", Type: schema.StringType},
+		{Name: "parentUrn", Type: schema.StringType},
+		{Name: "noParent", Type: schema.BoolType},
+	},
+}}
+
 // The predicates below report whether a top-level attribute of a block is a
 // meta-argument rather than block-type-specific configuration. They match the
 // parser: every other option lives in the nested `pulumi` block, so a
@@ -698,13 +788,10 @@ func (ft *fileTransformer) emitFile(
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
 			}
 			var rangeExpr, providersExpr hclsyntax.Expression
-			var rangeType schema.Type
 			for _, attr := range block.Body.Attributes {
 				switch attr.Name {
-				case "count":
+				case "count", "for_each":
 					rangeExpr = attr.Expr
-				case "for_each":
-					rangeExpr, rangeType = attr.Expr, forEachType
 				case "providers":
 					providersExpr = attr.Expr
 				}
@@ -717,7 +804,7 @@ func (ft *fileTransformer) emitFile(
 			if rangeExpr != nil || providersExpr != nil {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
 				if rangeExpr != nil {
-					optBlk.Body().SetAttributeRaw("range", ft.transformTypedExpr(rangeExpr, rangeType))
+					optBlk.Body().SetAttributeRaw("range", ft.transformExpr(rangeExpr))
 				}
 				if providersExpr != nil {
 					optBlk.Body().SetAttributeRaw("providers", ft.transformExpr(providersExpr))
@@ -810,6 +897,8 @@ func (ft *fileTransformer) emitFile(
 							tokens = ft.transformPropertyPathList(attr.Expr, res.Properties)
 						case "hide_diffs", "replace_on_changes":
 							tokens = ft.transformPropertyPathList(attr.Expr, res.InputProperties)
+						case "aliases":
+							tokens = ft.transformTypedExpr(attr.Expr, aliasesType)
 						default:
 							tokens = ft.transformExpr(attr.Expr)
 						}
@@ -1105,9 +1194,10 @@ func (ft *fileTransformer) transformExpr(expr hclsyntax.Expression) hclwrite.Tok
 }
 
 // transformTypedExpr converts an HCL expression that is assigned to the schema
-// type t. The keys of an object literal get their names from t. This is the
-// inverse of the generator, which also passes the type through object and tuple
-// literals only. A nil t is an unknown type.
+// type t. The keys of an object literal get their names from t, as they do in
+// the runtime. The type applies to the literals in a tuple, in a conditional
+// expression and in a `for` expression. It does not apply to the arguments of a
+// function. A nil t is an unknown type.
 func (ft *fileTransformer) transformTypedExpr(expr hclsyntax.Expression, t schema.Type) hclwrite.Tokens {
 	switch e := expr.(type) {
 	case *hclsyntax.ScopeTraversalExpr:
@@ -1170,6 +1260,7 @@ func (ft *fileTransformer) transformTypedExpr(expr hclsyntax.Expression, t schem
 	case *hclsyntax.ObjectConsKeyExpr:
 		return ft.transformExpr(e.Wrapped)
 	case *hclsyntax.ObjectConsExpr:
+		t = unionMember(e, t)
 		var attrs []hclwrite.ObjectAttrTokens
 		for _, item := range e.Items {
 			key, valueType := ft.transformObjectKey(item.KeyExpr, t)
@@ -1197,8 +1288,8 @@ func (ft *fileTransformer) transformTypedExpr(expr hclsyntax.Expression, t schem
 		return append(hclwrite.Tokens{op}, val...)
 	case *hclsyntax.ConditionalExpr:
 		cond := ft.transformExpr(e.Condition)
-		trueVal := ft.transformExpr(e.TrueResult)
-		falseVal := ft.transformExpr(e.FalseResult)
+		trueVal := ft.transformTypedExpr(e.TrueResult, t)
+		falseVal := ft.transformTypedExpr(e.FalseResult, t)
 		tokens := cond
 		tokens = append(tokens, &hclwrite.Token{
 			Type: hclsyntax.TokenQuestion, Bytes: []byte("?"), SpacesBefore: 1,
@@ -1216,7 +1307,7 @@ func (ft *fileTransformer) transformTypedExpr(expr hclsyntax.Expression, t schem
 		tokens = append(tokens, falseVal...)
 		return tokens
 	case *hclsyntax.ForExpr:
-		return ft.transformForExpr(e)
+		return ft.transformForExpr(e, t)
 	case *hclsyntax.SplatExpr:
 		return ft.transformSplatExpr(e)
 	case *hclsyntax.IndexExpr:
@@ -1235,22 +1326,49 @@ func (ft *fileTransformer) transformTypedExpr(expr hclsyntax.Expression, t schem
 // the schema type t. It returns the tokens of the key and the schema type of the
 // value that the key holds.
 //
-// An identifier key (e.g. bool_array) is the snake_case name of a property,
-// unless t is a map. A key of a map is data, so it does not change. A quoted key
-// (e.g. "my key") is a map key for all types.
+// A key changes only if it is the HCL name of a property of t. Then the key
+// becomes the schema name of that property. All other keys are data, so they
+// do not change: the keys of a map, and the keys of a value of an unknown type.
 func (ft *fileTransformer) transformObjectKey(key hclsyntax.Expression, t schema.Type) (hclwrite.Tokens, schema.Type) {
-	name := hcl.ExprAsKeyword(key)
-	if m, ok := codegen.UnwrapType(t).(*schema.MapType); ok {
-		if name != "" {
-			return hclwrite.TokensForIdentifier(name), m.ElementType
+	if hclName, ok := staticString(key); ok {
+		if name, prop := transform.PulumiCaseFromSnakeCase(hclName, propertiesOf(t)); prop != nil {
+			if hclsyntax.ValidIdentifier(name) {
+				return hclwrite.TokensForIdentifier(name), prop.Type
+			}
+			return hclwrite.TokensForValue(cty.StringVal(name)), prop.Type
 		}
-		return ft.transformExpr(key), m.ElementType
 	}
-	if name != "" {
-		pclName, prop := transform.PulumiCaseFromSnakeCase(name, propertiesOf(t))
-		return hclwrite.TokensForIdentifier(pclName), propertyType(prop)
+	if name := hcl.ExprAsKeyword(key); name != "" {
+		return hclwrite.TokensForIdentifier(name), elementTypeOf(t)
 	}
-	return ft.transformExpr(key), nil
+	return ft.transformExpr(key), elementTypeOf(t)
+}
+
+// staticString returns the value of expr if expr is a string that does not
+// depend on the evaluation context.
+func staticString(expr hclsyntax.Expression) (string, bool) {
+	val, diags := expr.Value(nil)
+	if diags.HasErrors() || val.IsNull() || !val.IsKnown() || val.Type() != cty.String {
+		return "", false
+	}
+	return val.AsString(), true
+}
+
+// unionMember returns the member of the union t that the object literal e
+// selects with its discriminator, as the runtime does. If t is not a union, it
+// returns t. If e selects no member, the type is unknown and it returns nil.
+func unionMember(e *hclsyntax.ObjectConsExpr, t schema.Type) schema.Type {
+	u, ok := codegen.UnwrapType(t).(*schema.UnionType)
+	if !ok {
+		return t
+	}
+	// The values that depend on the evaluation context are unknown in val.
+	val, _ := e.Value(nil)
+	member, err := transform.SelectUnionMemberByConst(val, u)
+	if err != nil {
+		return nil
+	}
+	return member
 }
 
 // propertyType returns the schema type of p. It returns nil when p is nil.
@@ -1631,30 +1749,11 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 			nameAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
 			if ok1 && ok2 {
 				tokens := ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
-				var returnProps []*schema.Property
-				if fn := ft.functionSchemas[typeAttr.Name]; fn != nil && fn.ReturnType != nil {
-					returnProps = propertiesOf(fn.ReturnType)
+				var returnType schema.Type
+				if fn := ft.functionSchemas[typeAttr.Name]; fn != nil {
+					returnType = fn.ReturnType
 				}
-				remaining := e.Traversal[3:]
-				if len(remaining) > 0 {
-					// Build a dummy traversal with a root so schemaAwareTraversalAttrs works.
-					dummy := make(hcl.Traversal, len(remaining)+1)
-					dummy[0] = hcl.TraverseRoot{Name: "_"}
-					copy(dummy[1:], remaining)
-					converted := schemaAwareTraversalAttrs(dummy, returnProps)
-					for _, step := range converted[1:] {
-						switch s := step.(type) {
-						case hcl.TraverseAttr:
-							tokens = append(tokens,
-								&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-								&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
-							)
-						case hcl.TraverseIndex:
-							tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
-						}
-					}
-				}
-				return tokens
+				return append(tokens, attrTokens(e.Traversal[3:], returnType)...)
 			}
 		}
 	case "call":
@@ -1664,15 +1763,11 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 			methodAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
 			if ok1 && ok2 {
 				tokens := ft.callExprTokens(resAttr.Name, methodAttr.Name)
-				for _, step := range e.Traversal[3:] {
-					if attr, ok := step.(hcl.TraverseAttr); ok {
-						tokens = append(tokens,
-							&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(attr.Name)},
-						)
-					}
+				var returnType schema.Type
+				if m := ft.callMethods[callReference{resAttr.Name, methodAttr.Name}]; m != nil {
+					returnType = m.Function.ReturnType
 				}
-				return tokens
+				return append(tokens, attrTokens(e.Traversal[3:], returnType)...)
 			}
 		}
 	case "count":
@@ -1756,33 +1851,66 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 // schemaAwareTraversalAttrs converts traversal attribute names from snake_case
 // to their schema property names, tracking the schema type through each step.
 func schemaAwareTraversalAttrs(trav hcl.Traversal, props []*schema.Property) hcl.Traversal {
+	// We start with a synthetic object wrapping the top-level properties.
+	var rootType schema.Type
+	if len(props) > 0 {
+		rootType = &schema.ObjectType{Properties: props}
+	}
+	return typedTraversalAttrs(trav, rootType)
+}
+
+// typedTraversalAttrs converts the attribute names of trav after the root. The
+// root is a value of the schema type currentType, which tracks the schema type
+// at the current traversal position.
+func typedTraversalAttrs(trav hcl.Traversal, currentType schema.Type) hcl.Traversal {
 	if len(trav) <= 1 {
 		return trav
 	}
 	result := make(hcl.Traversal, len(trav))
 	copy(result, trav)
-	// currentType tracks the schema type at the current traversal position.
-	// We start with a synthetic object wrapping the top-level properties.
-	var currentType schema.Type
-	if len(props) > 0 {
-		currentType = &schema.ObjectType{Properties: props}
-	}
 	for i := 1; i < len(result); i++ {
 		switch step := result[i].(type) {
 		case hcl.TraverseAttr:
-			stepProps := propertiesOf(currentType)
-			name, matched := transform.PulumiCaseFromSnakeCase(step.Name, stepProps)
+			var name string
+			name, currentType = attributeOf(step.Name, currentType)
 			result[i] = hcl.TraverseAttr{Name: name}
-			if matched != nil {
-				currentType = matched.Type
-			} else {
-				currentType = nil
-			}
 		case hcl.TraverseIndex:
 			currentType = elementTypeOf(currentType)
 		}
 	}
 	return result
+}
+
+// attrTokens returns the PCL tokens of the traversal steps that follow a value
+// of the schema type t.
+func attrTokens(steps hcl.Traversal, t schema.Type) hclwrite.Tokens {
+	// Build a dummy traversal with a root so typedTraversalAttrs works.
+	dummy := make(hcl.Traversal, len(steps)+1)
+	dummy[0] = hcl.TraverseRoot{Name: "_"}
+	copy(dummy[1:], steps)
+	var tokens hclwrite.Tokens
+	for _, step := range typedTraversalAttrs(dummy, t)[1:] {
+		switch s := step.(type) {
+		case hcl.TraverseAttr:
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+			)
+		case hcl.TraverseIndex:
+			tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
+		}
+	}
+	return tokens
+}
+
+// attributeOf returns the PCL name of the attribute hclName of a value of the
+// schema type t, and the schema type of that attribute. A property of t gets
+// its schema name. All other names are keys, so they do not change.
+func attributeOf(hclName string, t schema.Type) (string, schema.Type) {
+	if name, prop := propertyName(hclName, propertiesOf(t)); prop != nil {
+		return name, prop.Type
+	}
+	return hclName, elementTypeOf(t)
 }
 
 // propertiesOf extracts []*schema.Property from a schema type.
@@ -1872,18 +2000,28 @@ func (ft *fileTransformer) rewriteTraversalRoot(trav hcl.Traversal) hcl.Traversa
 // callExprTokens generates PCL tokens for call(resourceName, "camelMethod", {args...}).
 // It looks up the matching call block to extract the argument object.
 func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclwrite.Tokens {
-	camelMethod, _ := transform.PulumiCaseFromSnakeCase(snakeMethod, nil)
+	ref := callReference{resourceName, snakeMethod}
+	// The scan reports a method that does not resolve. The names of such a
+	// method have no schema.
+	methodName, _ := transform.PulumiCaseFromSnakeCase(snakeMethod, nil)
+	var inputProps []*schema.Property
+	if m := ft.callMethods[ref]; m != nil {
+		methodName = m.Name
+		if m.Function.Inputs != nil {
+			inputProps = m.Function.Inputs.Properties
+		}
+	}
 	resTokens := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: resourceName}})
-	methodTokens := hclwrite.TokensForValue(cty.StringVal(camelMethod))
+	methodTokens := hclwrite.TokensForValue(cty.StringVal(methodName))
 
 	var argsTokens hclwrite.Tokens
-	if body, ok := ft.callBlocks[callReference{resourceName, snakeMethod}]; ok && len(body.Attributes) > 0 {
+	if body, ok := ft.callBlocks[ref]; ok && len(body.Attributes) > 0 {
 		var attrs []hclwrite.ObjectAttrTokens
 		for _, attr := range sortedAttributes(body.Attributes) {
-			name, _ := transform.PulumiCaseFromSnakeCase(attr.Name, nil)
+			name, prop := transform.PulumiCaseFromSnakeCase(attr.Name, inputProps)
 			attrs = append(attrs, hclwrite.ObjectAttrTokens{
 				Name:  hclwrite.TokensForIdentifier(name),
-				Value: ft.transformExpr(attr.Expr),
+				Value: ft.transformTypedExpr(attr.Expr, propertyType(prop)),
 			})
 		}
 		argsTokens = hclwrite.TokensForObject(attrs)
@@ -2081,7 +2219,7 @@ func (ft *fileTransformer) convertDynamicBlock(
 	}
 
 	// Build: [for __key, __value in <collection> : { <attrs> }]
-	collectionTokens := ft.transformTypedExpr(forEachAttr.Expr, forEachType)
+	collectionTokens := ft.transformExpr(forEachAttr.Expr)
 	objTokens := hclwrite.TokensForObject(objAttrs)
 
 	forExprTokens := buildForExprTokens(collectionTokens, objTokens)
@@ -2156,9 +2294,10 @@ func (ft *fileTransformer) transformDynamicIteratorTraversal(trav hcl.Traversal,
 	}
 }
 
-// transformForExpr converts an HCL for-expression to PCL tokens, transforming
-// sub-expressions (e.g., var.names → names).
-func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr) hclwrite.Tokens {
+// transformForExpr converts an HCL for-expression that is assigned to the
+// schema type t to PCL tokens, transforming sub-expressions (e.g., var.names →
+// names).
+func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr, t schema.Type) hclwrite.Tokens {
 	collTokens := ft.transformExpr(e.CollExpr)
 
 	// Push this for-expression's iteration variables so nested traversals of
@@ -2171,7 +2310,12 @@ func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr) hclwrite.Token
 		ft.comprehensionStack = ft.comprehensionStack[:len(ft.comprehensionStack)-1]
 	}()
 
-	valTokens := ft.transformExpr(e.ValExpr)
+	valType := elementTypeOf(t)
+	if e.Group {
+		// Each element of the result is the list of the values of one key.
+		valType = elementTypeOf(valType)
+	}
+	valTokens := ft.transformTypedExpr(e.ValExpr, valType)
 
 	isMap := e.KeyExpr != nil
 
@@ -2243,13 +2387,8 @@ func (ft *fileTransformer) transformForEachExpr(expr hclsyntax.Expression) hclwr
 	if forExpr, ok := expr.(*hclsyntax.ForExpr); ok && forExpr.KeyExpr != nil {
 		return ft.transformExpr(forExpr.CollExpr)
 	}
-	return ft.transformTypedExpr(expr, forEachType)
+	return ft.transformExpr(expr)
 }
-
-// forEachType is the schema type of a `for_each` argument. A key of the map is
-// the value of `each.key`, so it is data and not the name of a property. The
-// type of an element is unknown.
-var forEachType schema.Type = &schema.MapType{}
 
 // unwrapSingletonTupleExpr returns the transformed expression for the single
 // element of a 1-element tuple, or the whole transformed tuple otherwise.
@@ -2308,16 +2447,26 @@ func schemaAwarePropertyPath(trav hcl.Traversal, props []*schema.Property) hcl.T
 	for i := range result {
 		switch step := result[i].(type) {
 		case hcl.TraverseRoot:
-			name, matched := transform.PulumiCaseFromSnakeCase(step.Name, nextProps)
+			name, matched := propertyName(step.Name, nextProps)
 			result[i] = hcl.TraverseRoot{Name: name, SrcRange: step.SrcRange}
 			nextProps = elementObjectProperties(matched)
 		case hcl.TraverseAttr:
-			name, matched := transform.PulumiCaseFromSnakeCase(step.Name, nextProps)
+			name, matched := propertyName(step.Name, nextProps)
 			result[i] = hcl.TraverseAttr{Name: name, SrcRange: step.SrcRange}
 			nextProps = elementObjectProperties(matched)
 		}
 	}
 	return result
+}
+
+// propertyName returns the schema name of the property of props that has the
+// HCL name hclName, and that property. If props has no such property, the name
+// does not change.
+func propertyName(hclName string, props []*schema.Property) (string, *schema.Property) {
+	if name, prop := transform.PulumiCaseFromSnakeCase(hclName, props); prop != nil {
+		return name, prop
+	}
+	return hclName, nil
 }
 
 // elementObjectProperties returns the object properties reachable from a matched
