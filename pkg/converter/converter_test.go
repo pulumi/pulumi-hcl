@@ -1204,3 +1204,257 @@ resource "fixed" "test:index:Item" {
 `
 	assert.Equal(t, expected, string(out.Bytes()))
 }
+
+// TestEjectObjectLiteralKeys checks that the keys of an object literal get
+// their names from the schema type of the input at each position that the
+// conformance tests do not reach. The schema uses snake_case names, so a
+// conversion to camelCase without the schema gives a different result.
+func TestEjectObjectLiteralKeys(t *testing.T) {
+	t.Parallel()
+
+	stringType := schema.TypeSpec{Type: "string"}
+	leafRef := schema.TypeSpec{Ref: "#/types/test:index:Leaf"}
+	branchRef := schema.TypeSpec{Ref: "#/types/test:index:Branch"}
+	leafObject := map[string]schema.PropertySpec{"leaf_object": {TypeSpec: leafRef}}
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Leaf": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type:       "object",
+				Properties: map[string]schema.PropertySpec{"leaf_value": {TypeSpec: stringType}},
+			}},
+			"test:index:Branch": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type:       "object",
+				Properties: leafObject,
+			}},
+		},
+		Provider: &schema.ResourceSpec{InputProperties: leafObject},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"leaf_list":      {TypeSpec: schema.TypeSpec{Type: "array", Items: &leafRef}},
+					"leaf_map":       {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &leafRef}},
+					"tags":           {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &stringType}},
+					"branch":         {TypeSpec: schema.TypeSpec{Type: "array", Items: &branchRef}},
+					"dynamic_branch": {TypeSpec: schema.TypeSpec{Type: "array", Items: &branchRef}},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:echo": {
+				Inputs: &schema.ObjectTypeSpec{Properties: leafObject},
+				Outputs: &schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{"result": {TypeSpec: stringType}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "test" {
+  leaf_object = {
+    leaf_value = "provider"
+  }
+}
+
+data "test_echo" "lookup" {
+  leaf_object = {
+    leaf_value = "invoke"
+  }
+}
+
+resource "test_item" "item" {
+  leaf_list = [{
+    leaf_value = "tuple"
+  }]
+  leaf_map = {
+    map_key = {
+      leaf_value = "map element"
+    }
+  }
+  tags = {
+    tag_key = data.test_echo.lookup.result
+  }
+  branch {
+    leaf_object = {
+      leaf_value = "block"
+    }
+  }
+  dynamic "dynamic_branch" {
+    for_each = ["a"]
+    content {
+      leaf_object = {
+        leaf_value = "dynamic block"
+      }
+    }
+  }
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "test" "pulumi:providers:test" {
+  leaf_object = {
+    leaf_value = "provider"
+  }
+}
+
+resource "item" "test:index:Item" {
+  leaf_list = [{
+    leaf_value = "tuple"
+  }]
+  leaf_map = {
+    map_key = {
+      leaf_value = "map element"
+    }
+  }
+  tags = {
+    tag_key = invoke("test:index:echo", {
+      leaf_object = {
+        leaf_value = "invoke"
+      }
+    }).result
+  }
+  dynamic_branch = [for __key, __value in ["a"] : {
+    leaf_object = {
+      leaf_value = "dynamic block"
+    }
+  }]
+  branch = [{
+    leaf_object = {
+      leaf_value = "block"
+    }
+  }]
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// TestEjectForEachMapKeys checks that the keys of a map literal in a
+// `for_each` argument do not change. A key is the value of `each.key`, so it
+// is data and not the name of a property.
+func TestEjectForEachMapKeys(t *testing.T) {
+	t.Parallel()
+
+	stringType := schema.TypeSpec{Type: "string"}
+	branchRef := schema.TypeSpec{Ref: "#/types/test:index:Branch"}
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Branch": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type:       "object",
+				Properties: map[string]schema.PropertySpec{"name": {TypeSpec: stringType}},
+			}},
+		},
+		Provider: &schema.ResourceSpec{
+			InputProperties: map[string]schema.PropertySpec{"prefix": {TypeSpec: stringType}},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value":  {TypeSpec: stringType},
+					"branch": {TypeSpec: schema.TypeSpec{Type: "array", Items: &branchRef}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "test" {
+  alias = "by_key"
+  for_each = {
+    provider_key = "alpha"
+  }
+  prefix = each.value
+}
+
+resource "test_item" "item" {
+  for_each = {
+    resource_key = "beta"
+  }
+  value = each.value
+  dynamic "branch" {
+    for_each = {
+      dynamic_key = "gamma"
+    }
+    content {
+      name = branch.value
+    }
+  }
+}
+
+module "child" {
+  source = "./child"
+  for_each = {
+    module_key = "delta"
+  }
+  input = each.value
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "by_key" "pulumi:providers:test" {
+  prefix = range.value
+  options {
+    range = {
+      provider_key = "alpha"
+    }
+  }
+}
+
+resource "item" "test:index:Item" {
+  value = range.value
+  branch = [for __key, __value in {
+    dynamic_key = "gamma"
+    } : {
+    name = __value
+  }]
+  options {
+    range = {
+      resource_key = "beta"
+    }
+    deleteBeforeReplace = true
+  }
+}
+
+component "child" "./child" {
+  input = range.value
+  options {
+    range = {
+      module_key = "delta"
+    }
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
