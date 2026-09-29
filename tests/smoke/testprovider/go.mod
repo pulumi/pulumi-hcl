@@ -3,7 +3,7 @@ module github.com/pulumi/pulumi-hcl/tests/smoke/testprovider
 go 1.26.6
 
 require (
-	github.com/pulumi/pulumi-go-provider v1.6.0
+	github.com/pulumi/pulumi-go-provider v1.7.0
 	github.com/pulumi/pulumi/sdk/v3 v3.265.0
 )
 
@@ -76,7 +76,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkg/term v1.1.0 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
-	github.com/pulumi/pulumi-cloud-sdk/go v1.20260924.0 // indirect
+	github.com/pulumi/pulumi-cloud-sdk/go v1.20260928.1311 // indirect
 	github.com/pulumi/pulumi/pkg/v3 v3.265.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect

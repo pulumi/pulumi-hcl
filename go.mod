@@ -26,7 +26,7 @@ require (
 	github.com/opentofu/registry-address/v2 v2.0.0-20250611143131-d0a99bd8acdd
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/pulumi/providertest v0.7.0
-	github.com/pulumi/pulumi-go-provider v1.6.0
+	github.com/pulumi/pulumi-go-provider v1.7.0
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.138.0
 	github.com/pulumi/pulumi/pkg/v3 v3.265.0
 	github.com/pulumi/pulumi/sdk/v3 v3.265.0
@@ -257,10 +257,10 @@ require (
 	github.com/pulumi-labs/pulumi-hcl v0.3.1 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
 	github.com/pulumi/inflector v0.2.1 // indirect
-	github.com/pulumi/pulumi-cloud-sdk/go v1.20260924.0 // indirect
-	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.114.0 // indirect
-	github.com/pulumi/pulumi-java v1.37.2 // indirect
-	github.com/pulumi/pulumi-yaml v1.38.7 // indirect
+	github.com/pulumi/pulumi-cloud-sdk/go v1.20260928.1311 // indirect
+	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.114.1 // indirect
+	github.com/pulumi/pulumi-java v1.37.3 // indirect
+	github.com/pulumi/pulumi-yaml v1.38.8 // indirect
 	github.com/pulumi/terraform-diff-reader v0.0.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
