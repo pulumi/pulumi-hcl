@@ -1,0 +1,13 @@
+{
+  "Name": "extbase",
+  "Kind": "resource",
+  "Version": "45.0.0",
+  "PluginDownloadURL": "",
+  "Checksums": null,
+  "Parameterization": null,
+  "ExtensionParameterization": {
+    "Name": "myext",
+    "Version": "2.0.0",
+    "Value": "SGVsbG8="
+  }
+}
