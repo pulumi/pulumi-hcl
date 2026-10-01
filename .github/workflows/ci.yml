@@ -89,7 +89,12 @@ jobs:
           pulumi-version: "dev"
         env:
           GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
+      # OpenTofu 1.13 is built with Go 1.27, whose compress/flate emits
+      # different bytes than Go 1.26. The byte-exact base64gzip comparison
+      # in tfcompat only holds while both toolchains agree.
       - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.12.6"
       # terraform_remote_state lowers to the pulumi-terraform getLocalReference
       # invoke; the tfcompat harness disables plugin acquisition, so pre-install it.
       - run: pulumi plugin install resource terraform 6.1.0
