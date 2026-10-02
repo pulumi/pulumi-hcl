@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Resolve types whose module contains a `.`, such as `kubernetes_helm_sh_v3_release`, and `get`-less data sources in multi-segment modules
+time: 2026-09-25T22:40:15.600271+01:00
+custom:
+    Component: runtime
+    PR: "647"

@@ -25,9 +25,16 @@ import (
 // user's input before we stay silent rather than emit a misleading hint.
 const suggestEditDistanceThreshold = 3
 
+// moduleSeparatorReplacer maps the module separators that an HCL identifier
+// cannot contain to "_".
+var moduleSeparatorReplacer = strings.NewReplacer("/", "_", ".", "_")
+
 func nearestHCLToken(pkg schema.PackageReference, hclToken string, isFunction bool) string {
 	bestDist := suggestEditDistanceThreshold + 1
 	var best string
+	// Candidates never contain ".", so compare a dotted label by its
+	// underscore spelling; otherwise every "." counts as an edit.
+	hclToken = strings.ReplaceAll(hclToken, ".", "_")
 	visit := func(tok string) {
 		candidate := pulumiTokenToHCLForm(pkg, tok, isFunction)
 		if candidate == "" {
@@ -75,23 +82,25 @@ func pulumiTokenToHCLForm(pkg schema.PackageReference, token string, isFunction 
 	b.WriteString(pkgName)
 	if mod != "" && mod != "index" {
 		b.WriteRune('_')
-		b.WriteString(strings.ToLower(strings.ReplaceAll(mod, "/", "_")))
+		b.WriteString(strings.ToLower(moduleSeparatorReplacer.Replace(mod)))
 	}
 	b.WriteRune('_')
 	b.WriteString(camelToSnake(name))
 	return b.String()
 }
 
+// camelToSnake converts a camelCase token segment to snake_case. "/" and "."
+// both become "_", since an HCL identifier cannot contain either.
 func camelToSnake(s string) string {
 	var b strings.Builder
 	for i, r := range s {
 		if i > 0 && unicode.IsUpper(r) {
 			prev := rune(s[i-1])
-			if prev != '_' && prev != '/' {
+			if prev != '_' && prev != '/' && prev != '.' {
 				b.WriteRune('_')
 			}
 		}
-		if r == '/' {
+		if r == '/' || r == '.' {
 			b.WriteRune('_')
 		} else {
 			b.WriteRune(unicode.ToLower(r))
