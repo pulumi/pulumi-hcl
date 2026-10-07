@@ -1738,7 +1738,7 @@ func TestResourceOutputToCtyJSONType(t *testing.T) {
 
 // TestCtyEqualsConst exercises every Go type that bindConstValue is
 // documented to produce (string, bool, int32, float64). Earlier versions
-// of selectUnionMemberByConst only compared strings, so other-typed
+// of SelectUnionMemberByConst only compared strings, so other-typed
 // discriminators silently failed to match.
 func TestCtyEqualsConst(t *testing.T) {
 	t.Parallel()
@@ -1796,21 +1796,21 @@ func TestSelectUnionMemberByConst_IntDiscriminator(t *testing.T) {
 	}
 	u := &schema.UnionType{ElementTypes: []schema.Type{v1, v2}}
 
-	picked, err := selectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
+	picked, err := SelectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
 		"version": cty.NumberIntVal(2),
 		"b":       cty.StringVal("hello"),
 	}), u)
 	require.NoError(t, err)
 	assert.Same(t, v2, picked)
 
-	picked, err = selectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
+	picked, err = SelectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
 		"version": cty.NumberIntVal(1),
 		"a":       cty.StringVal("hello"),
 	}), u)
 	require.NoError(t, err)
 	assert.Same(t, v1, picked)
 
-	_, err = selectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
+	_, err = SelectUnionMemberByConst(cty.ObjectVal(map[string]cty.Value{
 		"version": cty.NumberIntVal(99),
 	}), u)
 	var unrecognized *unrecognizedDiscriminatorError

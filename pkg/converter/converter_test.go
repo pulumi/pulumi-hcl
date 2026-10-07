@@ -1458,3 +1458,446 @@ component "child" "./child" {
 `
 	assert.Equal(t, expected, string(out.Bytes()))
 }
+
+// TestEjectKeysWithoutProperty checks that the key of an object literal does
+// not change if the schema names no property for it, as in the runtime. A
+// reference to the key must name the same attribute as the literal.
+func TestEjectKeysWithoutProperty(t *testing.T) {
+	t.Parallel()
+
+	stringType := schema.TypeSpec{Type: "string"}
+	camelRef := schema.TypeSpec{Ref: "#/types/test:index:Camel"}
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Camel": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type:       "object",
+				Properties: map[string]schema.PropertySpec{"nestedValue": {TypeSpec: stringType}},
+			}},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value":      {TypeSpec: stringType},
+					"anyValue":   {TypeSpec: schema.TypeSpec{Ref: "pulumi.json#/Any"}},
+					"plainUnion": {TypeSpec: schema.TypeSpec{OneOf: []schema.TypeSpec{stringType, camelRef}}},
+					"camel":      {TypeSpec: camelRef},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+variable "cfg" {
+  default = {
+    default_key = "variable"
+  }
+}
+
+locals {
+  local_map = {
+    local_key = {
+      some_attr = "local"
+    }
+  }
+}
+
+resource "test_item" "item" {
+  for_each = {
+    resource_key = {
+      some_attr = "for_each"
+    }
+  }
+  any_value = {
+    any_key = "any"
+  }
+  plain_union = {
+    nested_value = "union with no discriminator"
+  }
+  camel = {
+    "nested_value" = "quoted key of a property"
+  }
+  value = "${each.value.some_attr}-${local.local_map.local_key.some_attr}-${var.cfg.default_key}"
+  pulumi {
+    env_var_mappings = {
+      MY_VAR = "OTHER_VAR"
+    }
+  }
+}
+
+module "child" {
+  source = "./child"
+  input = {
+    input_key = "module"
+  }
+}
+
+output "out" {
+  value = {
+    output_key = "output"
+  }
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `config "cfg" {
+  default = {
+    default_key = "variable"
+  }
+}
+
+local_map = {
+  local_key = {
+    some_attr = "local"
+  }
+}
+
+resource "item" "test:index:Item" {
+  anyValue = {
+    any_key = "any"
+  }
+  plainUnion = {
+    nested_value = "union with no discriminator"
+  }
+  camel = {
+    nestedValue = "quoted key of a property"
+  }
+  value = "${range.value.some_attr}-${local_map.local_key.some_attr}-${cfg.default_key}"
+  options {
+    range = {
+      resource_key = {
+        some_attr = "for_each"
+      }
+    }
+    envVarMappings = {
+      MY_VAR = "OTHER_VAR"
+    }
+    deleteBeforeReplace = true
+  }
+}
+
+component "child" "./child" {
+  input = {
+    input_key = "module"
+  }
+}
+
+output "out" {
+  value = {
+    output_key = "output"
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// TestEjectReferenceBelowMap checks that a reference to a resource names the
+// same attributes as the runtime: a property gets its schema name, and a key
+// of a map or of a value of type any does not change.
+func TestEjectReferenceBelowMap(t *testing.T) {
+	t.Parallel()
+
+	stringType := schema.TypeSpec{Type: "string"}
+	camelRef := schema.TypeSpec{Ref: "#/types/test:index:Camel"}
+	properties := map[string]schema.PropertySpec{
+		"value":    {TypeSpec: stringType},
+		"anyValue": {TypeSpec: schema.TypeSpec{Ref: "pulumi.json#/Any"}},
+		"tags":     {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &stringType}},
+		"camelMap": {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &camelRef}},
+	}
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Camel": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type:       "object",
+				Properties: map[string]schema.PropertySpec{"nestedValue": {TypeSpec: stringType}},
+			}},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				ObjectTypeSpec:  schema.ObjectTypeSpec{Properties: properties},
+				InputProperties: properties,
+			},
+			"test:index:Reader": {
+				InputProperties: map[string]schema.PropertySpec{
+					"values": {TypeSpec: schema.TypeSpec{Type: "array", Items: &stringType}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	// The reader is before the item, so the reference is to a resource that
+	// the converter did not emit yet.
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+resource "test_reader" "reader" {
+  values = [
+    test_item.item.tags.tag_key,
+    test_item.item.camel_map.map_key.nested_value,
+    test_item.item.any_value.any_key,
+  ]
+}
+
+resource "test_item" "item" {
+  value = "item"
+  pulumi {
+    additional_secret_outputs = [tags.tag_key, camel_map["map_key"].nested_value]
+  }
+  lifecycle {
+    ignore_changes = [tags.tag_key, camel_map["map_key"].nested_value]
+  }
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "reader" "test:index:Reader" {
+  values = [item.tags.tag_key, item.camelMap.map_key.nestedValue, item.anyValue.any_key]
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+resource "item" "test:index:Item" {
+  value = "item"
+  options {
+    additionalSecretOutputs = [tags.tag_key, camelMap["map_key"].nestedValue]
+    ignoreChanges           = [tags.tag_key, camelMap["map_key"].nestedValue]
+    deleteBeforeReplace     = true
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// TestEjectCallUsesMethodSchema checks that the arguments and the result of a
+// `call` block get their names from the schema of the method, for a method of
+// a resource and for a method of a provider.
+func TestEjectCallUsesMethodSchema(t *testing.T) {
+	t.Parallel()
+
+	stringType := schema.TypeSpec{Type: "string"}
+	camelRef := schema.TypeSpec{Ref: "#/types/test:index:Camel"}
+	method := func(self string) schema.FunctionSpec {
+		return schema.FunctionSpec{
+			Inputs: &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+				"__self__":  {TypeSpec: schema.TypeSpec{Ref: self}},
+				"camelArg":  {TypeSpec: camelRef},
+				"tagsInput": {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &stringType}},
+			}},
+			Outputs: &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+				"camelResult": {TypeSpec: camelRef},
+			}},
+		}
+	}
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Camel": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type:       "object",
+				Properties: map[string]schema.PropertySpec{"nestedValue": {TypeSpec: stringType}},
+			}},
+		},
+		Provider: &schema.ResourceSpec{
+			Methods: map[string]string{"doThing": "pulumi:providers:test/doThing"},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"values": {TypeSpec: schema.TypeSpec{Type: "array", Items: &stringType}},
+				},
+				Methods: map[string]string{"doThing": "test:index:Item/doThing"},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:index:Item/doThing":       method("#/resources/test:index:Item"),
+			"pulumi:providers:test/doThing": method("#/provider"),
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	// The call blocks are before the blocks of their resource and provider.
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+call "item" "do_thing" {
+  camel_arg = {
+    nested_value = "resource"
+  }
+  tags_input = {
+    tag_key = "resource"
+  }
+}
+
+call "prov" "do_thing" {
+  camel_arg = {
+    nested_value = "provider"
+  }
+}
+
+provider "test" {
+  alias = "prov"
+}
+
+resource "test_item" "item" {
+  values = [
+    call.item.do_thing.camel_result.nested_value,
+    call.prov.do_thing.camel_result.nested_value,
+  ]
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "prov" "pulumi:providers:test" {
+}
+
+resource "item" "test:index:Item" {
+  values = [call(item, "doThing", {
+    camelArg = {
+      nestedValue = "resource"
+    }
+    tagsInput = {
+      tag_key = "resource"
+    }
+    }).camelResult.nestedValue, call(prov, "doThing", {
+    camelArg = {
+      nestedValue = "provider"
+    }
+  }).camelResult.nestedValue]
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// TestEjectTypeThroughExpressions checks that the schema type of an input
+// applies to the object literals in a conditional expression and in a `for`
+// expression, because the runtime converts the value of the expression with
+// that type.
+func TestEjectTypeThroughExpressions(t *testing.T) {
+	t.Parallel()
+
+	stringType := schema.TypeSpec{Type: "string"}
+	camelRef := schema.TypeSpec{Ref: "#/types/test:index:Camel"}
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Types: map[string]schema.ComplexTypeSpec{
+			"test:index:Camel": {ObjectTypeSpec: schema.ObjectTypeSpec{
+				Type:       "object",
+				Properties: map[string]schema.PropertySpec{"nestedValue": {TypeSpec: stringType}},
+			}},
+		},
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Item": {
+				InputProperties: map[string]schema.PropertySpec{
+					"camel":     {TypeSpec: camelRef},
+					"camelList": {TypeSpec: schema.TypeSpec{Type: "array", Items: &camelRef}},
+					"camelMap":  {TypeSpec: schema.TypeSpec{Type: "object", AdditionalProperties: &camelRef}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+variable "enabled" {
+  type = bool
+}
+
+variable "names" {
+  type = list(string)
+}
+
+resource "test_item" "item" {
+  camel = var.enabled ? {
+    nested_value = "true result"
+    } : {
+    nested_value = "false result"
+  }
+  camel_list = [for name in var.names : {
+    nested_value = name
+  }]
+  camel_map = { for name in var.names : name => {
+    nested_value = name
+  } }
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `config "enabled" "bool" {
+}
+
+config "names" "list(string)" {
+}
+
+resource "item" "test:index:Item" {
+  camel = enabled ? {
+    nestedValue = "true result"
+    } : {
+    nestedValue = "false result"
+  }
+  camelList = [for name in names : {
+    nestedValue = name
+  } ]
+  camelMap = {for name in names : name => {
+    nestedValue = name
+  } }
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
