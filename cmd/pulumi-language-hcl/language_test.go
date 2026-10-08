@@ -162,6 +162,9 @@ var expectedFailures = map[string]string{
 		" is reserved as the namespace for resource method calls in HCL",
 	"l2-config-default-from-invoke": "HCL codegen does not support a config variable whose" +
 		" default is sourced from an invoke result",
+	"l2-invoke-per-value-deps": "the runtime does not negotiate OutputValues on Invoke" +
+		" (accepts_outputs_in_invoke), so invoke results carry the union of all argument dependencies:" +
+		" expected d.Dependencies [b], got [a b] (added in v3.268.0)",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
