@@ -17,6 +17,7 @@ package server
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -153,7 +154,7 @@ func buildComponents(
 	components := make(map[tokens.Type]component, len(comps))
 	schemas := make([]*schema.ModuleSchema, 0, len(comps))
 	var root *schema.ModuleSchema
-	var errs schema.Errors
+	var errs []error
 	for _, c := range comps {
 		token := rootToken
 		if c.dir.Subdir != "" {
@@ -161,7 +162,7 @@ func buildComponents(
 		}
 		sch, err := schema.GenerateModuleSchema(ctx, c.loaded.Config, newBinder(c), token, version)
 		if err != nil {
-			errs = append(errs, schema.WrapEach(err, "generating schema for %s", c.dir.describe())...)
+			errs = append(errs, fmt.Errorf("generating schema for %s: %w", c.dir.describe(), err))
 			continue
 		}
 		if c.dir.Subdir == "" {
@@ -170,8 +171,8 @@ func buildComponents(
 		components[token] = component{schema: sch, source: c.source, packages: c.packages}
 		schemas = append(schemas, sch)
 	}
-	if len(errs) > 0 {
-		return nil, pulumiSchema.PackageSpec{}, errs
+	if err := errors.Join(errs...); err != nil {
+		return nil, pulumiSchema.PackageSpec{}, err
 	}
 	spec, err := schema.PackageSchema(root, schemas)
 	if err != nil {

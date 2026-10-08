@@ -18,6 +18,7 @@ package schema
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	gotoken "go/token"
 	"maps"
@@ -413,7 +414,7 @@ func seedResourceTypes(
 // object type, computed by recursively typing the child module's outputs.
 // Ranged calls are bound as a list/map of that object. A module that cannot be
 // loaded, or whose source is already on the recursion path (a module cycle), is
-// an error; every such module in the tree is reported together as [Errors].
+// an error; every such module is reported, not just the first.
 func seedModuleTypes(
 	ctx context.Context, scope *eval.Context, config *ast.Config, binder *Binder, path map[string]bool,
 ) error {
@@ -423,7 +424,7 @@ func seedModuleTypes(
 		}
 		return nil
 	}
-	var errs Errors
+	var errs []error
 	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
 		call := config.Modules[name]
 		childConfig, dir, err := binder.Modules.LoadModule(ctx, call.Source, call.Version, binder.ModuleDir)
@@ -440,7 +441,7 @@ func seedModuleTypes(
 		childScope, err := buildTypeScope(ctx, childConfig, binder.child(dir), path)
 		delete(path, dir)
 		if err != nil {
-			errs = append(errs, WrapEach(err, "typing module %q", name)...)
+			errs = append(errs, fmt.Errorf("typing module %q: %w", name, err))
 			continue
 		}
 
@@ -468,10 +469,7 @@ func seedModuleTypes(
 		}
 		scope.SetModule(name, val)
 	}
-	if len(errs) > 0 {
-		return errs
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // inferOutputType evaluates an output's value expression against the type scope
