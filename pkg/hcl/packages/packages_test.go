@@ -16,12 +16,14 @@ package packages
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/blang/semver"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -118,6 +120,23 @@ func TestResolveResource(t *testing.T) {
 				"external:index/external:External": {},
 			},
 		},
+		// Kubernetes-style modules contain dots, which an HCL identifier
+		// cannot, so the HCL form writes them as underscores.
+		schema.PackageSpec{
+			Name: "kubernetes",
+			Resources: map[string]schema.ResourceSpec{
+				"kubernetes:helm.sh/v3:Release":           {},
+				"kubernetes:networking.k8s.io/v1:Ingress": {},
+			},
+		},
+		// Two tokens whose search keys collide once separators are dropped.
+		schema.PackageSpec{
+			Name: "clash",
+			Resources: map[string]schema.ResourceSpec{
+				"clash:a.b:Foo": {},
+				"clash:ab:Foo":  {},
+			},
+		},
 	)
 
 	ctx := t.Context()
@@ -208,6 +227,36 @@ func TestResolveResource(t *testing.T) {
 			token:          "pulumi_providers_aws",
 			errContains:    "is a provider type and cannot be declared with a resource block",
 		},
+		{
+			name:           "dotted module written with underscores",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_helm_sh_v3_release",
+			wantToken:      "kubernetes:helm.sh/v3:Release",
+		},
+		{
+			name:           "dotted module written with dots",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_helm.sh_v3_release",
+			wantToken:      "kubernetes:helm.sh/v3:Release",
+		},
+		{
+			name:           "multi-dot module written with underscores",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_networking_k8s_io_v1_ingress",
+			wantToken:      "kubernetes:networking.k8s.io/v1:Ingress",
+		},
+		{
+			name:           "type labels are case-sensitive",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_Helm_sh_v3_release",
+			wantErr:        ErrNotFound,
+		},
+		{
+			name:           "ambiguous resource",
+			knownProviders: []string{"clash"},
+			token:          "clash_ab_foo",
+			errContains:    `ambiguous token "clash_ab_foo": matches multiple resources [clash:a.b:Foo clash:ab:Foo]`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -287,6 +336,9 @@ func TestResolveFunction(t *testing.T) {
 			Functions: map[string]schema.FunctionSpec{
 				"bridged:iam/getRole:getRole":                           {},
 				"bridged:index/getAvailabilityZone:getAvailabilityZone": {},
+				// Dropping "get" from one name gives the other's full name.
+				"bridged:compute/routerStatus:RouterStatus":       {},
+				"bridged:compute/getRouterStatus:getRouterStatus": {},
 			},
 		},
 		// Single-segment data source: HCL `data "external" "x"` resolves to
@@ -299,6 +351,40 @@ func TestResolveFunction(t *testing.T) {
 			},
 			Functions: map[string]schema.FunctionSpec{
 				"external:index/getExternal:getExternal": {},
+			},
+		},
+		// Multi-segment modules: the HCL form omits "get" after the last
+		// module segment, wherever that falls.
+		schema.PackageSpec{
+			Name: "kubernetes",
+			Functions: map[string]schema.FunctionSpec{
+				"kubernetes:helm.sh/v3:getRelease": {},
+				"kubernetes:core/v1:getConfigMap":  {},
+			},
+		},
+		schema.PackageSpec{
+			Name: "grafana",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"grafana:onCall/getTeam:getTeam": {},
+			},
+		},
+		// Two tokens whose search keys collide once separators are dropped.
+		schema.PackageSpec{
+			Name: "clash",
+			Functions: map[string]schema.FunctionSpec{
+				"clash:a.b:getFoo": {},
+				"clash:ab:getFoo":  {},
+			},
+		},
+		// A lowercase member suffix is not the `getName` convention used
+		// for data sources, even when its module contains dots.
+		schema.PackageSpec{
+			Name: "lowerget",
+			Functions: map[string]schema.FunctionSpec{
+				"lowerget:helm.sh/v3:getrelease": {},
 			},
 		},
 	)
@@ -387,6 +473,18 @@ func TestResolveFunction(t *testing.T) {
 			wantToken:      "bridged:index/getAvailabilityZone:getAvailabilityZone",
 		},
 		{
+			name:           "full member name wins over get-less match",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_compute_router_status",
+			wantToken:      "bridged:compute/routerStatus:RouterStatus",
+		},
+		{
+			name:           "explicit get selects the get-prefixed function",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_compute_get_router_status",
+			wantToken:      "bridged:compute/getRouterStatus:getRouterStatus",
+		},
+		{
 			name:           "function not found",
 			knownProviders: []string{"aws"},
 			token:          "aws_nonexistent",
@@ -396,6 +494,54 @@ func TestResolveFunction(t *testing.T) {
 			name:    "package not found",
 			token:   "fake_function",
 			wantErr: ErrNotFound,
+		},
+		{
+			name:           "dotted module implicit get",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_helm_sh_v3_release",
+			wantToken:      "kubernetes:helm.sh/v3:getRelease",
+		},
+		{
+			name:           "dotted module explicit get",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_helm_sh_v3_get_release",
+			wantToken:      "kubernetes:helm.sh/v3:getRelease",
+		},
+		{
+			name:           "dotted module written with dots",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_helm.sh_v3_release",
+			wantToken:      "kubernetes:helm.sh/v3:getRelease",
+		},
+		{
+			name:           "lowercase get prefix stays part of the member name",
+			knownProviders: []string{"lowerget"},
+			token:          "lowerget_helm_sh_v3_getrelease",
+			wantToken:      "lowerget:helm.sh/v3:getrelease",
+		},
+		{
+			name:           "lowercase get prefix cannot be omitted",
+			knownProviders: []string{"lowerget"},
+			token:          "lowerget_helm_sh_v3_release",
+			wantErr:        ErrNotFound,
+		},
+		{
+			name:           "multi-segment module implicit get",
+			knownProviders: []string{"kubernetes"},
+			token:          "kubernetes_core_v1_config_map",
+			wantToken:      "kubernetes:core/v1:getConfigMap",
+		},
+		{
+			name:           "camelCase module implicit get",
+			knownProviders: []string{"grafana"},
+			token:          "grafana_on_call_team",
+			wantToken:      "grafana:onCall/getTeam:getTeam",
+		},
+		{
+			name:           "ambiguous function",
+			knownProviders: []string{"clash"},
+			token:          "clash_ab_foo",
+			errContains:    `ambiguous token "clash_ab_foo": matches multiple functions [clash:a.b:getFoo clash:ab:getFoo]`,
 		},
 	}
 
@@ -429,6 +575,80 @@ func TestResolveFunction(t *testing.T) {
 			require.NotNil(t, fn)
 			actualToken := fn.Token
 			require.Equal(t, tt.wantToken, actualToken)
+		})
+	}
+}
+
+// TestCanonicalHCLNameRoundtrip checks that the HCL name generated for a token
+// resolves back to that token, including for modules containing dots.
+func TestCanonicalHCLNameRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t,
+		schema.PackageSpec{
+			Name: "kubernetes",
+			Resources: map[string]schema.ResourceSpec{
+				"kubernetes:core/v1:ConfigMap":              {},
+				"kubernetes:helm.sh/v3:Release":             {},
+				"kubernetes:networking.k8s.io/v1:Ingress":   {},
+				"kubernetes:storage.k8s.io/v1:StorageClass": {},
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"kubernetes:core/v1:getConfigMap":  {},
+				"kubernetes:helm.sh/v3:getRelease": {},
+			},
+		},
+		schema.PackageSpec{
+			Name: "grafana",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"grafana:onCall/team:Team": {},
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"grafana:onCall/getTeam:getTeam": {},
+			},
+		},
+	)
+
+	tests := []struct {
+		token      string
+		isFunction bool
+		want       string
+	}{
+		{"kubernetes:core/v1:ConfigMap", false, "kubernetes_core_v1_config_map"},
+		{"kubernetes:helm.sh/v3:Release", false, "kubernetes_helm_sh_v3_release"},
+		{"kubernetes:networking.k8s.io/v1:Ingress", false, "kubernetes_networking_k8s_io_v1_ingress"},
+		{"kubernetes:storage.k8s.io/v1:StorageClass", false, "kubernetes_storage_k8s_io_v1_storage_class"},
+		{"kubernetes:core/v1:getConfigMap", true, "kubernetes_core_v1_config_map"},
+		{"kubernetes:helm.sh/v3:getRelease", true, "kubernetes_helm_sh_v3_release"},
+		{"grafana:onCall/team:Team", false, "grafana_on_call_team"},
+		{"grafana:onCall/getTeam:getTeam", true, "grafana_on_call_team"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.token, func(t *testing.T) {
+			t.Parallel()
+			pkgName, _, _ := strings.Cut(tt.token, ":")
+			pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: pkgName})
+			require.NoError(t, err)
+
+			if tt.isFunction {
+				hclName, diags := PulumiFunctionTokenToHCL(pkg, tt.token)
+				require.False(t, diags.HasErrors())
+				require.Equal(t, tt.want, hclName)
+				fn, err := ResolveFunction(t.Context(), loader, []string{pkgName}, hclName)
+				require.NoError(t, err)
+				assert.Equal(t, tt.token, fn.Token)
+				return
+			}
+			hclName, diags := PulumiResourceTokenToHCL(pkg, tt.token)
+			require.False(t, diags.HasErrors())
+			require.Equal(t, tt.want, hclName)
+			res, err := ResolveResource(t.Context(), loader, []string{pkgName}, hclName)
+			require.NoError(t, err)
+			assert.Equal(t, tt.token, res.Token)
 		})
 	}
 }

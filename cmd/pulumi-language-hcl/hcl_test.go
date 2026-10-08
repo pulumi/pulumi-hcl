@@ -1797,6 +1797,67 @@ func TestResourceModuleFormat(t *testing.T) {
 	testConvertedPCL(t, pclSource, testSchema)
 }
 
+// TestDottedModuleReference checks that types whose module contains a dot,
+// such as "test:helm.sh/v3:Release", are generated with underscore HCL names,
+// so the references to them resolve. Regression test for #646.
+func TestDottedModuleReference(t *testing.T) {
+	t.Parallel()
+
+	pclSource := `resource crds "test:helm.sh/v3:Release" {
+    chart = "crds"
+}
+
+resource app "test:helm.sh/v3:Release" {
+    options {
+        dependsOn = [crds]
+    }
+    chart = "app-${crds.chart}"
+}
+
+release = invoke("test:helm.sh/v3:getRelease", {
+    name = app.chart
+})
+
+output releaseId {
+    value = release.id
+}
+`
+
+	str := schema.PropertySpec{TypeSpec: schema.TypeSpec{Type: "string"}}
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:helm.sh/v3:Release": {
+				InputProperties: map[string]schema.PropertySpec{"chart": str},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{"chart": str},
+				},
+			},
+		},
+		Functions: map[string]schema.FunctionSpec{
+			"test:helm.sh/v3:getRelease": {
+				Inputs:  &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{"name": str}},
+				Outputs: &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{"id": str}},
+			},
+		},
+	}
+
+	mock := testConvertedPCL(t, pclSource, testSchema)
+
+	var app *hclrun.RegisterResourceRequest
+	for i, r := range mock.RegisteredResources {
+		if r.Name == "app" {
+			app = &mock.RegisteredResources[i]
+		}
+	}
+	require.NotNil(t, app)
+	assert.Equal(t, "test:helm.sh/v3:Release", app.Type)
+	assert.Equal(t, []string{"urn:pulumi:test::project::test:helm.sh/v3:Release::crds"}, app.Dependencies)
+	require.Len(t, mock.InvokedFunctions, 1)
+	assert.Equal(t, "test:helm.sh/v3:getRelease", mock.InvokedFunctions[0].Token)
+}
+
 func TestLocalExecProvisioner(t *testing.T) {
 	t.Parallel()
 
