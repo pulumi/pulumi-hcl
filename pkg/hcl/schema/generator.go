@@ -413,7 +413,7 @@ func seedResourceTypes(
 // object type, computed by recursively typing the child module's outputs.
 // Ranged calls are bound as a list/map of that object. A module that cannot be
 // loaded, or whose source is already on the recursion path (a module cycle), is
-// an error.
+// an error; every such module in the tree is reported together as [Errors].
 func seedModuleTypes(
 	ctx context.Context, scope *eval.Context, config *ast.Config, binder *Binder, path map[string]bool,
 ) error {
@@ -423,21 +423,25 @@ func seedModuleTypes(
 		}
 		return nil
 	}
+	var errs Errors
 	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
 		call := config.Modules[name]
 		childConfig, dir, err := binder.Modules.LoadModule(ctx, call.Source, call.Version, binder.ModuleDir)
 		if err != nil {
-			return fmt.Errorf("loading module %q: %w", name, err)
+			errs = append(errs, fmt.Errorf("loading module %q: %w", name, err))
+			continue
 		}
 		if path[dir] {
-			return fmt.Errorf("module cycle through %q (%s)", name, dir)
+			errs = append(errs, fmt.Errorf("module cycle through %q (%s)", name, dir))
+			continue
 		}
 
 		path[dir] = true
 		childScope, err := buildTypeScope(ctx, childConfig, binder.child(dir), path)
 		delete(path, dir)
 		if err != nil {
-			return fmt.Errorf("typing module %q: %w", name, err)
+			errs = append(errs, WrapEach(err, "typing module %q", name)...)
+			continue
 		}
 
 		childEval := eval.NewEvaluator(childScope)
@@ -463,6 +467,9 @@ func seedModuleTypes(
 			val = obj
 		}
 		scope.SetModule(name, val)
+	}
+	if len(errs) > 0 {
+		return errs
 	}
 	return nil
 }

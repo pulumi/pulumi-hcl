@@ -153,6 +153,7 @@ func buildComponents(
 	components := make(map[tokens.Type]component, len(comps))
 	schemas := make([]*schema.ModuleSchema, 0, len(comps))
 	var root *schema.ModuleSchema
+	var errs schema.Errors
 	for _, c := range comps {
 		token := rootToken
 		if c.dir.Subdir != "" {
@@ -160,13 +161,17 @@ func buildComponents(
 		}
 		sch, err := schema.GenerateModuleSchema(ctx, c.loaded.Config, newBinder(c), token, version)
 		if err != nil {
-			return nil, pulumiSchema.PackageSpec{}, fmt.Errorf("generating schema for %s: %w", c.dir.describe(), err)
+			errs = append(errs, schema.WrapEach(err, "generating schema for %s", c.dir.describe())...)
+			continue
 		}
 		if c.dir.Subdir == "" {
 			root = sch
 		}
 		components[token] = component{schema: sch, source: c.source, packages: c.packages}
 		schemas = append(schemas, sch)
+	}
+	if len(errs) > 0 {
+		return nil, pulumiSchema.PackageSpec{}, errs
 	}
 	spec, err := schema.PackageSchema(root, schemas)
 	if err != nil {
