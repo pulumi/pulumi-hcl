@@ -447,12 +447,19 @@ func seedModuleTypes(
 
 		childEval := eval.NewEvaluator(childScope)
 		attrs := make(map[string]cty.Value, len(childConfig.Outputs))
-		for _, o := range childConfig.Outputs {
+		var outputErrs []error
+		for _, key := range slices.Sorted(maps.Keys(childConfig.Outputs)) {
+			o := childConfig.Outputs[key]
 			val, err := inferOutputType(childEval, o)
 			if err != nil {
-				return fmt.Errorf("typing module %q output %q: %w", name, o.Name, err)
+				outputErrs = append(outputErrs, fmt.Errorf("typing module %q output %q: %w", name, o.Name, err))
+				continue
 			}
 			attrs[o.Name] = val
+		}
+		if len(outputErrs) > 0 {
+			errs = append(errs, outputErrs...)
+			continue
 		}
 		// A direct reference resolves attribute by attribute, so the object
 		// value carries each output's nullability. A ranged reference is indexed

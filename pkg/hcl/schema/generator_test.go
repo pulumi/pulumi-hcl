@@ -1085,6 +1085,48 @@ typing module "b": loading module "deep": no module "./missing-deep"
 loading module "c": no module "./missing-c"`)
 }
 
+// TestEveryUntypeableModuleOutputIsReported shows that every child module output
+// that cannot be typed is reported alongside unresolvable module sources.
+func TestEveryUntypeableModuleOutputIsReported(t *testing.T) {
+	t.Parallel()
+
+	parse := func(src string) *ast.Config {
+		cfg, diags := parser.NewParser().ParseSource("m.tf", []byte(src))
+		require.False(t, diags.HasErrors(), diags.Error())
+		return cfg
+	}
+
+	child := parse(`
+variable "v" {
+  type = object({ a = string })
+}
+output "x" {
+  value = var.v.missing_x
+}
+output "y" {
+  value = var.v.missing_y
+}
+`)
+	root := parse(`
+module "a" {
+  source = "./child"
+}
+module "b" {
+  source = "./missing-b"
+}
+`)
+	binder := &Binder{
+		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./child": child}},
+		ModuleDir: ".",
+	}
+	_, err := GenerateModuleSchema(t.Context(), root, binder, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `typing module "a" output "x"`)
+	assert.Contains(t, msg, `typing module "a" output "y"`)
+	assert.Contains(t, msg, `loading module "b": no module "./missing-b"`)
+}
+
 // TestBoundaryNameConversion shows that the Construct boundary renames object
 // field names (snake_case ↔ camelCase) at every depth in both directions, while
 // leaving the dynamic keys of a map untouched, and through the member of a
