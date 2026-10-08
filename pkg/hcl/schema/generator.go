@@ -18,6 +18,7 @@ package schema
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	gotoken "go/token"
 	"maps"
@@ -413,7 +414,7 @@ func seedResourceTypes(
 // object type, computed by recursively typing the child module's outputs.
 // Ranged calls are bound as a list/map of that object. A module that cannot be
 // loaded, or whose source is already on the recursion path (a module cycle), is
-// an error.
+// an error; every such module is reported, not just the first.
 func seedModuleTypes(
 	ctx context.Context, scope *eval.Context, config *ast.Config, binder *Binder, path map[string]bool,
 ) error {
@@ -423,31 +424,42 @@ func seedModuleTypes(
 		}
 		return nil
 	}
+	var errs []error
 	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
 		call := config.Modules[name]
 		childConfig, dir, err := binder.Modules.LoadModule(ctx, call.Source, call.Version, binder.ModuleDir)
 		if err != nil {
-			return fmt.Errorf("loading module %q: %w", name, err)
+			errs = append(errs, fmt.Errorf("loading module %q: %w", name, err))
+			continue
 		}
 		if path[dir] {
-			return fmt.Errorf("module cycle through %q (%s)", name, dir)
+			errs = append(errs, fmt.Errorf("module cycle through %q (%s)", name, dir))
+			continue
 		}
 
 		path[dir] = true
 		childScope, err := buildTypeScope(ctx, childConfig, binder.child(dir), path)
 		delete(path, dir)
 		if err != nil {
-			return fmt.Errorf("typing module %q: %w", name, err)
+			errs = append(errs, fmt.Errorf("typing module %q: %w", name, err))
+			continue
 		}
 
 		childEval := eval.NewEvaluator(childScope)
 		attrs := make(map[string]cty.Value, len(childConfig.Outputs))
-		for _, o := range childConfig.Outputs {
+		var outputErrs []error
+		for _, key := range slices.Sorted(maps.Keys(childConfig.Outputs)) {
+			o := childConfig.Outputs[key]
 			val, err := inferOutputType(childEval, o)
 			if err != nil {
-				return fmt.Errorf("typing module %q output %q: %w", name, o.Name, err)
+				outputErrs = append(outputErrs, fmt.Errorf("typing module %q output %q: %w", name, o.Name, err))
+				continue
 			}
 			attrs[o.Name] = val
+		}
+		if len(outputErrs) > 0 {
+			errs = append(errs, outputErrs...)
+			continue
 		}
 		// A direct reference resolves attribute by attribute, so the object
 		// value carries each output's nullability. A ranged reference is indexed
@@ -464,7 +476,7 @@ func seedModuleTypes(
 		}
 		scope.SetModule(name, val)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // inferOutputType evaluates an output's value expression against the type scope
