@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Accept object-shaped stack config, such as `aws:defaultTags`, for the Terraform providers of a module
+time: 2026-10-14T12:28:23.000000+02:00
+custom:
+    Component: resource-host
+    PR: "672"
