@@ -104,6 +104,8 @@ func TestL2RenamedOutputs(t *testing.T) {
 		"arn":     "arn:test:alpha",
 		"window":  "5",
 	})
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: HCL -> PCL ignores bridge property renames.
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/681]: PCL -> HCL emits a MaxItems=1 nested block as an attribute.
 	c.SkipRoundTrip = "HCL -> PCL ignores the Customize renames, and PCL -> HCL emits a nested block as an attribute."
 	putest.RunCase(t, "l2_renamed_outputs", c)
 }
@@ -130,6 +132,8 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 		"endpoint_seen": "https://example.test/api",
 		"retries_seen":  "3",
 	})
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: HCL -> PCL ignores bridge property renames.
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/677]: HCL -> PCL drops nested blocks in provider blocks.
 	c.SkipRoundTrip = "HCL -> PCL ignores the Customize renames and drops the nested block of the provider."
 	putest.RunCase(t, "l2_renamed_provider_config", c)
 }
@@ -143,6 +147,8 @@ func TestL2RenamedDataSourceInputs(t *testing.T) {
 	c := renamedCase(map[string]string{
 		"matched": "hit:lambda:trigger",
 	})
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: HCL -> PCL ignores bridge property renames.
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/681]: PCL -> HCL emits a MaxItems=1 nested block as an attribute.
 	c.SkipRoundTrip = "HCL -> PCL ignores the Customize renames, and PCL -> HCL emits a nested block as an attribute."
 	putest.RunCase(t, "l2_renamed_data_source_inputs", c)
 }
