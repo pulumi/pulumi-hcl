@@ -54,5 +54,6 @@ func TestL2SingleSegmentToken(t *testing.T) {
 			"data_answer":     "a-hi:v",
 			"resource_result": "r-world",
 		},
+		SkipRoundTrip: "HCL -> PCL ignores the Customize renames, and PCL -> HCL emits `single_single` for the `single` token.",
 	})
 }

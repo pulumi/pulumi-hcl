@@ -31,6 +31,7 @@ import (
 	"github.com/pulumi/providertest/pulumitest/opttest"
 	"github.com/pulumi/pulumi-hcl/pkg/converter"
 	"github.com/pulumi/pulumi-hcl/pkg/server"
+	"github.com/pulumi/pulumi-hcl/tests/testutil"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
@@ -497,14 +498,57 @@ func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterA
 	}, converterArgs...)
 	cmd := exec.Command("pulumi", args...)
 	cmd.Dir = d.dir
+	cmd.Env = d.converterEnv(t)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// Convert runs `pulumi convert --from <from> --language <language>` on
+// programFiles and returns the generated program files, without the
+// generated Pulumi.yaml. from is also the runtime of the source project. The
+// converter is served in-process behind a PATH shim, the language host
+// through PULUMI_DEBUG_LANGUAGES, and the schema loader resolves packages
+// through the attached providers. The CLI output goes to the test log.
+func (d *Driver) Convert(
+	t *testing.T, programFiles map[string]string, from, language string,
+) (map[string]string, error) {
+	t.Helper()
+	src, out := t.TempDir(), t.TempDir()
+	project := fmt.Sprintf("name: tfcompat\nruntime: %s\n", from)
+	require.NoError(t, os.WriteFile(filepath.Join(src, "Pulumi.yaml"), []byte(project), 0o600))
+	for path, content := range programFiles {
+		fullPath := filepath.Join(src, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o600))
+	}
+
+	cmd := exec.Command("pulumi", "convert",
+		"--from", from, "--language", language, "--out", out, "--generate-only")
+	cmd.Dir = src
+	cmd.Env = append(d.converterEnv(t), d.attachedProvidersEnv(t))
+	output, err := cmd.CombinedOutput()
+	t.Logf("pulumi convert --from %s --language %s:\n%s", from, language, output)
+	if err != nil {
+		return nil, fmt.Errorf("pulumi convert --from %s --language %s: %w", from, language, err)
+	}
+
+	files, err := testutil.LoadCaseDir(out)
+	if err != nil {
+		return nil, err
+	}
+	delete(files, "Pulumi.yaml")
+	return files, nil
+}
+
+// converterEnv returns the workspace env with a PATH that resolves
+// pulumi-converter-hcl to the in-process converter.
+func (d *Driver) converterEnv(t *testing.T) []string {
+	t.Helper()
 	env := d.workspaceEnv(t)
 	envPath := os.Getenv("PATH")
-	if p, ok := stack.Workspace().GetEnvVars()["PATH"]; ok {
+	if p, ok := d.pt.CurrentStack().Workspace().GetEnvVars()["PATH"]; ok {
 		envPath = p
 	}
 	shimDir := converterShim(t, d.serveConverter(t))
-	env = append(env, "PATH="+shimDir+string(os.PathListSeparator)+envPath)
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return append(env, "PATH="+shimDir+string(os.PathListSeparator)+envPath)
 }

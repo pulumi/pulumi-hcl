@@ -37,6 +37,7 @@ func TestL2OmittedNestedBlock(t *testing.T) {
 		Providers: []putest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
+		SkipRoundTrip: "PCL -> HCL emits a nested block as an attribute.",
 		ExpectedOutputs: map[string]string{
 			"rule":     "[]",
 			"rule_len": "0",
@@ -69,6 +70,7 @@ func TestL2SetBlockEquality(t *testing.T) {
 		Providers: []putest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
+		SkipRoundTrip: "PCL -> HCL emits a nested block as an attribute.",
 		ExpectedOutputs: map[string]string{
 			"eq_same":      "true",
 			"eq_reordered": "true",
@@ -84,6 +86,7 @@ func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 		Providers: []putest.Provider{
 			{Name: "fnblock", Factory: providers.FNBlockProvider},
 		},
+		SkipRoundTrip: "PCL -> HCL emits a nested block as an attribute.",
 		ExpectedOutputs: map[string]string{
 			"settings": "[]",
 		},

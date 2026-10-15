@@ -24,8 +24,11 @@
 package putest
 
 import (
+	"maps"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	pfprovider "github.com/hashicorp/terraform-plugin-framework/provider"
@@ -36,6 +39,8 @@ import (
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,19 +82,63 @@ type Case struct {
 	// the apply. SDKv2 providers record at the helper/schema CRUD boundary,
 	// plugin-framework providers at the tfprotov6 boundary.
 	AssertOps func(t *testing.T, ops []tfexec.Op)
+	// SkipRoundTrip, if set, skips the HCL -> PCL -> HCL round trip. It is the
+	// reason the case cannot round trip.
+	SkipRoundTrip string
 }
 
 // RunCase resolves testdata/cases/<caseName>/ relative to the calling test
 // file, runs `pulumi up` on it, and applies the Case's assertions. A case
 // directory containing only numbered stage subdirs (0/, 1/, ...) applies one
 // file set per subdir in order; assertions run after the last apply.
+//
+// RunCase then converts each stage HCL -> PCL -> HCL with `pulumi convert`
+// and compares both results against the golden files in
+// testdata/roundtrip/<caseName>/[<stage>/]{pcl,hcl}/. If PULUMI_ACCEPT is
+// truthy, it writes the golden files instead. If the round-tripped HCL differs
+// from the source, RunCase runs the round-tripped stages on a new stack and
+// applies the Case's assertions again.
 func RunCase(t *testing.T, caseName string, c Case) {
 	t.Helper()
 
 	_, callerFile, _, _ := runtime.Caller(1)
-	caseDir := filepath.Join(filepath.Dir(callerFile), "testdata", "cases", caseName)
-	stages, _, err := testutil.LoadStages(caseDir)
+	testdataDir := filepath.Join(filepath.Dir(callerFile), "testdata")
+	stages, staged, err := testutil.LoadStages(filepath.Join(testdataDir, "cases", caseName))
 	require.NoError(t, err)
+
+	driver := run(t, c, stages)
+
+	t.Run("round-trip", func(t *testing.T) {
+		if c.SkipRoundTrip != "" {
+			t.Skip(c.SkipRoundTrip)
+		}
+		goldenDir := filepath.Join(testdataDir, "roundtrip", caseName)
+		roundTripped := make([]map[string]string, len(stages))
+		identical := true
+		for i, files := range stages {
+			stageDir := goldenDir
+			if staged {
+				stageDir = filepath.Join(goldenDir, strconv.Itoa(i))
+			}
+			pcl, err := driver.Convert(t, files, "hcl", "pcl")
+			require.NoErrorf(t, err, "stage %d: HCL -> PCL", i)
+			assertGoldenDir(t, filepath.Join(stageDir, "pcl"), pcl)
+			hcl, err := driver.Convert(t, pcl, "pcl", "hcl")
+			require.NoErrorf(t, err, "stage %d: PCL -> HCL", i)
+			assertGoldenDir(t, filepath.Join(stageDir, "hcl"), hcl)
+			roundTripped[i] = hcl
+			identical = identical && maps.Equal(files, hcl)
+		}
+		if !identical {
+			run(t, c, roundTripped)
+		}
+	})
+}
+
+// run applies stages in order on a new stack, applies the Case's assertions,
+// and returns the driver.
+func run(t *testing.T, c Case, stages []map[string]string) *pulexec.Driver {
+	t.Helper()
 
 	rec := &tfexec.Recorder{}
 	provs := make([]pulexec.Provider, len(c.Providers))
@@ -113,6 +162,7 @@ func RunCase(t *testing.T, caseName string, c Case) {
 
 	driver := pulexec.NewDriver(t, provs, c.Config)
 	var res pulexec.Result
+	var err error
 	for i, files := range stages {
 		if !c.NoPreview {
 			_, err = driver.Preview(t, files)
@@ -131,4 +181,24 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	if c.AssertOps != nil {
 		c.AssertOps(t, rec.Ops())
 	}
+	return driver
+}
+
+// assertGoldenDir compares got against the files under dir. If PULUMI_ACCEPT
+// is truthy, it replaces the contents of dir with got instead.
+func assertGoldenDir(t *testing.T, dir string, got map[string]string) {
+	t.Helper()
+
+	if cmdutil.IsTruthy(os.Getenv("PULUMI_ACCEPT")) {
+		require.NoError(t, os.RemoveAll(dir))
+		for path, content := range got {
+			fullPath := filepath.Join(dir, path)
+			require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+			require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o644)) //nolint:gosec // golden file
+		}
+		return
+	}
+	want, err := testutil.LoadCaseDir(dir)
+	require.NoError(t, err, "golden files in %s not found; run with PULUMI_ACCEPT=1 to generate", dir)
+	assert.Equal(t, want, got)
 }
