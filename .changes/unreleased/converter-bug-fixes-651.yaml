@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Rename a key or an attribute in `pulumi convert` only if the schema names a property for it
+time: 2026-09-29T09:50:00.531863+01:00
+custom:
+    Component: converter
+    PR: "651"
