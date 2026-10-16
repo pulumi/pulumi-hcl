@@ -222,7 +222,10 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 		inputs = v.AsMap()
 	}
 
-	loaded, err := m.moduleLoader.LoadModule(ctx, source, version, ".")
+	loaded, diags, err := m.moduleLoader.LoadModule(ctx, source, version, ".")
+	if diags.HasErrors() {
+		return p.ConstructResponse{}, diags
+	}
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", source, err)
 	}
@@ -266,6 +269,9 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	}
 	resmon := m.newConstructMonitor(ctx, req,
 		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, wrapModuleOutputs, hooks)
+	for _, diag := range diags {
+		contract.IgnoreError(resmon.LogWarning(ctx, diag.Error()))
+	}
 
 	engineRun, err := run.NewEngine(ctx, loaded.Config, &run.EngineOptions{
 		ProjectName:        string(req.Urn.Project()),
@@ -312,7 +318,10 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 		return p.ConstructResponse{}, fmt.Errorf("unknown resource type: %q", req.Urn.Type())
 	}
 
-	loaded, err := param.loader.LoadModule(ctx, comp.source, param.versionConstraint, ".")
+	loaded, diags, err := param.loader.LoadModule(ctx, comp.source, param.versionConstraint, ".")
+	if diags.HasErrors() {
+		return p.ConstructResponse{}, diags
+	}
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("loading module %q: %w", param.name, err)
 	}
@@ -339,6 +348,9 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 	}
 	resmon := m.newConstructMonitor(ctx, req,
 		pulumirpc.NewResourceMonitorClient(monitorConn), componentInputs, comp.schema.OutputsToPulumi, hooks)
+	for _, diag := range diags {
+		contract.IgnoreError(resmon.LogWarning(ctx, diag.Error()))
+	}
 
 	loader := pulumiSchema.NewCachedLoader(packages.NewParameterizationAwareLoader(
 		m.schemaLoader, comp.packages))

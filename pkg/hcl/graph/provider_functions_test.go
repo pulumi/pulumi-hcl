@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,7 +44,7 @@ variable "name" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.True(t, g.HasDependents(nk("simple")))
 	assert.Empty(t, g.Validate())
@@ -71,7 +73,7 @@ variable "name" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 	assert.False(t, g.HasDependents(nk("simple")))
@@ -95,7 +97,7 @@ resource "simple_thing" "x" {}
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 	assert.Empty(t, g.Validate())
 }
 
@@ -116,7 +118,7 @@ variable "name" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.True(t, g.HasDependents(nk("simple")))
 	assert.Empty(t, g.Validate())
@@ -129,14 +131,15 @@ variable "name" {
 // map, so a test can inline a child module without a filesystem fixture.
 type fakeModuleLoader struct {
 	modules map[string]*LoadedModule
+	diags   map[string]hcl.Diagnostics
 }
 
-func (f fakeModuleLoader) LoadModule(source, _, _ string) (*LoadedModule, error) {
-	m, ok := f.modules[source]
+func (f fakeModuleLoader) LoadModule(module *ast.Module, _ string) (*LoadedModule, hcl.Diagnostics) {
+	m, ok := f.modules[module.Source]
 	if !ok {
-		return nil, fmt.Errorf("no module %q", source)
+		return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: fmt.Sprintf("no module %q", module.Source), Subject: module.DeclRange.Ptr()}}
 	}
-	return m, nil
+	return m, f.diags[module.Source]
 }
 
 // TestModuleResourceProviderFunctionInheritsRootProvider covers a
@@ -175,7 +178,7 @@ module "child" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 	assert.True(t, g.HasDependents(nk("simple")))
@@ -226,7 +229,7 @@ module "child" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 	assert.True(t, g.HasDependents(nk("simple.aliased")))

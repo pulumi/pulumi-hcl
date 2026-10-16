@@ -59,7 +59,8 @@ func (p *Parser) ParseDirectory(dir string) (*ast.Config, hcl.Diagnostics) {
 		}
 	}
 
-	return p.parseFiles(primary, override)
+	config, d := p.parseFiles(primary, override)
+	return config, diags.Extend(d)
 }
 
 // ParseFile parses a single HCL file into a configuration.
@@ -69,7 +70,8 @@ func (p *Parser) ParseFile(path string) (*ast.Config, hcl.Diagnostics) {
 		return nil, diags
 	}
 
-	return p.parseFiles(map[string]*hcl.File{path: file}, nil)
+	config, d := p.parseFiles(map[string]*hcl.File{path: file}, nil)
+	return config, diags.Extend(d)
 }
 
 // ParseSource parses HCL source code into a configuration.
@@ -79,7 +81,8 @@ func (p *Parser) ParseSource(filename string, src []byte) (*ast.Config, hcl.Diag
 		return nil, diags
 	}
 
-	return p.parseFiles(map[string]*hcl.File{filename: file}, nil)
+	config, d := p.parseFiles(map[string]*hcl.File{filename: file}, nil)
+	return config, diags.Extend(d)
 }
 
 // parseFiles processes all loaded HCL files into a configuration. Blocks in
@@ -130,7 +133,6 @@ func (p *Parser) parseFiles(primary, override map[string]*hcl.File) (*ast.Config
 	}
 	config.ProviderFunctionCalls = slices.Sorted(maps.Keys(calls))
 
-	config.Diagnostics = diags
 	return config, diags
 }
 

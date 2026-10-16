@@ -479,7 +479,7 @@ moved {
 	g, err := graph.BuildFromConfig(root, fakeModuleLoader{modules: map[string]*graph.LoadedModule{
 		"./mod": {Config: child, SourcePath: "./mod"},
 	}}, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 	require.Empty(t, g.Validate())
 
 	var resNode *graph.Node
@@ -517,10 +517,10 @@ type fakeModuleLoader struct {
 	modules map[string]*graph.LoadedModule
 }
 
-func (f fakeModuleLoader) LoadModule(source, _, _ string) (*graph.LoadedModule, error) {
-	m, ok := f.modules[source]
+func (f fakeModuleLoader) LoadModule(module *ast.Module, _ string) (*graph.LoadedModule, hcl.Diagnostics) {
+	m, ok := f.modules[module.Source]
 	if !ok {
-		return nil, fmt.Errorf("no module %q", source)
+		return nil, hcl.Diagnostics{{Severity: hcl.DiagError, Summary: fmt.Sprintf("no module %q", module.Source), Subject: module.DeclRange.Ptr()}}
 	}
 	return m, nil
 }

@@ -53,8 +53,10 @@ resource "simple_resource" "a" {}
 	_, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: stillExists, SourcePath: "./child"},
 	}}, "")
-	assert.EqualError(t, err,
-		"inlining module m: removed block for module.m.simple_resource.a: this resource block still exists in the configuration")
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	assert.Equal(t, err[0].Summary,
+		"removed block for module.m.simple_resource.a: this resource block still exists in the configuration")
 
 	gone, diags := parser.NewParser().ParseSource("child.hcl", []byte(`
 resource "simple_resource" "b" {}
@@ -64,7 +66,7 @@ resource "simple_resource" "b" {}
 	_, err = BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: gone, SourcePath: "./child"},
 	}}, "")
-	assert.NoError(t, err)
+	assert.False(t, err.HasErrors())
 }
 
 // A child module's removed block inlines with its relative address rewritten
@@ -96,7 +98,7 @@ removed {
 	g, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: childConfig, SourcePath: "./child"},
 	}}, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	require.Len(t, g.Removed(), 1)
 	assert.Equal(t, ast.TargetAddr{
@@ -126,7 +128,9 @@ removed {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	_, err := BuildFromConfig(resourceConfig, fakeModuleLoader{}, "")
-	assert.EqualError(t, err,
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	assert.Equal(t, err[0].Summary,
 		"removed block for simple_resource.a: this resource block still exists in the configuration")
 
 	moduleConfig, diags := parser.NewParser().ParseSource("root.hcl", []byte(`
@@ -149,8 +153,10 @@ removed {
 	_, err = BuildFromConfig(moduleConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: childConfig, SourcePath: "./child"},
 	}}, "")
-	assert.EqualError(t, err,
-		"inlining module child: removed block for module.child: this module block still exists in the configuration")
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	assert.Equal(t, err[0].Summary,
+		"removed block for module.child: this module block still exists in the configuration")
 }
 
 // Two provisioner-carrying removed blocks for one address in one
@@ -184,7 +190,9 @@ removed {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	_, err := BuildFromConfig(config, fakeModuleLoader{}, "")
-	assert.EqualError(t, err,
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	assert.Equal(t, err[0].Summary,
 		"duplicate removed block for simple_resource.a: a removed block with provisioners for this address was already declared at root.hcl:2,1-8; declare all of the address's provisioners in one removed block")
 }
 
@@ -223,8 +231,10 @@ resource "simple_resource" "a" {}
 		"./child": {Config: childConfig, SourcePath: "./child"},
 		"./grand": {Config: grandConfig, SourcePath: "./grand"},
 	}}, "")
-	assert.EqualError(t, err,
-		"inlining module m: inlining nested module n: removed block for module.m.module.n.simple_resource.a: this resource block still exists in the configuration")
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	assert.Equal(t, err[0].Summary,
+		"removed block for module.m.module.n.simple_resource.a: this resource block still exists in the configuration")
 }
 
 // Provisioner-carrying removed blocks for one address declared in two
@@ -268,7 +278,9 @@ removed {
 	_, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: childConfig, SourcePath: "./child"},
 	}}, "")
-	assert.EqualError(t, err,
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	assert.Equal(t, err[0].Summary,
 		"duplicate removed block for module.m.simple_resource.a: a removed block with provisioners for this address was already declared at root.hcl:6,1-8; declare all of the address's provisioners in one removed block")
 }
 
@@ -308,6 +320,8 @@ resource "simple_resource" "a" {}
 		"./child": {Config: childConfig, SourcePath: "./child"},
 		"./grand": {Config: grandConfig, SourcePath: "./grand"},
 	}}, "")
-	assert.EqualError(t, err,
-		"inlining module m: inlining nested module n: removed block for module.m.module.n: this module block still exists in the configuration")
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	assert.Equal(t, err[0].Summary,
+		"removed block for module.m.module.n: this module block still exists in the configuration")
 }

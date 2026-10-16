@@ -62,7 +62,7 @@ module "child" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 }
@@ -104,7 +104,7 @@ module "child" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	errs := g.Validate()
 	require.Len(t, errs, 1)
@@ -152,7 +152,7 @@ module "mid" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	errs := g.Validate()
 	require.Len(t, errs, 1)
@@ -201,7 +201,7 @@ module "mid" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 	assert.True(t, g.HasDependents(nk("simple")))
@@ -243,7 +243,7 @@ module "child" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	errs := g.Validate()
 	require.Len(t, errs, 1)
@@ -266,7 +266,7 @@ resource "simple_resource" "r" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	g, err := BuildFromConfig(root, nil, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 }
@@ -301,7 +301,7 @@ module "child" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 	assert.True(t, g.HasDependents(nk("simple")))
@@ -356,7 +356,7 @@ module "child" {
 	}}
 
 	g, err := BuildFromConfig(root, loader, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Empty(t, g.Validate())
 	assert.True(t, g.HasDependents(nk("simple")))

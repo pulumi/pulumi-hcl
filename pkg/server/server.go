@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
@@ -700,10 +701,10 @@ func collectRequirementsRec(
 		if mod.Source == "" {
 			continue
 		}
-		loaded, err := loader.LoadModule(ctx, mod.Source, mod.Version, workDir)
-		if err != nil {
+		loaded, diags, err := loader.LoadModule(ctx, mod.Source, mod.Version, workDir)
+		if err != nil || diags.HasErrors() {
 			// `pulumi install` surfaces a concrete error later; don't block on it here.
-			logging.V(5).Infof("collectRequirements: loading module %q: %v", mod.Source, err)
+			logging.V(5).Infof("collectRequirements: loading module %q: %v; %v", mod.Source, err, diags)
 			continue
 		}
 		if _, seen := visited[loaded.SourcePath]; seen {
@@ -748,6 +749,11 @@ func (host *LanguageHost) Run(
 	// Parse the HCL program
 	p := parser.NewParser()
 	config, diags := p.ParseDirectory(req.Info.ProgramDirectory)
+	for _, diag := range diags {
+		if diag.Severity == hcl.DiagWarning {
+			contract.IgnoreError(resmon.LogWarning(ctx, diag.Error()))
+		}
+	}
 	if diags.HasErrors() {
 		return &pulumirpc.RunResponse{
 			Error: diags.Error(),

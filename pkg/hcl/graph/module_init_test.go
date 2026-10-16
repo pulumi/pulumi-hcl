@@ -55,7 +55,7 @@ module "child" {
 	g, err := BuildFromConfig(root, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: child, SourcePath: "./child"},
 	}}, ".")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 	require.Empty(t, g.Validate())
 
 	initIdx, ok := g.KeyNode(NodeKey{
@@ -114,7 +114,7 @@ module "second" {
 	var first []string
 	for range 8 {
 		g, err := BuildFromConfig(root, loader, ".")
-		require.NoError(t, err, "mutually dependent modules must not cycle")
+		require.False(t, err.HasErrors(), "mutually dependent modules must not cycle")
 		require.Empty(t, g.Validate())
 
 		var gated []string

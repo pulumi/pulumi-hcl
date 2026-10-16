@@ -35,6 +35,7 @@ import (
 	"sync"
 
 	version "github.com/hashicorp/go-version"
+	"github.com/hashicorp/hcl/v2"
 	regaddr "github.com/opentofu/registry-address/v2"
 	"github.com/opentofu/svchost"
 	"github.com/opentofu/svchost/disco"
@@ -66,13 +67,18 @@ type Loader struct {
 	mu sync.Mutex
 
 	parser *parser.Parser
-	cache  map[string]*LoadedModule
+	cache  map[string]moduleLoadResult
 
 	resolve ResolverFunc
 	// resolved caches successful package resolutions, so one package resolves
 	// (and, for registry sources, selects a version) once per Loader no matter
 	// how many of its subdirectories are loaded.
 	resolved map[resolveKey]resolvedPackage
+}
+
+type moduleLoadResult struct {
+	module *LoadedModule
+	diags  hcl.Diagnostics
 }
 
 type resolveKey struct {
@@ -100,7 +106,7 @@ type ResolverFunc = func(packageSource, versionConstraint, callerDir string) (di
 func NewLoader(resolver ResolverFunc) *Loader {
 	return &Loader{
 		parser:   parser.NewParser(),
-		cache:    make(map[string]*LoadedModule),
+		cache:    make(map[string]moduleLoadResult),
 		resolve:  resolver,
 		resolved: make(map[resolveKey]resolvedPackage),
 	}
@@ -168,8 +174,11 @@ func defaultCacheDir() string {
 
 // LoadModule loads a module from the given source. versionConstraint is a
 // Terraform-style constraint (`~> 4.0`, `>= 1.0.0`, `4.2.1`); ignored for
-// non-registry sources.
-func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, callerDir string) (*LoadedModule, error) {
+// non-registry sources. Resolution failures return an error; parsing failures
+// return error diagnostics and a nil module. Cached loads return the same module
+// and diagnostics, including warnings and parsing failures. Returned results
+// are shared and must not be mutated by callers.
+func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, callerDir string) (*LoadedModule, hcl.Diagnostics, error) {
 	_, loadSpan := potel.Start(ctx, "modules.LoadModule")
 	defer loadSpan.End()
 
@@ -178,21 +187,20 @@ func (l *Loader) LoadModule(ctx context.Context, source, versionConstraint, call
 
 	resolvedPath, resolvedVersion, err := l.resolveSource(source, versionConstraint, callerDir)
 	if err != nil {
-		return nil, fmt.Errorf("resolving module source %q: %w", source, err)
+		return nil, nil, fmt.Errorf("resolving module source %q: %w", source, err)
 	}
 
 	if cached, ok := l.cache[resolvedPath]; ok {
-		return cached, nil
+		return cached.module, cached.diags, nil
 	}
 
 	config, diags := l.parser.ParseDirectory(resolvedPath)
-	if diags.HasErrors() {
-		return nil, classified(ErrInvalid, fmt.Errorf("parsing module: %s", diags.Error()))
+	var module *LoadedModule
+	if !diags.HasErrors() {
+		module = &LoadedModule{Config: config, SourcePath: resolvedPath, Version: resolvedVersion}
 	}
-
-	module := &LoadedModule{Config: config, SourcePath: resolvedPath, Version: resolvedVersion}
-	l.cache[resolvedPath] = module
-	return module, nil
+	l.cache[resolvedPath] = moduleLoadResult{module: module, diags: diags}
+	return module, diags, nil
 }
 
 // ResolveDir resolves a module source to its directory on disk — downloading it

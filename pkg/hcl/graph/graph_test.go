@@ -52,7 +52,7 @@ output "instance_id" {
 	require.Empty(t, diags)
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	nodes := g.seen
 	require.Len(t, nodes, 7, "4 explicit nodes + 3 builtins")
@@ -65,11 +65,11 @@ output "instance_id" {
 
 	// Verify topological sort works
 	var sorted []string
-	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
+	errWalk := g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
 		sorted = append(sorted, n.desc.String())
 		return nil
 	}, pdag.MaxProcs(1))
-	require.NoError(t, err)
+	require.NoError(t, errWalk)
 
 	positions := make(map[string]int)
 	for i, node := range sorted {
@@ -104,8 +104,10 @@ module "self" {
 	}}
 
 	_, err := BuildFromConfig(config, loader, "/proj")
-	require.EqualError(t, err,
-		`inlining module self: module "self" source "./." creates a module cycle: /proj -> /proj`)
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	require.Equal(t, err[0].Summary,
+		`module "self" source "./." creates a module cycle: /proj -> /proj`)
 }
 
 // TestBuildFromConfigIndirectModuleCycle: a cycle through an intermediate
@@ -143,8 +145,10 @@ module "a" {
 	}}
 
 	_, err := BuildFromConfig(root, loader, "/proj")
-	require.EqualError(t, err,
-		`inlining module a: inlining nested module b: inlining nested module a: `+
+	require.Len(t, err, 1)
+	assert.NotNil(t, err[0].Subject)
+	require.Equal(t, err[0].Summary,
+		``+
 			`module "a" source "./a" creates a module cycle: /proj -> /proj/a -> /proj/b -> /proj/a`)
 }
 
@@ -177,7 +181,7 @@ resource "simple_resource" "r" {
 	}}
 
 	_, err := BuildFromConfig(root, loader, "/proj")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 }
 
 func TestVariableValidationResourceRefSplitsNode(t *testing.T) {
@@ -212,7 +216,7 @@ output "gate" {
 	require.Empty(t, diags)
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Equal(t, NodeTypeVariableValidation, g.seen[nk("var.gate")].n.Type)
 	assert.Equal(t, NodeTypeVariable, g.seen[nk("var.gate!value")].n.Type)
@@ -223,7 +227,7 @@ output "gate" {
 	}))
 
 	var sorted []string
-	err = g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
+	errWalk := g.dag.Walk(t.Context(), func(_ context.Context, n dagNode) error {
 		key := n.desc.String()
 		if n.exec != nil {
 			key = barrierKey
@@ -231,7 +235,7 @@ output "gate" {
 		sorted = append(sorted, key)
 		return nil
 	}, pdag.MaxProcs(1))
-	require.NoError(t, err)
+	require.NoError(t, errWalk)
 
 	positions := make(map[string]int)
 	for i, key := range sorted {
@@ -261,7 +265,7 @@ variable "name" {
 	require.Empty(t, diags)
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Equal(t, NodeTypeVariable, g.seen[nk("var.name")].n.Type)
 	assert.NotContains(t, g.seen, nk("var.name!value"))
@@ -297,7 +301,7 @@ resource "aws_instance" "d" {
 	require.Empty(t, diags)
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Equal(t, map[NodeKey]bool{
 		nk("aws_instance.a"): true,
@@ -333,7 +337,7 @@ resource "aws_instance" "user" {
 	require.Empty(t, diags)
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Equal(t, map[NodeKey]bool{
 		nk("aws_instance.dep"):  true,
@@ -347,8 +351,8 @@ func TestValidate(t *testing.T) {
 
 	// Missing dependency
 	_, i := g.newNode(nk("NonExistent"))
-	err := g.AddNode(&Node{Key: nk("A"), Type: NodeTypeLocal}, []pdag.Node{i})
-	require.NoError(t, err)
+	diags := g.AddNode(&Node{Key: nk("A"), Type: NodeTypeLocal}, []pdag.Node{i})
+	require.False(t, diags.HasErrors(), "%s", diags)
 
 	errors := g.Validate()
 	if len(errors) != 1 {
@@ -372,7 +376,7 @@ func TestValidateUnknownNodeReportsSourceLocation(t *testing.T) {
 	require.Empty(t, diags)
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	errs := g.Validate()
 	require.Len(t, errs, 1)
@@ -499,10 +503,10 @@ func TestModuleAddress(t *testing.T) {
 func TestCycleErrorNamesNodes(t *testing.T) {
 	t.Parallel()
 	g := NewGraph()
-	require.NoError(t, g.AddNode(&Node{Key: nk("local.a")}, nil))
+	require.Empty(t, g.AddNode(&Node{Key: nk("local.a")}, nil))
 	aIdx, ok := g.KeyNode(nk("local.a"))
 	require.True(t, ok)
-	require.NoError(t, g.AddNode(&Node{Key: nk("local.b")}, []pdag.Node{aIdx}))
+	require.Empty(t, g.AddNode(&Node{Key: nk("local.b")}, []pdag.Node{aIdx}))
 	bIdx, ok := g.KeyNode(nk("local.b"))
 	require.True(t, ok)
 

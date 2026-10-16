@@ -104,11 +104,11 @@ type LoadedModule struct {
 	SourcePath string
 }
 
-// ModuleLoader loads module configurations from source paths. version is
-// the `version` attribute on the module block (only meaningful for registry
-// sources); workDir is the directory the source is relative to.
+// ModuleLoader loads configurations for module calls. workDir is the directory
+// the call's source is relative to. It returns all loading and parsing diagnostics,
+// with source locations assigned by the loader, including on cached loads.
 type ModuleLoader interface {
-	LoadModule(source, version, workDir string) (*LoadedModule, error)
+	LoadModule(module *ast.Module, workDir string) (*LoadedModule, hcl.Diagnostics)
 }
 
 // NodeKey identifies a node: the static config path of its containing module
@@ -204,6 +204,31 @@ type Node struct {
 	// boundary). Deferred reads — those reaching a resource, directly or
 	// through their module's expansion — are false.
 	PlanTimeRead bool
+}
+
+func (n Node) declRange() *hcl.Range {
+	switch {
+	case n.Variable != nil:
+		return n.Variable.DeclRange.Ptr()
+	case n.Local != nil:
+		return n.Local.DeclRange.Ptr()
+	case n.Provider != nil:
+		return n.Provider.DeclRange.Ptr()
+	case n.Resource != nil:
+		return n.Resource.DeclRange.Ptr()
+	case n.DataSource != nil:
+		return n.DataSource.DeclRange.Ptr()
+	case n.Output != nil:
+		return n.Output.DeclRange.Ptr()
+	case n.Module != nil:
+		return n.Module.DeclRange.Ptr()
+	case n.Call != nil:
+		return n.Call.DeclRange.Ptr()
+	case n.ModuleInfo != nil:
+		return n.ModuleInfo.Module.DeclRange.Ptr()
+	default:
+		return nil
+	}
 }
 
 // BlockDeps classifies a resource/data block's dependencies for the expansion
@@ -465,13 +490,17 @@ func (g *Graph) newNode(key NodeKey) (*Node, pdag.Node) {
 }
 
 // AddNode adds a node to the graph.
-func (g *Graph) AddNode(node *Node, deps []pdag.Node) error {
+func (g *Graph) AddNode(node *Node, deps []pdag.Node) hcl.Diagnostics {
 	n, i := g.newNode(node.Key)
 	*n = *node
 	for _, dep := range deps {
-		err := cycleError(g.dag.NewEdge(dep, i))
-		if err != nil {
-			return err
+		if err := g.dag.NewEdge(dep, i); err != nil {
+			return hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  "Dependency cycle",
+				Detail:   cycleError(err).Error(),
+				Subject:  node.declRange(),
+			}}
 		}
 		if key, ok := g.keyByDagNode[dep]; ok {
 			g.dependents[key]++
@@ -579,41 +608,38 @@ type initEdges struct {
 
 // BuildFromConfig builds a dependency graph from an HCL configuration.
 // moduleLoader is required when config contains modules.
-func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, error) {
+func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir string) (*Graph, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+	reported := map[string]bool{}
 	g := NewGraph()
 	root := modulepath.Root()
 	g.moved[root] = config.Moved
 	g.removed = slices.Clone(config.Removed)
-	if err := checkRemovedStillExists(g.removed, root, config); err != nil {
-		return nil, err
+	if removedDiags := checkRemovedStillExists(g.removed, root, config); removedDiags.HasErrors() {
+		return nil, append(diags, removedDiags...)
 	}
 	rootDir, err := filepath.Abs(workDir)
 	if err != nil {
-		return nil, fmt.Errorf("resolving working directory: %w", err)
+		return nil, append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Cannot resolve working directory",
+			Detail:   err.Error(),
+		})
 	}
+	reported[rootDir] = true
 	rootScope := &moduleScope{config: config, sourcePath: rootDir}
 	g.scopes[root] = rootScope
 
-	contract.AssertNoErrorf(errors.Join(
-		g.AddNode(&Node{
-			Key:  NodeKey{ID: "pulumi.stack"},
-			Type: NodeTypeBuiltin,
-		}, nil),
-		g.AddNode(&Node{
-			Key:  NodeKey{ID: "pulumi.project"},
-			Type: NodeTypeBuiltin,
-		}, nil),
-		g.AddNode(&Node{
-			Key:  NodeKey{ID: "pulumi.organization"},
-			Type: NodeTypeBuiltin,
-		}, nil),
-	), "nodes without dependencies cannot error")
+	for _, builtin := range []string{"pulumi.stack", "pulumi.project", "pulumi.organization"} {
+		diags := g.AddNode(&Node{Key: NodeKey{ID: builtin}, Type: NodeTypeBuiltin}, nil)
+		contract.Assertf(!diags.HasErrors(), "nodes without dependencies cannot error: %v", diags)
+	}
 
 	// Variable values come from outside, so a variable depends only on whatever
 	// its validation rules reference (e.g. another variable).
 	for name, v := range config.Variables {
-		if err := g.addVariableNodes(NodeKey{ID: "var." + name}, v, nil, nil, root); err != nil {
-			return nil, err
+		if variableDiags := g.addVariableNodes(NodeKey{ID: "var." + name}, v, nil, nil, root); variableDiags.HasErrors() {
+			return nil, append(diags, variableDiags...)
 		}
 	}
 
@@ -631,7 +657,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 			Deps:  bd,
 		}, deps)
 		if err != nil {
-			return nil, err
+			return nil, append(diags, err...)
 		}
 	}
 
@@ -645,7 +671,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 			Provider: provider,
 		}, deps)
 		if err != nil {
-			return nil, err
+			return nil, append(diags, err...)
 		}
 	}
 
@@ -662,7 +688,7 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 			Deps:     bd,
 		}, deps)
 		if err != nil {
-			return nil, err
+			return nil, append(diags, err...)
 		}
 	}
 
@@ -679,23 +705,26 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 			Deps:       bd,
 		}, deps)
 		if err != nil {
-			return nil, err
+			return nil, append(diags, err...)
 		}
 	}
 
 	// Inline module contents into the graph for fine-grained dependency tracking.
-	for name, module := range config.Modules {
-		if err := g.inlineModule(name, module, root, moduleLoader, workDir, rootScope); err != nil {
-			return nil, fmt.Errorf("inlining module %s: %w", name, err)
+	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
+		module := config.Modules[name]
+		moduleDiags := g.inlineModule(name, module, root, moduleLoader, workDir, rootScope, reported)
+		diags = append(diags, moduleDiags...)
+		if moduleDiags.HasErrors() {
+			return nil, diags
 		}
 	}
 
-	if err := checkDuplicateRemovedProvisioners(g.removed); err != nil {
-		return nil, err
+	if removedDiags := checkDuplicateRemovedProvisioners(g.removed); removedDiags.HasErrors() {
+		return nil, append(diags, removedDiags...)
 	}
 
-	if err := g.addCallNodes(config, root, nil); err != nil {
-		return nil, err
+	if callDiags := g.addCallNodes(config, root, nil); callDiags.HasErrors() {
+		return nil, append(diags, callDiags...)
 	}
 
 	// Add output nodes
@@ -707,14 +736,14 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 			Output: output,
 		}, deps)
 		if err != nil {
-			return nil, err
+			return nil, append(diags, err...)
 		}
 	}
 
 	g.addInitReadEdges()
 	g.classifyPlanTimeReads()
 
-	return g, nil
+	return g, diags
 }
 
 // addInitReadEdges orders each module init after what its component
@@ -1440,7 +1469,7 @@ const variableValueKeySuffix = "!value"
 // onto a NodeTypeVariableValidation node that owns the public key: consumers
 // wait for the checks, and the value itself is evaluated by an internal value
 // node that carries a copy of the declaration with the split rules removed.
-func (g *Graph) addVariableNodes(key NodeKey, v *ast.Variable, modInfo *ModuleInfo, valueDeps []pdag.Node, path modulepath.Path) error {
+func (g *Graph) addVariableNodes(key NodeKey, v *ast.Variable, modInfo *ModuleInfo, valueDeps []pdag.Node, path modulepath.Path) hcl.Diagnostics {
 	validationDeps := g.variableValidationDeps(v, key, path)
 	if len(validationDeps) == 0 {
 		return g.AddNode(&Node{
@@ -1614,16 +1643,24 @@ func (g *Graph) Validate() []error {
 // is still declared by the configuration at path. A target nested deeper than
 // this module is checked when its own module is inlined; a target whose
 // module is gone is never reached, which is exactly a valid removal.
-func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, config *ast.Config) error {
+func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, config *ast.Config) hcl.Diagnostics {
 	for _, rem := range removed {
 		if rem.From.Module != path {
 			continue
 		}
 		if rem.From.Type == "" {
-			return fmt.Errorf("removed block for %s: this module block still exists in the configuration", rem.From)
+			return hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("removed block for %s: this module block still exists in the configuration", rem.From),
+				Subject:  rem.DeclRange.Ptr(),
+			}}
 		}
 		if _, exists := config.Resources[ast.ResourceKey(rem.From.Type, rem.From.Name)]; exists {
-			return fmt.Errorf("removed block for %s: this resource block still exists in the configuration", rem.From)
+			return hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("removed block for %s: this resource block still exists in the configuration", rem.From),
+				Subject:  rem.DeclRange.Ptr(),
+			}}
 		}
 	}
 	return nil
@@ -1632,7 +1669,7 @@ func checkRemovedStillExists(removed []*ast.Removed, path modulepath.Path, confi
 // checkDuplicateRemovedProvisioners rejects two provisioner-carrying removed
 // blocks for one root-relative address: two provisioner sets for one orphan
 // would be ambiguous at destroy time.
-func checkDuplicateRemovedProvisioners(removed []*ast.Removed) error {
+func checkDuplicateRemovedProvisioners(removed []*ast.Removed) hcl.Diagnostics {
 	withProvisioners := map[string]hcl.Range{}
 	for _, rem := range removed {
 		if len(rem.Provisioners) == 0 {
@@ -1640,9 +1677,11 @@ func checkDuplicateRemovedProvisioners(removed []*ast.Removed) error {
 		}
 		addr := rem.From.String()
 		if prev, ok := withProvisioners[addr]; ok {
-			return fmt.Errorf(
-				"duplicate removed block for %s: a removed block with provisioners for this address was already declared at %s; declare all of the address's provisioners in one removed block",
-				addr, prev)
+			return hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("duplicate removed block for %s: a removed block with provisioners for this address was already declared at %s; declare all of the address's provisioners in one removed block", addr, prev),
+				Subject:  rem.DeclRange.Ptr(),
+			}}
 		}
 		withProvisioners[addr] = rem.DeclRange
 	}
@@ -1669,10 +1708,17 @@ func rangeLess(a, b hcl.Range) bool {
 func (g *Graph) inlineModule(
 	name string, mod *ast.Module, parentPath modulepath.Path,
 	moduleLoader ModuleLoader, workDir string, parent *moduleScope,
-) error {
-	loaded, err := moduleLoader.LoadModule(mod.Source, mod.Version, workDir)
-	if err != nil {
-		return fmt.Errorf("loading module %s: %w", name, err)
+	reported map[string]bool,
+) hcl.Diagnostics {
+	contract.Requiref(moduleLoader != nil, "moduleLoader", "cannot be nil")
+	var diags hcl.Diagnostics
+	loaded, loadDiags := moduleLoader.LoadModule(mod, workDir)
+	if loadDiags.HasErrors() {
+		return loadDiags
+	}
+	if !reported[loaded.SourcePath] {
+		diags = append(diags, loadDiags...)
+		reported[loaded.SourcePath] = true
 	}
 
 	// Module expansion is static — count/for_each do not gate inlining — so a
@@ -1687,8 +1733,11 @@ func (g *Graph) inlineModule(
 			chain = append(chain, a.sourcePath)
 		}
 		slices.Reverse(chain)
-		return fmt.Errorf("module %q source %q creates a module cycle: %s",
-			name, mod.Source, strings.Join(chain, " -> "))
+		return append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("module %q source %q creates a module cycle: %s", name, mod.Source, strings.Join(chain, " -> ")),
+			Subject:  mod.DeclRange.Ptr(),
+		})
 	}
 
 	path := parentPath.Append(modulepath.NewStep(name))
@@ -1700,8 +1749,8 @@ func (g *Graph) inlineModule(
 		abs.From.Module = path.Join(rem.From.Module)
 		g.removed = append(g.removed, &abs)
 	}
-	if err := checkRemovedStillExists(g.removed, path, loaded.Config); err != nil {
-		return err
+	if removedDiags := checkRemovedStillExists(g.removed, path, loaded.Config); removedDiags.HasErrors() {
+		return append(diags, removedDiags...)
 	}
 	g.moved[path] = loaded.Config.Moved
 	scope := &moduleScope{
@@ -1745,7 +1794,7 @@ func (g *Graph) inlineModule(
 		Module:     mod,
 		ModuleInfo: modInfo,
 	}, initDeps); err != nil {
-		return err
+		return append(diags, err...)
 	}
 
 	_, initIdx := g.newNode(initKey)
@@ -1767,8 +1816,8 @@ func (g *Graph) inlineModule(
 		if inputAttr, ok := moduleInputAttrs[varName]; ok {
 			varDeps = append(varDeps, g.exprDeps(inputAttr.Expr, parentPath)...)
 		}
-		if err := g.addVariableNodes(NodeKey{Module: path, ID: "var." + varName}, v, modInfo, varDeps, path); err != nil {
-			return err
+		if variableDiags := g.addVariableNodes(NodeKey{Module: path, ID: "var." + varName}, v, modInfo, varDeps, path); variableDiags.HasErrors() {
+			return append(diags, variableDiags...)
 		}
 	}
 
@@ -1782,7 +1831,7 @@ func (g *Graph) inlineModule(
 			Local:      local,
 			ModuleInfo: modInfo,
 		}, deps); err != nil {
-			return err
+			return append(diags, err...)
 		}
 	}
 
@@ -1797,7 +1846,7 @@ func (g *Graph) inlineModule(
 			Provider:   provider,
 			ModuleInfo: modInfo,
 		}, deps); err != nil {
-			return err
+			return append(diags, err...)
 		}
 	}
 
@@ -1822,7 +1871,7 @@ func (g *Graph) inlineModule(
 			Type:       NodeTypeBuiltin,
 			ModuleInfo: modInfo,
 		}, deps); err != nil {
-			return err
+			return append(diags, err...)
 		}
 	}
 
@@ -1846,7 +1895,7 @@ func (g *Graph) inlineModule(
 			ModuleInfo: modInfo,
 			Deps:       bd,
 		}, deps); err != nil {
-			return err
+			return append(diags, err...)
 		}
 	}
 
@@ -1870,7 +1919,7 @@ func (g *Graph) inlineModule(
 			ModuleInfo: modInfo,
 			Deps:       bd,
 		}, deps); err != nil {
-			return err
+			return append(diags, err...)
 		}
 	}
 
@@ -1884,7 +1933,7 @@ func (g *Graph) inlineModule(
 			Output:     output,
 			ModuleInfo: modInfo,
 		}, deps); err != nil {
-			return err
+			return append(diags, err...)
 		}
 	}
 
@@ -1920,25 +1969,28 @@ func (g *Graph) inlineModule(
 		Module:     mod,
 		ModuleInfo: modInfo,
 	}, completionDeps); err != nil {
-		return err
+		return append(diags, err...)
 	}
 
-	if err := g.addCallNodes(loaded.Config, path, modInfo); err != nil {
-		return err
+	if callDiags := g.addCallNodes(loaded.Config, path, modInfo); callDiags.HasErrors() {
+		return append(diags, callDiags...)
 	}
 
 	// Nested modules
-	for nestedName, nestedMod := range loaded.Config.Modules {
-		if err := g.inlineModule(nestedName, nestedMod, path, moduleLoader, loaded.SourcePath, scope); err != nil {
-			return fmt.Errorf("inlining nested module %s: %w", nestedName, err)
+	for _, nestedName := range slices.Sorted(maps.Keys(loaded.Config.Modules)) {
+		nestedMod := loaded.Config.Modules[nestedName]
+		nestedDiags := g.inlineModule(nestedName, nestedMod, path, moduleLoader, loaded.SourcePath, scope, reported)
+		diags = append(diags, nestedDiags...)
+		if nestedDiags.HasErrors() {
+			return diags
 		}
 	}
 
-	return nil
+	return diags
 }
 
 // addCallNodes adds call nodes from config into the graph in the scope at path.
-func (g *Graph) addCallNodes(config *ast.Config, path modulepath.Path, modInfo *ModuleInfo) error {
+func (g *Graph) addCallNodes(config *ast.Config, path modulepath.Path, modInfo *ModuleInfo) hcl.Diagnostics {
 	for key, call := range config.Calls {
 		callKey := NodeKey{Module: path, ID: "call." + key}
 		var deps []pdag.Node

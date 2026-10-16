@@ -80,9 +80,6 @@ type Config struct {
 	// ProviderFunctionCalls may be missing providers. Consumers fall back
 	// to the declared required providers.
 	ProviderFunctionCallsIncomplete bool
-
-	// Diagnostics accumulated during parsing.
-	Diagnostics hcl.Diagnostics
 }
 
 // NewConfig creates a new empty configuration.

@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Report parser warnings, such as an ignored `backend` block, for the root program and child modules
+time: 2026-10-16T13:38:54.000000+02:00
+custom:
+    Component: language-host
+    PR: "683"

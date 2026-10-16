@@ -58,7 +58,7 @@ func buildGraph(t *testing.T, src string) *Graph {
 	config, diags := parser.NewParser().ParseSource("test.hcl", []byte(src))
 	require.False(t, diags.HasErrors(), diags.Error())
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 	return g
 }
 
@@ -223,7 +223,7 @@ module "m" {
 	g, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: childConfig, SourcePath: "./child"},
 	}}, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.Equal(t, blockDepsView{
 		Static: []string{"module.m.__init__"},
@@ -258,7 +258,7 @@ module "m" {
 	g, err := BuildFromConfig(rootConfig, fakeModuleLoader{modules: map[string]*LoadedModule{
 		"./child": {Config: childConfig, SourcePath: "./child"},
 	}}, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 	require.Empty(t, g.Validate())
 
 	assert.Equal(t, NodeTypeDataSource, g.seen[nk("module.m.data.order_data.d")].n.Type)

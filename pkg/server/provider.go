@@ -165,7 +165,10 @@ func (a moduleLoaderAdapter) LoadModule(
 	ctx context.Context, source, versionConstraint, callerDir string,
 ) (*ast.Config, string, error) {
 	// schema.ModuleLoader carries no context, so there is none to thread here.
-	m, err := a.loader.LoadModule(ctx, source, versionConstraint, callerDir)
+	m, diags, err := a.loader.LoadModule(ctx, source, versionConstraint, callerDir)
+	if diags.HasErrors() {
+		return nil, "", diags
+	}
 	if err != nil {
 		return nil, "", err
 	}

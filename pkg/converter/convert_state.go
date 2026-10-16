@@ -210,8 +210,8 @@ func moduleSources(
 		for _, mod := range config.Modules {
 			callPath := path.Append(modulepath.NewStep(mod.Name))
 			out[callPath] = mod.Source
-			loaded, err := loader.LoadModule(ctx, mod.Source, mod.Version, dir)
-			if err != nil || chain[loaded.SourcePath] {
+			loaded, diags, err := loader.LoadModule(ctx, mod.Source, mod.Version, dir)
+			if err != nil || diags.HasErrors() || chain[loaded.SourcePath] {
 				continue
 			}
 			chain[loaded.SourcePath] = true

@@ -707,9 +707,14 @@ func (e *Engine) Run(ctx context.Context) error {
 	}
 
 	// Build the dependency graph with module inlining
-	g, err := graph.BuildFromConfig(e.config, &moduleLoaderAdapter{e.moduleLoader}, e.workDir)
-	if err != nil {
-		return fmt.Errorf("building dependency graph: %w", err)
+	g, diags := graph.BuildFromConfig(e.config, &moduleLoaderAdapter{e.moduleLoader}, e.workDir)
+	for _, diag := range diags {
+		if diag.Severity == hcl.DiagWarning {
+			contract.IgnoreError(e.warnf(ctx, "%s", diag.Error()))
+		}
+	}
+	if diags.HasErrors() {
+		return diags
 	}
 
 	// Validate the graph
@@ -4187,16 +4192,24 @@ type moduleLoaderAdapter struct {
 	loader *modules.Loader
 }
 
-func (a *moduleLoaderAdapter) LoadModule(source, version, workDir string) (*graph.LoadedModule, error) {
+func (a *moduleLoaderAdapter) LoadModule(module *ast.Module, workDir string) (*graph.LoadedModule, hcl.Diagnostics) {
 	// graph.ModuleLoader carries no context, so there is none to thread here.
-	loaded, err := a.loader.LoadModule(context.TODO(), source, version, workDir)
+	loaded, diags, err := a.loader.LoadModule(context.TODO(), module.Source, module.Version, workDir)
 	if err != nil {
-		return nil, err
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Cannot load module %q", module.Source),
+			Detail:   err.Error(),
+			Subject:  module.DeclRange.Ptr(),
+		})
+	}
+	if diags.HasErrors() {
+		return nil, diags
 	}
 	return &graph.LoadedModule{
 		Config:     loaded.Config,
 		SourcePath: loaded.SourcePath,
-	}, nil
+	}, diags
 }
 
 // forEachModuleInstance iterates over all instances of the module identified by node.ModuleInfo.Path.
@@ -4322,7 +4335,10 @@ func (e *Engine) processModuleInit(ctx context.Context, node *graph.Node) error 
 	if loaderWorkDir == "" {
 		loaderWorkDir = e.workDir
 	}
-	childMod, err := e.moduleLoader.LoadModule(ctx, mod.Source, mod.Version, loaderWorkDir)
+	childMod, diags, err := e.moduleLoader.LoadModule(ctx, mod.Source, mod.Version, loaderWorkDir)
+	if diags.HasErrors() {
+		return diags
+	}
 	if err != nil {
 		return fmt.Errorf("loading module %s for input types: %w", mod.Source, err)
 	}
@@ -4773,9 +4789,9 @@ func providerIDFromCty(v cty.Value) string {
 func Validate(config *ast.Config) []error {
 	var errs []error
 
-	g, err := graph.BuildFromConfig(config, nil, "")
-	if err != nil {
-		errs = append(errs, err)
+	g, diags := graph.BuildFromConfig(config, nil, "")
+	if diags.HasErrors() {
+		errs = append(errs, diags)
 		return errs
 	}
 

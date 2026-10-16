@@ -80,7 +80,10 @@ func loadComponents(
 	comps := make([]loadedComponent, 0, len(dirs))
 	for _, d := range dirs {
 		src := componentSource(source, d)
-		loaded, err := loader.LoadModule(ctx, src, versionConstraint, ".")
+		loaded, diags, err := loader.LoadModule(ctx, src, versionConstraint, ".")
+		if diags.HasErrors() {
+			return nil, "", diags
+		}
 		if err != nil {
 			return nil, "", fmt.Errorf("loading %s: %w", d.describe(), err)
 		}
@@ -100,7 +103,10 @@ func loadRecordedComponents(
 	for _, subdir := range slices.Sorted(maps.Keys(packages)) {
 		d := componentDir{Subdir: subdir}
 		src := componentSource(root.Source, d)
-		loaded, err := loader.LoadModule(ctx, src, root.Version, ".")
+		loaded, diags, err := loader.LoadModule(ctx, src, root.Version, ".")
+		if diags.HasErrors() {
+			return nil, diags
+		}
 		if err != nil {
 			return nil, fmt.Errorf("loading %s: %w", d.describe(), err)
 		}

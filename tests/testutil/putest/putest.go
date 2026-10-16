@@ -75,6 +75,8 @@ type Case struct {
 	// Non-string outputs appear in their compact-JSON form (see
 	// pulexec.Result).
 	ExpectedOutputs map[string]string
+	// AssertOutput, if set, checks the CLI output of the last apply.
+	AssertOutput func(t *testing.T, output string)
 	// AssertState, if set, runs against the exported resources after the
 	// apply.
 	AssertState func(t *testing.T, resources []apitype.ResourceV3)
@@ -174,6 +176,9 @@ func run(t *testing.T, c Case, stages []map[string]string) *pulexec.Driver {
 
 	if c.ExpectedOutputs != nil {
 		require.Equal(t, c.ExpectedOutputs, res.Outputs)
+	}
+	if c.AssertOutput != nil {
+		c.AssertOutput(t, res.Output)
 	}
 	if c.AssertState != nil {
 		c.AssertState(t, res.Resources)

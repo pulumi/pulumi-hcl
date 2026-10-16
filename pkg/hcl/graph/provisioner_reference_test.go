@@ -87,7 +87,7 @@ resource "simple_resource" "dependent" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.True(t, g.HasDependents(nk("simple_resource.upstream")))
 
@@ -120,7 +120,7 @@ resource "simple_resource" "dependent" {
 	require.False(t, diags.HasErrors(), diags.Error())
 
 	g, err := BuildFromConfig(config, nil, "")
-	require.NoError(t, err)
+	require.False(t, err.HasErrors())
 
 	assert.True(t, g.HasDependents(nk("simple_resource.upstream")))
 }

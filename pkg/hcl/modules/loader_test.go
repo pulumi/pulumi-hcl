@@ -288,7 +288,8 @@ func TestLoadModule_VersionConstraintPlumbedThroughToRegistry(t *testing.T) {
 		map[string]string{"4.0.1": tarURL})
 	l := newTestLoader(t, regSrv.URL)
 
-	loaded, err := l.LoadModule(t.Context(), "acme/thing/aws", "~> 4.0", t.TempDir())
+	loaded, diags, err := l.LoadModule(t.Context(), "acme/thing/aws", "~> 4.0", t.TempDir())
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
@@ -314,7 +315,8 @@ func TestLoadModule_VersionQueryStringStillSupported(t *testing.T) {
 		map[string]string{"3.0.0": tarURL})
 	l := newTestLoader(t, regSrv.URL)
 
-	loaded, err := l.LoadModule(t.Context(), "acme/thing/aws?version=3.0.0", "", t.TempDir())
+	loaded, diags, err := l.LoadModule(t.Context(), "acme/thing/aws?version=3.0.0", "", t.TempDir())
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Equal(t, "3.0.0", loaded.Version)
 	require.Equal(t, 1, reg.downloadHitCount("3.0.0"))
@@ -364,7 +366,8 @@ func TestLoadModule_HostQualifiedRegistrySource(t *testing.T) {
 	}
 	l := NewLoader(n.resolve)
 
-	loaded, err := l.LoadModule(t.Context(), host+"/myorg/widget/aws", "", t.TempDir())
+	loaded, diags, err := l.LoadModule(t.Context(), host+"/myorg/widget/aws", "", t.TempDir())
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok")
@@ -383,7 +386,8 @@ func TestLoadModule_GitSubdirWithRef(t *testing.T) {
 	l := newTestLoader(t, "http://invalid.example")
 	source := "git::file://" + repo + "//modules/iam-policy?ref=v1"
 
-	loaded, err := l.LoadModule(t.Context(), source, "", t.TempDir())
+	loaded, diags, err := l.LoadModule(t.Context(), source, "", t.TempDir())
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.NotNil(t, loaded.Config)
 	require.Contains(t, loaded.Config.Outputs, "ok",
@@ -439,22 +443,25 @@ func TestLoaderResolvesViaCustomResolver(t *testing.T) {
 		return pkg, "4.2.0", nil
 	})
 
-	root, err := l.LoadModule(t.Context(), "acme/widget/cloud", "~> 4.0", t.TempDir())
+	root, diags, err := l.LoadModule(t.Context(), "acme/widget/cloud", "~> 4.0", t.TempDir())
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Equal(t, pkg, root.SourcePath)
 
 	// Two subdir references into the one resolved package resolve under it; the
 	// resolver only ever sees the package source.
-	a, err := l.LoadModule(t.Context(), "acme/widget/cloud//a", "~> 4.0", t.TempDir())
+	a, diags, err := l.LoadModule(t.Context(), "acme/widget/cloud//a", "~> 4.0", t.TempDir())
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(pkg, "a"), a.SourcePath)
 
-	b, err := l.LoadModule(t.Context(), "acme/widget/cloud//b", "~> 4.0", t.TempDir())
+	b, diags, err := l.LoadModule(t.Context(), "acme/widget/cloud//b", "~> 4.0", t.TempDir())
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(pkg, "b"), b.SourcePath)
 }
 
-func TestLoadModule_ParseFailureIsErrInvalid(t *testing.T) {
+func TestLoadModule_ParseFailureDiagnostics(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -476,8 +483,10 @@ func TestLoadModule_ParseFailureIsErrInvalid(t *testing.T) {
 			l := NewLoader(func(_, _, _ string) (string, string, error) {
 				return pkg, "", nil
 			})
-			_, err := l.LoadModule(t.Context(), "./mod", "", t.TempDir())
-			assert.ErrorIs(t, err, ErrInvalid)
+			loaded, diags, err := l.LoadModule(t.Context(), "./mod", "", t.TempDir())
+			require.NoError(t, err)
+			assert.Nil(t, loaded)
+			assert.True(t, diags.HasErrors())
 		})
 	}
 }
@@ -540,13 +549,13 @@ func TestLoaderResolvesPackageOnce(t *testing.T) {
 
 	_, _, err := l.ResolveDir("acme/widget/cloud", "", ".")
 	require.NoError(t, err)
-	_, err = l.LoadModule(t.Context(), "acme/widget/cloud", "", ".")
+	_, _, err = l.LoadModule(t.Context(), "acme/widget/cloud", "", ".")
 	require.NoError(t, err)
-	_, err = l.LoadModule(t.Context(), "acme/widget/cloud//sub", "", ".")
+	_, _, err = l.LoadModule(t.Context(), "acme/widget/cloud//sub", "", ".")
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
 
-	_, err = l.LoadModule(t.Context(), "acme/widget/cloud", "~> 2", ".")
+	_, _, err = l.LoadModule(t.Context(), "acme/widget/cloud", "~> 2", ".")
 	require.NoError(t, err)
 	require.Equal(t, 2, count)
 }

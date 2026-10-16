@@ -289,9 +289,11 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 	loader := modules.NewLoader(rec.resolve)
 
 	// Loading the tree records every resolution into the recorder.
-	loaded, err := loader.LoadModule(t.Context(), root, "", ".")
+	loaded, diags, err := loader.LoadModule(t.Context(), root, "", ".")
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
-	_, err = loader.LoadModule(t.Context(), "acme/widget/cloud", "", loaded.SourcePath)
+	_, diags, err = loader.LoadModule(t.Context(), "acme/widget/cloud", "", loaded.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 
 	value, err := rec.bundle(moduleRef{Source: root}, nil)
@@ -306,13 +308,15 @@ func TestBundleRoundTripResolvesOffline(t *testing.T) {
 	// The bundle resolver has no network and no filesystem fallback: every
 	// source — the absolute-path root included — must come from the manifest.
 	offline := modules.NewLoader(bundleResolver(dest, manifest))
-	rootAgain, err := offline.LoadModule(t.Context(), manifest.Root.Source, manifest.Root.Version, ".")
+	rootAgain, diags, err := offline.LoadModule(t.Context(), manifest.Root.Source, manifest.Root.Version, ".")
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Contains(t, rootAgain.Config.Modules, "c")
 	require.True(t, strings.HasPrefix(rootAgain.SourcePath, dest),
 		"root must resolve inside the unpacked bundle, got %q", rootAgain.SourcePath)
 
-	childAgain, err := offline.LoadModule(t.Context(), "acme/widget/cloud", "", rootAgain.SourcePath)
+	childAgain, diags, err := offline.LoadModule(t.Context(), "acme/widget/cloud", "", rootAgain.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Contains(t, childAgain.Config.Outputs, "id")
 	require.True(t, strings.HasPrefix(childAgain.SourcePath, dest),
@@ -346,13 +350,17 @@ func TestBundleRoundTripEscapingTopology(t *testing.T) {
 	// Load the whole tree (root, its two children, and the escaping grandchild) so
 	// every reference is recorded.
 	rootDir := filepath.Join(base, "root")
-	root, err := loader.LoadModule(t.Context(), rootDir, "", ".")
+	root, diags, err := loader.LoadModule(t.Context(), rootDir, "", ".")
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
-	a, err := loader.LoadModule(t.Context(), "./A", "", root.SourcePath)
+	a, diags, err := loader.LoadModule(t.Context(), "./A", "", root.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
-	_, err = loader.LoadModule(t.Context(), "./C", "", root.SourcePath)
+	_, diags, err = loader.LoadModule(t.Context(), "./C", "", root.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
-	_, err = loader.LoadModule(t.Context(), "../../B", "", a.SourcePath)
+	_, diags, err = loader.LoadModule(t.Context(), "../../B", "", a.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 
 	value, err := rec.bundle(moduleRef{Source: rootDir}, nil)
@@ -377,21 +385,25 @@ func TestBundleRoundTripEscapingTopology(t *testing.T) {
 		"../../B escapes the root package, so it must be its own package, got target %q", escaped.Target)
 
 	offline := modules.NewLoader(bundleResolver(dest, manifest))
-	root2, err := offline.LoadModule(t.Context(), manifest.Root.Source, manifest.Root.Version, ".")
+	root2, diags, err := offline.LoadModule(t.Context(), manifest.Root.Source, manifest.Root.Version, ".")
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(root2.SourcePath, dest))
 
 	// The non-escaping local sibling resolves inside the root package.
-	c2, err := offline.LoadModule(t.Context(), "./C", "", root2.SourcePath)
+	c2, diags, err := offline.LoadModule(t.Context(), "./C", "", root2.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Contains(t, c2.Config.Outputs, "from_c")
 	require.True(t, strings.HasPrefix(c2.SourcePath, dest))
 
 	// The escaping ../../B resolves to its bundled package, staying inside the
 	// unpack dir rather than walking ".." out of it.
-	a2, err := offline.LoadModule(t.Context(), "./A", "", root2.SourcePath)
+	a2, diags, err := offline.LoadModule(t.Context(), "./A", "", root2.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
-	b2, err := offline.LoadModule(t.Context(), "../../B", "", a2.SourcePath)
+	b2, diags, err := offline.LoadModule(t.Context(), "../../B", "", a2.SourcePath)
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 	require.Contains(t, b2.Config.Outputs, "from_b")
 	require.True(t, strings.HasPrefix(b2.SourcePath, dest),
@@ -520,7 +532,8 @@ func TestBundleBakesPackages(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`output "x" { value = 1 }`), 0o600))
 	rec := newResolveRecorder(func(string, string, string) (string, string, error) { return dir, "", nil })
 	loader := modules.NewLoader(rec.resolve)
-	_, err := loader.LoadModule(t.Context(), dir, "", ".")
+	_, diags, err := loader.LoadModule(t.Context(), dir, "", ".")
+	require.False(t, diags.HasErrors(), "%s", diags)
 	require.NoError(t, err)
 
 	value, err := rec.bundle(moduleRef{Source: dir}, packages)
