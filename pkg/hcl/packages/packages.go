@@ -19,11 +19,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/blang/semver"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -110,7 +112,15 @@ func pulumiTokenToHCL(pkg schema.PackageReference, token string, isFunction bool
 	if mod != "index" && mod != "" {
 		hclToken += "_" + camelToSnake(mod)
 	}
-	return hclToken + "_" + camelToSnake(name), nil
+	hclToken, err := parser.MakeValidIdentifier(hclToken + "_" + camelToSnake(name))
+	if err != nil {
+		return "", hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Cannot convert %q to an HCL type name", token),
+			Detail:   err.Error(),
+		}}
+	}
+	return hclToken, nil
 }
 
 // PackageFromToken determines the package name from an HCL token and the list of
@@ -196,10 +206,10 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	}
 
 	res, err := findResource(pkg, knownProviders, token)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
 		if extPkg, ok := extensionReference(ctx, loader, knownProviders, token); ok {
-			if extRes, extErr := findResource(extPkg, knownProviders, token); extErr == nil {
-				res, err = extRes, nil
+			if extRes, extErr := findResource(extPkg, knownProviders, token); !errors.Is(extErr, ErrNotFound) {
+				res, err = extRes, extErr
 			}
 		}
 	}
@@ -287,25 +297,40 @@ func findResource(pkg schema.PackageReference, knownProviders []string, token st
 	if err != nil {
 		return nil, err
 	}
-	key := resourceLookupKey(pkgName, token)
+	key := hclSearchKey(pkgName, token)
+	var matches []string
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		if tokenSearchKey(pkg, iter.Token()) == key {
-			return iter.Resource()
+			matches = append(matches, iter.Token())
 		}
 	}
-	return nil, notFoundWithSuggestion(pkg, token, false)
+	switch len(matches) {
+	case 0:
+		return nil, notFoundWithSuggestion(pkg, token, false)
+	case 1:
+		res, _, err := pkg.Resources().Get(matches[0])
+		return res, err
+	default:
+		return nil, ambiguousMatchError(token, "resources", matches)
+	}
 }
 
-// resourceLookupKey returns the normalized member-name key used to match an
-// HCL token against tokenSearchKey-derived keys. For multi-segment tokens
-// it's the underscore-stripped suffix after the provider prefix; for
-// single-segment tokens (where the type name equals the provider name) the
-// whole token is the member name.
-func resourceLookupKey(pkgName, token string) string {
-	if token == pkgName {
-		return token
+// hclSearchKey returns the normalized member-name key used to match an HCL
+// token against tokenSearchKey-derived keys. For multi-segment tokens it's the
+// suffix after the provider prefix; for single-segment tokens (where the type
+// name equals the provider name) the whole token is the member name.
+func hclSearchKey(pkgName, token string) string {
+	if token != pkgName {
+		token = token[len(pkgName)+1:]
 	}
-	return strings.ReplaceAll(token[len(pkgName)+1:], "_", "")
+	return searchKey(token)
+}
+
+// ambiguousMatchError reports an HCL token whose search key matches more than
+// one schema member, so neither can be picked without guessing.
+func ambiguousMatchError(token, kind string, matches []string) error {
+	slices.Sort(matches)
+	return fmt.Errorf("ambiguous token %q: matches multiple %s %v", token, kind, matches)
 }
 
 func notFoundWithSuggestion(pkg schema.PackageReference, hclToken string, isFunction bool) error {
@@ -315,17 +340,42 @@ func notFoundWithSuggestion(pkg schema.PackageReference, hclToken string, isFunc
 	}
 }
 
+// searchKey keeps only the runes of s that an HCL identifier can contain,
+// other than "_". parser.MakeValidIdentifier turns every other rune into a
+// "_" or drops it, so a generated HCL name and the token it came from have
+// the same key. A label written with such runes, such as
+// "kubernetes_helm.sh_v3_release", also has the same key.
+func searchKey(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '_' || !parser.IsIdentifierRune(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // tokenSearchKey produces a normalized lookup key for a Pulumi token by
-// concatenating the schema-declared module and member name and stripping
-// "_" and "/" separators after lowercasing. The schema's ModuleFormat regex
-// (applied by TokenToModule) is responsible for separating the module from
-// the member name and for collapsing the implicit "index" root module to
+// concatenating the schema-declared module and member name, lowercasing, and
+// applying searchKey. The schema's ModuleFormat
+// regex (applied by TokenToModule) is responsible for separating the module
+// from the member name and for collapsing the implicit "index" root module to
 // the empty string; bridged-style tokens like "aws:iam/getRole:getRole"
 // resolve correctly only when the schema sets that regex.
 func tokenSearchKey(pkg schema.PackageReference, tok string) string {
 	mod := pkg.TokenToModule(tok)
 	name := strings.Split(tok, ":")[2]
-	return strings.NewReplacer("/", "", "_", "").Replace(strings.ToLower(mod + name))
+	return searchKey(strings.ToLower(mod + name))
+}
+
+// getlessSearchKey drops the member's "get" prefix when it is followed by an
+// uppercase letter, matching PulumiFunctionTokenToHCL's data source naming.
+func getlessSearchKey(pkg schema.PackageReference, tok string) string {
+	name := strings.Split(tok, ":")[2]
+	if len(name) <= 3 || !strings.HasPrefix(name, "get") || name[3] < 'A' || name[3] > 'Z' {
+		return tokenSearchKey(pkg, tok)
+	}
+	mod := pkg.TokenToModule(tok)
+	return searchKey(strings.ToLower(mod + name[3:]))
 }
 
 func resolvePackage(ctx context.Context, loader schema.ReferenceLoader, descriptor *schema.PackageDescriptor) (schema.PackageReference, error) {
@@ -470,45 +520,37 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 		return nil, ErrNotFound
 	}
 
-	suffix := token
-	if token != pkgName {
-		suffix = token[len(pkgName)+1:]
-	}
-	suffixParts := strings.Split(suffix, "_")
-
-	key := strings.ReplaceAll(suffix, "_", "")
-	// Allow omitting the "get" on Pulumi datasources. Try two placements:
-	// after the first segment (for `<mod>_<name>` HCL forms — e.g.
-	// "aws_iam_role" → "iamgetrole") and prepended to the whole suffix (for
-	// index-module functions — e.g. "aws_availability_zone" →
-	// "getavailabilityzone"). The mid-segment form is tried first to preserve
-	// the existing precedence for moduled functions.
-	implicitGetKeys := []string{
-		suffixParts[0] + "get" + strings.Join(suffixParts[1:], ""),
-		"get" + strings.Join(suffixParts, ""),
-	}
-	search := func(pkg schema.PackageReference) (*schema.Function, bool) {
-		for _, k := range append([]string{key}, implicitGetKeys...) {
-			for iter := pkg.Functions().Range(); iter.Next(); {
-				if tokenSearchKey(pkg, iter.Token()) == k {
-					fn, err := iter.Function()
-					if err == nil {
-						return fn, true
-					}
-				}
+	fn, err := findFunction(pkg, pkgName, token)
+	if errors.Is(err, ErrNotFound) {
+		if extPkg, ok := extensionReference(ctx, loader, knownProviders, token); ok {
+			if extFn, extErr := findFunction(extPkg, pkgName, token); !errors.Is(extErr, ErrNotFound) {
+				fn, err = extFn, extErr
 			}
 		}
-		return nil, false
 	}
+	return fn, err
+}
 
-	if fn, ok := search(pkg); ok {
-		return fn, nil
-	}
-	if extPkg, ok := extensionReference(ctx, loader, knownProviders, token); ok {
-		if fn, ok := search(extPkg); ok {
-			return fn, nil
+// findFunction matches token against pkg's functions by the full member name
+// first, then with the member's "get" prefix omitted, as data sources may.
+func findFunction(pkg schema.PackageReference, pkgName, token string) (*schema.Function, error) {
+	key := hclSearchKey(pkgName, token)
+	for _, searchKey := range []func(schema.PackageReference, string) string{tokenSearchKey, getlessSearchKey} {
+		var matches []string
+		for iter := pkg.Functions().Range(); iter.Next(); {
+			if searchKey(pkg, iter.Token()) == key {
+				matches = append(matches, iter.Token())
+			}
+		}
+		switch len(matches) {
+		case 0:
+			continue
+		case 1:
+			fn, _, err := pkg.Functions().Get(matches[0])
+			return fn, err
+		default:
+			return nil, ambiguousMatchError(token, "functions", matches)
 		}
 	}
-
 	return nil, notFoundWithSuggestion(pkg, token, true)
 }

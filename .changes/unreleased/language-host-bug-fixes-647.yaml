@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Warn when a resource or data source type is not an HCL identifier, because nothing can reference it
+time: 2026-10-16T16:34:05.806921+02:00
+custom:
+    Component: language-host
+    PR: "647"

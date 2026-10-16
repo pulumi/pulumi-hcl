@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi/pkg/v3/codegen"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/cgstrings"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -1073,7 +1074,8 @@ func PulumiCaseFromSnakeCase(s string, props []*schema.Property) (string, *schem
 	return camelCaseFromSnakeCase(s, props)
 }
 
-// Convert from camelCase to snake_case.
+// Convert from camelCase to snake_case, and then to a valid HCL identifier
+// with [parser.MakeValidIdentifier].
 //
 // This function looses information, since we cannot distinguish between SCREAM & scream.
 func snakeCaseFromCamelCase(s string) string {
@@ -1106,7 +1108,13 @@ func snakeCaseFromCamelCase(s string) string {
 			b.WriteRune(c)
 		}
 	}
-	return b.String()
+	// A name with no valid runes has no HCL spelling, so keep the snake_case
+	// form for messages that name it.
+	id, err := parser.MakeValidIdentifier(b.String())
+	if err != nil {
+		return b.String()
+	}
+	return id
 }
 
 // CtyToPropertyValue converts a cty.Value to a Pulumi PropertyValue.

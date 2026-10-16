@@ -1367,3 +1367,57 @@ data "simple_lookup" "d" {
 	require.False(t, diags.HasErrors(), "unexpected parse errors: %v", diags)
 	require.Len(t, cfg.DataSources["simple_lookup.d"].Preconditions, 1)
 }
+
+func TestTypeLabelNotIdentifierWarns(t *testing.T) {
+	t.Parallel()
+
+	labelRange := func(start, end int) *hcl.Range {
+		return &hcl.Range{
+			Filename: "test.hcl",
+			Start:    hcl.Pos{Line: 1, Column: start + 1, Byte: start},
+			End:      hcl.Pos{Line: 1, Column: end + 1, Byte: end},
+		}
+	}
+	tests := []struct {
+		src  string
+		want hcl.Diagnostics
+	}{
+		{src: `resource "odd_dot_ted_v1_thing" "x" {}`},
+		{
+			src: `resource "odd_dot.ted_v1_thing" "x" {}`,
+			want: hcl.Diagnostics{{
+				Severity: hcl.DiagWarning,
+				Summary:  "Type name is not a valid identifier",
+				Detail: `The resource type "odd_dot.ted_v1_thing" is not a valid identifier, ` +
+					`so references to this resource cannot work. Use "odd_dot_ted_v1_thing" instead.`,
+				Subject: labelRange(9, 31),
+			}},
+		},
+		{
+			src: `data "odd_dot.ted_v1_thing" "x" {}`,
+			want: hcl.Diagnostics{{
+				Severity: hcl.DiagWarning,
+				Summary:  "Type name is not a valid identifier",
+				Detail: `The data source type "odd_dot.ted_v1_thing" is not a valid identifier, ` +
+					`so references to this data source cannot work. Use "odd_dot_ted_v1_thing" instead.`,
+				Subject: labelRange(5, 27),
+			}},
+		},
+		{
+			src: `resource "!!" "x" {}`,
+			want: hcl.Diagnostics{{
+				Severity: hcl.DiagWarning,
+				Summary:  "Type name is not a valid identifier",
+				Detail:   `The resource type "!!" is not a valid identifier, so references to this resource cannot work.`,
+				Subject:  labelRange(9, 13),
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.src, func(t *testing.T) {
+			t.Parallel()
+			_, diags := NewParser().ParseSource("test.hcl", []byte(tt.src))
+			assert.Equal(t, tt.want, diags)
+		})
+	}
+}

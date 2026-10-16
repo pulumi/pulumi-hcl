@@ -761,7 +761,7 @@ func (p *Parser) parseResourceBlock(config *ast.Config, block *hcl.Block) hcl.Di
 
 	resource, diags := p.decodeResourceBlock(block)
 	config.Resources[key] = resource
-	return diags
+	return append(diags, typeLabelDiags("resource", block)...)
 }
 
 // parseDataBlock parses a data block and records it in the config's
@@ -782,7 +782,27 @@ func (p *Parser) parseDataBlock(config *ast.Config, block *hcl.Block) hcl.Diagno
 
 	ds, diags := p.decodeDataBlock(block)
 	config.DataSources[key] = ds
-	return diags
+	return append(diags, typeLabelDiags("data source", block)...)
+}
+
+// typeLabelDiags warns when the type label of block is not an HCL identifier.
+// A reference splits at each ".", so nothing can reference such a block.
+func typeLabelDiags(kind string, block *hcl.Block) hcl.Diagnostics {
+	label := block.Labels[0]
+	if hclsyntax.ValidIdentifier(label) {
+		return nil
+	}
+	detail := fmt.Sprintf("The %s type %q is not a valid identifier, so references to this %s cannot work.",
+		kind, label, kind)
+	if valid, err := MakeValidIdentifier(label); err == nil {
+		detail += fmt.Sprintf(" Use %q instead.", valid)
+	}
+	return hcl.Diagnostics{{
+		Severity: hcl.DiagWarning,
+		Summary:  "Type name is not a valid identifier",
+		Detail:   detail,
+		Subject:  block.LabelRanges[0].Ptr(),
+	}}
 }
 
 // decodeDataBlock decodes a data block body into a DataSource without
