@@ -26,6 +26,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	hclrun "github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi-hcl/tests/testutil"
@@ -1354,7 +1355,7 @@ func TestNotImplemented(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, bindDiags.HasErrors(), bindDiags.Error())
 
-		files, genDiags, err := codegen.GenerateProgram(program)
+		files, genDiags, err := codegen.GenerateProgram(t.Context(), program, packages.NewResolver(nil, nil, nil, nil))
 		require.NoError(t, err)
 		require.False(t, genDiags.HasErrors(), genDiags.Error())
 
@@ -1428,7 +1429,7 @@ output someOutput {
 	require.NoError(t, err)
 	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
 
-	files, genDiags, err := codegen.GenerateProgram(program)
+	files, genDiags, err := codegen.GenerateProgram(t.Context(), program, packages.NewResolver(nil, nil, nil, nil))
 	require.NoError(t, err)
 	require.False(t, genDiags.HasErrors(), genDiags.Error())
 
@@ -2496,7 +2497,7 @@ func testConvertedPCLWithComponent(
 	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
 
 	// Generate HCL (produces parent main.tf + component subdirs).
-	files, genDiags, err := codegen.GenerateProgram(program)
+	files, genDiags, err := codegen.GenerateProgram(t.Context(), program, packages.NewResolver(nil, nil, nil, nil))
 	require.NoError(t, err)
 	require.False(t, genDiags.HasErrors(), genDiags.Error())
 
@@ -2666,7 +2667,7 @@ resource web "aws:index:Instance" {
 	require.NoError(t, err)
 	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
 
-	files, diags, err := codegen.GenerateProgram(program, codegen.SkipRequiredProvidersVersion())
+	files, diags, err := codegen.GenerateProgram(t.Context(), program, packages.NewResolver(nil, nil, nil, nil), codegen.SkipRequiredProvidersVersion())
 	require.NoError(t, err)
 	require.False(t, diags.HasErrors(), diags.Error())
 	require.Len(t, files, 1)

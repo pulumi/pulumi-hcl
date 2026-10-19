@@ -1053,7 +1053,8 @@ func (host *LanguageHost) GenerateProgram(
 	if !req.Strict {
 		binderOpts = append(binderOpts, pcl.NonStrictBindOptions()...)
 	}
-	program, bindDiags, err := pcl.BindDirectory(tmpDir, schema.NewCachedLoader(loaderClient), binderOpts...)
+	loader := schema.NewCachedLoader(loaderClient)
+	program, bindDiags, err := pcl.BindDirectory(tmpDir, loader, binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding program: %w", err)
 	}
@@ -1063,7 +1064,11 @@ func (host *LanguageHost) GenerateProgram(
 		}, nil
 	}
 
-	files, genDiags, err := codegen.GenerateProgram(program)
+	mappings, err := codegenMappings(loader, req.MapperTarget, program)
+	if err != nil {
+		return nil, err
+	}
+	files, genDiags, err := codegen.GenerateProgram(ctx, program, mappings)
 	if err != nil {
 		return nil, fmt.Errorf("generating program: %w", err)
 	}
@@ -1071,12 +1076,49 @@ func (host *LanguageHost) GenerateProgram(
 	// Include sdks/<alias>/hcl.sdk.json for parameterized packages so that
 	// ConvertProgram can load their schemas when the round-trip test writes these
 	// files to a temp directory and then calls ConvertProgram on that directory.
+	for _, desc := range parameterizedPackages(program) {
+		data, marshalErr := json.Marshal(desc)
+		if marshalErr != nil {
+			continue
+		}
+		files["sdks/"+desc.Parameterization.Name+"/hcl.sdk.json"] = data
+	}
+
+	return &pulumirpc.GenerateProgramResponse{
+		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(genDiags),
+		Source:      files,
+	}, nil
+}
+
+// codegenMappings returns the resolver that gives codegen the bridge body
+// mappings of the providers program uses, served by the mapper at
+// mapperTarget.
+func codegenMappings(
+	loader schema.ReferenceLoader, mapperTarget string, program *pcl.Program,
+) (*packages.Resolver, error) {
+	if mapperTarget == "" {
+		return nil, errors.New("missing mapper_target; the Pulumi engine must supply a mapper server " +
+			"so HCL codegen can resolve TF provider mappings")
+	}
+	mapperClient, err := convert.NewMapperClient(mapperTarget)
+	if err != nil {
+		return nil, fmt.Errorf("dial mapper at %s: %w", mapperTarget, err)
+	}
+	return packages.NewResolver(
+		loader, bridge.NewCache(bridge.NewMapperSource(mapperClient)), parameterizedPackages(program), nil,
+	), nil
+}
+
+// parameterizedPackages returns the package descriptor of each parameterized
+// package that program references, keyed by package name.
+func parameterizedPackages(program *pcl.Program) map[string]workspace.PackageDescriptor {
+	descs := map[string]workspace.PackageDescriptor{}
 	for _, ref := range program.PackageReferences() {
 		if ref.Name() == "pulumi" {
 			continue
 		}
-		pkg, pkgErr := ref.Definition()
-		if pkgErr != nil || pkg.Parameterization == nil {
+		pkg, err := ref.Definition()
+		if err != nil || pkg.Parameterization == nil {
 			continue
 		}
 		baseVersion := pkg.Parameterization.BasePlugin.Version
@@ -1084,7 +1126,7 @@ func (host *LanguageHost) GenerateProgram(
 		if pkg.Version != nil {
 			paramVersion = *pkg.Version
 		}
-		desc := workspace.PackageDescriptor{
+		descs[pkg.Name] = workspace.PackageDescriptor{
 			PluginDescriptor: workspace.PluginDescriptor{
 				Name:    pkg.Parameterization.BasePlugin.Name,
 				Version: &baseVersion,
@@ -1096,17 +1138,8 @@ func (host *LanguageHost) GenerateProgram(
 				Value:   pkg.Parameterization.Parameter,
 			},
 		}
-		data, marshalErr := json.Marshal(desc)
-		if marshalErr != nil {
-			continue
-		}
-		files["sdks/"+pkg.Name+"/hcl.sdk.json"] = data
 	}
-
-	return &pulumirpc.GenerateProgramResponse{
-		Diagnostics: plugin.HclDiagnosticsToRPCDiagnostics(genDiags),
-		Source:      files,
-	}, nil
+	return descs
 }
 
 // GenerateProject generates a complete HCL project.
@@ -1157,7 +1190,8 @@ func (host *LanguageHost) GenerateProject(
 
 	}
 
-	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, schema.NewCachedLoader(loaderClient), binderOpts...)
+	loader := schema.NewCachedLoader(loaderClient)
+	program, bindDiags, err := pcl.BindDirectory(req.SourceDirectory, loader, binderOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("binding directory: %w", err)
 	}
@@ -1167,7 +1201,11 @@ func (host *LanguageHost) GenerateProject(
 		}, nil
 	}
 
-	files, genDiags, err := codegen.GenerateProgram(program)
+	mappings, err := codegenMappings(loader, req.MapperTarget, program)
+	if err != nil {
+		return nil, err
+	}
+	files, genDiags, err := codegen.GenerateProgram(ctx, program, mappings)
 	if err != nil {
 		return nil, fmt.Errorf("generating program: %w", err)
 	}

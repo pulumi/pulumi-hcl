@@ -15,6 +15,7 @@
 package codegen
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -25,6 +26,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/comments"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
@@ -73,7 +75,14 @@ func SkipRequiredProvidersVersion() GenerateProgramOption {
 // declared each package via a `package` block; references with no declaring
 // file are placed in main.tf (or, if no main.pp exists, the first file in
 // alphabetical order).
-func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[string][]byte, hcl.Diagnostics, error) {
+//
+// mappings supplies the bridge body mappings that decide which properties
+// are written as nested blocks: the Pulumi schema of a bridged provider
+// types a MaxItems=1 block as an object, the same as an object attribute.
+func GenerateProgram(
+	ctx context.Context, program *pcl.Program, mappings *packages.Resolver, opts ...GenerateProgramOption,
+) (map[string][]byte, hcl.Diagnostics, error) {
+	contract.Requiref(mappings != nil, "mappings", "must not be nil")
 	var o generateProgramOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -83,6 +92,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 
 	gen := &generator{
 		program:                      program,
+		mappings:                     mappings,
 		comments:                     buildProgramComments(program),
 		skipRequiredProvidersVersion: o.skipRequiredProvidersVersion,
 		insideComponent:              o.insideComponent,
@@ -139,7 +149,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 		diags = append(diags, d...)
 
 		for _, ds := range invokesByFile[srcName] {
-			d := gen.genInvokeDataSource(body, ds)
+			d := gen.genInvokeDataSource(ctx, body, ds)
 			diags = append(diags, d...)
 		}
 		if len(invokesByFile[srcName]) > 0 {
@@ -159,7 +169,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 			gen.emitLeadingComments(body, node.SyntaxNode())
 			switch n := node.(type) {
 			case *pcl.Resource:
-				d := gen.genResource(body, n)
+				d := gen.genResource(ctx, body, n)
 				diags = append(diags, d...)
 			case *pcl.OutputVariable:
 				d := gen.genOutput(body, n)
@@ -198,7 +208,7 @@ func GenerateProgram(program *pcl.Program, opts ...GenerateProgramOption) (map[s
 	}
 
 	for componentDir, component := range program.CollectComponents() {
-		subFiles, d, err := GenerateProgram(component.Program, insideComponentSource())
+		subFiles, d, err := GenerateProgram(ctx, component.Program, mappings, insideComponentSource())
 		diags = append(diags, d...)
 		if err != nil {
 			return nil, diags, err
@@ -321,6 +331,7 @@ type dynamicBlockContext struct {
 // generator holds state during code generation, including invoke data sources.
 type generator struct {
 	program           *pcl.Program
+	mappings          *packages.Resolver
 	invokeDataSources []spilledDataSource
 	callBlocks        []spilledCall
 	currentRangeKind  rangeKind
@@ -972,7 +983,7 @@ func (g *generator) lookupInvokeSchema(token string) (*schema.Function, string, 
 // genInvokeDataSource generates a data source block for an invoke call.
 // If ds.parentResource is set, the block is emitted with a for_each matching
 // the resource's range so range.* references rewrite correctly.
-func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSource) hcl.Diagnostics {
+func (g *generator) genInvokeDataSource(ctx context.Context, body *hclwrite.Body, ds spilledDataSource) hcl.Diagnostics {
 	invoke := ds.expr
 	dsName := ds.name
 	if len(invoke.Args) < 2 {
@@ -1054,6 +1065,7 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 	if len(invoke.Args) >= 2 {
 		argsExpr := invoke.Args[1]
 		if objExpr, ok := argsExpr.(*model.ObjectConsExpression); ok {
+			mapping := g.mappings.DataSourceBodyMapping(ctx, dsType)
 			for _, item := range objExpr.Items {
 				keyLit, ok := item.Key.(*model.LiteralValueExpression)
 				if !ok {
@@ -1068,8 +1080,9 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 				}
 				hclName := transform.SnakeCaseFromPulumiCase(keyName)
 				target := inputBody(block.Body(), hclName, parser.DataReservedNames)
-				if objType, ok := transform.AsHCLBlockType(propType); ok {
-					d := g.genBlocks(target, hclName, item.Value, objType)
+				fm := mapping.Lookup(hclName)
+				if objType, ok := blockType(propType, fm); ok {
+					d := g.genBlocks(target, hclName, item.Value, objType, nestedMapping(fm))
 					diags = append(diags, d...)
 				} else {
 					d := g.genExpression(target, hclName, item.Value, propType)
@@ -1135,13 +1148,13 @@ func (g *generator) genInvokeDataSource(body *hclwrite.Body, ds spilledDataSourc
 	return diags
 }
 
-func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
+func (g *generator) genResource(ctx context.Context, body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
 	defer func() { g.currentRangeKind = rangeKindNone }()
 
 	token, _ := r.GetToken()
 
 	if r.Schema != nil && r.Schema.IsProvider {
-		return g.genProvider(body, r)
+		return g.genProvider(ctx, body, r)
 	}
 
 	hclType, d := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(r.Schema), resourceSchemaToken(r.Schema, token))
@@ -1154,14 +1167,16 @@ func (g *generator) genResource(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 	d = g.genResourceOptions(block.Body(), r)
 	diags = append(diags, d...)
 
-	d = g.genInputs(block.Body(), r, parser.ResourceReservedNames)
+	d = g.genInputs(block.Body(), r, g.mappings.ResourceBodyMapping(ctx, hclType), parser.ResourceReservedNames)
 	return append(diags, d...)
 }
 
 // genInputs writes r's input properties to body. An input whose HCL name is
 // in reserved goes in the block's `_` escaping block instead, so the runtime
 // reads it as a property rather than as a meta-argument.
-func (g *generator) genInputs(body *hclwrite.Body, r *pcl.Resource, reserved map[string]bool) hcl.Diagnostics {
+func (g *generator) genInputs(
+	body *hclwrite.Body, r *pcl.Resource, mapping *bridge.BodyMapping, reserved map[string]bool,
+) hcl.Diagnostics {
 	var inputs []*schema.Property
 	if r.Schema != nil {
 		inputs = r.Schema.InputProperties
@@ -1173,8 +1188,9 @@ func (g *generator) genInputs(body *hclwrite.Body, r *pcl.Resource, reserved map
 		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
 		target := inputBody(body, hclName, reserved)
 		g.emitLeadingComments(target, attr.SyntaxNode())
-		if objType, ok := transform.AsHCLBlockType(inputType); ok {
-			d := g.genBlocks(target, hclName, attr.Value, objType)
+		fm := mapping.Lookup(hclName)
+		if objType, ok := blockType(inputType, fm); ok {
+			d := g.genBlocks(target, hclName, attr.Value, objType, nestedMapping(fm))
 			diags = append(diags, d...)
 		} else {
 			d := g.genAttributeWithTrailing(target, hclName, attr.Value, inputType, attr.SyntaxNode())
@@ -1199,7 +1215,7 @@ func inputBody(body *hclwrite.Body, name string, reserved map[string]bool) *hclw
 
 // genProvider emits a `provider "<pkg>" { ... }` block for a PCL provider
 // resource (token "pulumi:providers:<pkg>").
-func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
+func (g *generator) genProvider(ctx context.Context, body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
 	contract.Assertf(r.Schema == nil || r.Schema.IsProvider, "genProvider not given provider")
 	token, _ := r.GetToken()
 	pkgName := token
@@ -1256,7 +1272,7 @@ func (g *generator) genProvider(body *hclwrite.Body, r *pcl.Resource) hcl.Diagno
 		}
 	}
 
-	d := g.genInputs(block.Body(), r, parser.ProviderReservedNames)
+	d := g.genInputs(block.Body(), r, g.mappings.ProviderConfigBodyMapping(ctx, pkgName), parser.ProviderReservedNames)
 	return append(diags, d...)
 }
 
@@ -2110,20 +2126,45 @@ func providerPackageNameFromExpr(expr model.Expression) (string, bool) {
 	return string(tokens.Type(token).Name()), true
 }
 
-func (g *generator) genBlocks(body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType) hcl.Diagnostics {
+// genBlocks writes expr as nested blocks named name. mapping is the bridge
+// mapping of the block's body, or nil.
+func (g *generator) genBlocks(
+	body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType, mapping *bridge.BodyMapping,
+) hcl.Diagnostics {
 	switch e := expr.(type) {
 	case *model.TupleConsExpression:
 		var diags hcl.Diagnostics
 		for _, elem := range e.Expressions {
-			d := g.genBlock(body, name, elem, objType)
+			d := g.genBlock(body, name, elem, objType, mapping)
 			diags = append(diags, d...)
 		}
 		return diags
 	case *model.ForExpression:
-		return g.genDynamicBlock(body, name, e, objType)
+		return g.genDynamicBlock(body, name, e, objType, mapping)
 	default:
-		return g.genBlock(body, name, expr, objType)
+		return g.genBlock(body, name, expr, objType, mapping)
 	}
+}
+
+// blockType returns the object type of a property that is written as nested
+// blocks: a list of objects, or a TF block that the bridge flattens to one
+// object (MaxItems=1). fm is the bridge mapping of the property, or nil.
+func blockType(typ schema.Type, fm *bridge.FieldMapping) (*schema.ObjectType, bool) {
+	if obj, ok := transform.AsHCLBlockType(typ); ok {
+		return obj, true
+	}
+	if fm == nil || !fm.TFBlock {
+		return nil, false
+	}
+	obj, ok := codegen.UnwrapType(typ).(*schema.ObjectType)
+	return obj, ok
+}
+
+func nestedMapping(fm *bridge.FieldMapping) *bridge.BodyMapping {
+	if fm == nil {
+		return nil
+	}
+	return fm.Nested
 }
 
 // genDynamicBlock generates a dynamic block from a PCL ForExpression.
@@ -2135,7 +2176,7 @@ func (g *generator) genBlocks(body *hclwrite.Body, name string, expr model.Expre
 //	  }
 //	}
 func (g *generator) genDynamicBlock(
-	body *hclwrite.Body, name string, expr *model.ForExpression, objType *schema.ObjectType,
+	body *hclwrite.Body, name string, expr *model.ForExpression, objType *schema.ObjectType, mapping *bridge.BodyMapping,
 ) hcl.Diagnostics {
 	block := body.AppendNewBlock("dynamic", []string{name})
 
@@ -2153,12 +2194,14 @@ func (g *generator) genDynamicBlock(
 	}
 	defer func() { g.dynamicBlock = prev }()
 
-	d := g.genBlock(block.Body(), "content", expr.Value, objType)
+	d := g.genBlock(block.Body(), "content", expr.Value, objType, mapping)
 	diags = append(diags, d...)
 	return diags
 }
 
-func (g *generator) genBlock(body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType) hcl.Diagnostics {
+func (g *generator) genBlock(
+	body *hclwrite.Body, name string, expr model.Expression, objType *schema.ObjectType, mapping *bridge.BodyMapping,
+) hcl.Diagnostics {
 	block := body.AppendNewBlock(name, nil)
 	obj, ok := expr.(*model.ObjectConsExpression)
 	if !ok {
@@ -2173,8 +2216,9 @@ func (g *generator) genBlock(body *hclwrite.Body, name string, expr model.Expres
 			propType = p.Type
 		}
 		var d hcl.Diagnostics
-		if innerObjType, ok := transform.AsHCLBlockType(propType); ok {
-			d = g.genBlocks(block.Body(), snakeName, item.Value, innerObjType)
+		fm := mapping.Lookup(snakeName)
+		if innerObjType, ok := blockType(propType, fm); ok {
+			d = g.genBlocks(block.Body(), snakeName, item.Value, innerObjType, nestedMapping(fm))
 		} else {
 			d = g.genExpression(block.Body(), snakeName, item.Value, propType)
 		}

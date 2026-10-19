@@ -37,8 +37,6 @@ func TestL2OmittedNestedBlock(t *testing.T) {
 		Providers: []putest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
-		// TODO[https://github.com/pulumi/pulumi-hcl/issues/681]: PCL -> HCL emits a MaxItems=1 nested block as an attribute.
-		SkipRoundTrip: "PCL -> HCL emits the `policy` block as an attribute.",
 		ExpectedOutputs: map[string]string{
 			"rule":     "[]",
 			"rule_len": "0",
@@ -88,8 +86,6 @@ func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 		Providers: []putest.Provider{
 			{Name: "fnblock", Factory: providers.FNBlockProvider},
 		},
-		// TODO[https://github.com/pulumi/pulumi-hcl/issues/681]: PCL -> HCL emits a MaxItems=1 nested block as an attribute.
-		SkipRoundTrip: "PCL -> HCL emits the `settings` block as an attribute.",
 		ExpectedOutputs: map[string]string{
 			"settings": "[]",
 		},

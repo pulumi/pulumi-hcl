@@ -25,6 +25,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	pclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
@@ -621,7 +622,7 @@ func TestGenerateProgramMultiFile(t *testing.T) {
 `,
 	})
 
-	filesB, diags, err := codegen.GenerateProgram(program)
+	filesB, diags, err := codegen.GenerateProgram(t.Context(), program, packages.NewResolver(nil, nil, nil, nil))
 	require.NoError(t, err)
 	require.False(t, diags.HasErrors(), diags.Error())
 
@@ -733,7 +734,7 @@ func TestCreateBeforeDestroyDefault(t *testing.T) {
 }
 `,
 			})
-			filesB, diags, err := codegen.GenerateProgram(program)
+			filesB, diags, err := codegen.GenerateProgram(t.Context(), program, packages.NewResolver(nil, nil, nil, nil))
 			require.NoError(t, err)
 			require.False(t, diags.HasErrors(), diags.Error())
 			assert.Equal(t, tc.want, string(filesB["main.tf"]))

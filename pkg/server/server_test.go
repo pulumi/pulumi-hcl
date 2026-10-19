@@ -59,6 +59,7 @@ func TestGenerateProjectInlinesAdditionalKeys(t *testing.T) {
 			TargetDirectory: targetDir,
 			Project:         projectJSON,
 			LoaderTarget:    "127.0.0.1:1",
+			MapperTarget:    "127.0.0.1:1",
 		})
 		require.NoError(t, err)
 

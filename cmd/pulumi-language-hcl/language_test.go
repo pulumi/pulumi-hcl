@@ -146,6 +146,8 @@ var expectedFailures = map[string]string{
 	"l2-resource-read-depends-on": "PCL pcl.ReadResource nodes not yet supported by HCL codegen (added in v3.264.0)",
 	"l2-failed-create-continue-on-error-read": "PCL pcl.ReadResource nodes not yet supported by HCL codegen" +
 		" (added in v3.265.0)",
+	"l2-resource-read-id-rewrite": "PCL pcl.ReadResource nodes not yet supported by HCL codegen" +
+		" (added in pulumi/pulumi#25228)",
 	"l2-resource-self-reference": "the runtime sends a resource assigned to a union-typed input" +
 		" (oneOf [resource reference, string]) as a plain object, not as a resource reference:" +
 		" expected 'parentOrName' to be a reference to 'root', got {id: \"root\"} (added in v3.265.0)",
