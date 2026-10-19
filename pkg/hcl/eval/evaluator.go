@@ -107,10 +107,10 @@ func CollectDepURNs(val cty.Value) []string {
 }
 
 // SensitiveArgumentDiagnostic returns the diagnostic Terraform emits when
-// a sensitive value is supplied as a meta-argument such as `count` or
-// `for_each`. argName is the meta-argument's name (e.g. "count" or
-// "for_each"). The shape of the diagnostic intentionally mirrors
-// Terraform's so users coming from Terraform see a familiar message.
+// a sensitive value is supplied as a meta-argument such as `for_each`.
+// argName is the meta-argument's name. The shape of the diagnostic
+// intentionally mirrors Terraform's so users coming from Terraform see a
+// familiar message.
 func SensitiveArgumentDiagnostic(argName string, expr hcl.Expression) *hcl.Diagnostic {
 	return &hcl.Diagnostic{
 		Severity: hcl.DiagError,
@@ -145,11 +145,9 @@ func (e *Evaluator) EvaluateCount(expr hcl.Expression) (count int, isBool bool, 
 	}
 	deps = CollectDepURNs(val)
 
-	if val.HasMark(SensitiveMark) {
-		return 0, false, false, deps, hcl.Diagnostics{SensitiveArgumentDiagnostic("count", expr)}
-	}
-
-	// Count never flows into inputs, so drop marks; AsBigFloat / True panic on them.
+	// Count never flows into inputs, so drop marks; AsBigFloat / True panic on
+	// them. Sensitive values are allowed: unlike a for_each key, a count does
+	// not appear in instance keys.
 	val, _ = val.Unmark()
 
 	if !val.IsKnown() {

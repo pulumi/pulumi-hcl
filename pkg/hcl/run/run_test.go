@@ -3465,8 +3465,8 @@ resource "kubernetes_networking.k8s.io_v1_ingress" "ingress" {
 	assert.Equal(t, "ingress", ingress.Name)
 }
 
-// runSensitiveMetaArgTest is a shared driver for the four "sensitive value
-// rejected by count/for_each" tests. It writes the given root.hcl into a
+// runSensitiveMetaArgTest is a shared driver for the "sensitive value
+// rejected by for_each" tests. It writes the given root.hcl into a
 // temp dir, runs the engine, and returns the resulting error.
 func runSensitiveMetaArgTest(t *testing.T, rootMain string) error {
 	t.Helper()
@@ -3538,20 +3538,6 @@ module "m" {
 	assertSensitiveArgumentError(t, "for_each", err)
 }
 
-// TestEngine_ModuleCountSensitive verifies the same behavior for module
-// `count`.
-func TestEngine_ModuleCountSensitive(t *testing.T) {
-	t.Parallel()
-
-	err := runSensitiveMetaArgTest(t, `
-module "m" {
-  source = "./modules/m"
-  count  = sensitive(2)
-}
-`)
-	assertSensitiveArgumentError(t, "count", err)
-}
-
 // TestEngine_ResourceForEachSensitive verifies the same behavior for a
 // resource's `for_each` (handled via [eval.EvaluateForEach]).
 func TestEngine_ResourceForEachSensitive(t *testing.T) {
@@ -3564,20 +3550,6 @@ resource "aws_vpc" "v" {
 }
 `)
 	assertSensitiveArgumentError(t, "for_each", err)
-}
-
-// TestEngine_ResourceCountSensitive verifies the same behavior for a
-// resource's `count`.
-func TestEngine_ResourceCountSensitive(t *testing.T) {
-	t.Parallel()
-
-	err := runSensitiveMetaArgTest(t, `
-resource "aws_vpc" "v" {
-  count      = sensitive(1)
-  cidr_block = "10.0.0.0/16"
-}
-`)
-	assertSensitiveArgumentError(t, "count", err)
 }
 
 // A known count carrying a DepMark (here, from an unknown attribute mixed
