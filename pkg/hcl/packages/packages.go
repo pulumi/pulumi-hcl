@@ -112,7 +112,13 @@ func pulumiTokenToHCL(pkg schema.PackageReference, token string, isFunction bool
 	if mod != "index" && mod != "" {
 		hclToken += "_" + camelToSnake(mod)
 	}
-	hclToken, err := parser.MakeValidIdentifier(hclToken + "_" + camelToSnake(name))
+	// A TF type named after its provider, such as `data "external"` in
+	// hashicorp/external, is the provider name alone. The bridge only maps
+	// that TF type, not `external_external`.
+	if snakeName := camelToSnake(name); hclToken != pkgName || snakeName != pkgName {
+		hclToken += "_" + snakeName
+	}
+	hclToken, err := parser.MakeValidIdentifier(hclToken)
 	if err != nil {
 		return "", hcl.Diagnostics{{
 			Severity: hcl.DiagError,

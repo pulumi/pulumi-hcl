@@ -36,8 +36,8 @@ func nearestHCLToken(pkg schema.PackageReference, hclToken string, isFunction bo
 		hclToken = id
 	}
 	visit := func(tok string) {
-		candidate := pulumiTokenToHCLForm(pkg, tok, isFunction)
-		if candidate == "" {
+		candidate, diags := pulumiTokenToHCL(pkg, tok, isFunction)
+		if diags.HasErrors() {
 			return
 		}
 		d := levenshtein(hclToken, candidate)
@@ -56,41 +56,6 @@ func nearestHCLToken(pkg schema.PackageReference, hclToken string, isFunction bo
 		}
 	}
 	return best
-}
-
-// pulumiTokenToHCLForm converts a Pulumi token (e.g. "aws:ec2/vpc:Vpc") to
-// the HCL form the resolver accepts (e.g. "aws_ec2_vpc"). TokenToModule
-// applies the schema's ModuleFormat regex, so bridged-provider tokens
-// normalize correctly.
-func pulumiTokenToHCLForm(pkg schema.PackageReference, token string, isFunction bool) string {
-	parts := strings.SplitN(token, ":", 3)
-	if len(parts) < 3 {
-		return ""
-	}
-	pkgName := parts[0]
-	name := parts[2]
-	mod := pkg.TokenToModule(token)
-
-	if isFunction && strings.HasPrefix(name, "get") && len(name) > 3 {
-		r := rune(name[3])
-		if r >= 'A' && r <= 'Z' {
-			name = name[3:]
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString(pkgName)
-	if mod != "" && mod != "index" {
-		b.WriteRune('_')
-		b.WriteString(strings.ToLower(mod))
-	}
-	b.WriteRune('_')
-	b.WriteString(camelToSnake(name))
-	id, err := parser.MakeValidIdentifier(b.String())
-	if err != nil {
-		return ""
-	}
-	return id
 }
 
 // camelToSnake converts a camelCase token segment to snake_case. It keeps

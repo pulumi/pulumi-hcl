@@ -81,7 +81,7 @@ func TestNearestHCLToken(t *testing.T) {
 	}
 }
 
-func TestPulumiTokenToHCLForm(t *testing.T) {
+func TestPulumiTokenToHCL(t *testing.T) {
 	t.Parallel()
 
 	loader := schemaloader.New(t,
@@ -106,6 +106,19 @@ func TestPulumiTokenToHCLForm(t *testing.T) {
 				"kubernetes:helm.sh/v3:getRelease": {},
 			},
 		},
+		schema.PackageSpec{
+			Name: "external",
+			Meta: &schema.MetadataSpec{
+				ModuleFormat: `(.*)(?:/[^/]*)`,
+			},
+			Resources: map[string]schema.ResourceSpec{
+				"external:index/external:External":           {},
+				"external:index/externalThing:ExternalThing": {},
+			},
+			Functions: map[string]schema.FunctionSpec{
+				"external:index/getExternal:getExternal": {},
+			},
+		},
 	)
 
 	tests := []struct {
@@ -122,6 +135,9 @@ func TestPulumiTokenToHCLForm(t *testing.T) {
 		{"dotted module", "kubernetes", "kubernetes:helm.sh/v3:Release", false, "kubernetes_helm_sh_v3_release"},
 		{"multi-dot module", "kubernetes", "kubernetes:storage.k8s.io/v1:StorageClass", false, "kubernetes_storage_k8s_io_v1_storage_class"},
 		{"dotted module function", "kubernetes", "kubernetes:helm.sh/v3:getRelease", true, "kubernetes_helm_sh_v3_release"},
+		{"resource named after its package", "external", "external:index/external:External", false, "external"},
+		{"function named after its package", "external", "external:index/getExternal:getExternal", true, "external"},
+		{"resource prefixed with its package", "external", "external:index/externalThing:ExternalThing", false, "external_external_thing"},
 	}
 
 	for _, tt := range tests {
@@ -129,13 +145,14 @@ func TestPulumiTokenToHCLForm(t *testing.T) {
 			t.Parallel()
 			pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: tt.pkg})
 			require.NoError(t, err)
-			got := pulumiTokenToHCLForm(pkg, tt.token, tt.isFunction)
+			got, diags := pulumiTokenToHCL(pkg, tt.token, tt.isFunction)
+			require.False(t, diags.HasErrors())
 			require.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestPulumiTokenToHCLFormRoundtrip(t *testing.T) {
+func TestPulumiTokenToHCLRoundtrip(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(t *rapid.T) {
@@ -149,7 +166,8 @@ func TestPulumiTokenToHCLFormRoundtrip(t *testing.T) {
 		spec, err := pkg.MarshalSpec()
 		require.NoError(t, err)
 		for _, r := range pkg.Resources {
-			hclTk := pulumiTokenToHCLForm(pkg.Reference(), r.Token, false)
+			hclTk, diags := pulumiTokenToHCL(pkg.Reference(), r.Token, false)
+			require.False(t, diags.HasErrors())
 			resolved, err := ResolveResource(t.Context(), schemaloader.New(t, *spec), nil, hclTk)
 			require.NoError(t, err)
 			assert.Equal(t, r.Token, resolved.Token)

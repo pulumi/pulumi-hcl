@@ -54,8 +54,6 @@ func TestL2SingleSegmentToken(t *testing.T) {
 			"data_answer":     "a-hi:v",
 			"resource_result": "r-world",
 		},
-		// TODO[https://github.com/pulumi/pulumi-hcl/issues/680]: PCL -> HCL emits `single_single` for a single-segment token.
-		// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: HCL -> PCL ignores bridge property renames.
-		SkipRoundTrip: "HCL -> PCL ignores the Customize renames, and PCL -> HCL emits `single_single` for the `single` token.",
+		// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: The PCL golden has `tagValue` and `inputValue`, not the renamed `taggedThing` and `myInput`.
 	})
 }
