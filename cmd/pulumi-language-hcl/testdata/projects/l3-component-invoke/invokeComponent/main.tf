@@ -11,7 +11,7 @@ terraform {
   }
 }
 
-data "config_config" "providerConfig" {
+data "config" "providerConfig" {
   text = local.greeting.result
 }
 
@@ -21,5 +21,5 @@ locals {
   greeting = provider::multi-argument-invoke::multi_argument_invoke("hello", null)
 }
 output "result" {
-  value = data.config_config.providerConfig.text
+  value = data.config.providerConfig.text
 }

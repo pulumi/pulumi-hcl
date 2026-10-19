@@ -12,7 +12,7 @@ provider "goodbye" {
   text  = "World"
 }
 // The resource name is based on the parameter value
-resource "goodbye_goodbye" "res" {
+resource "goodbye" "res" {
   provider = goodbye.prov
   lifecycle {
     create_before_destroy = true
@@ -20,5 +20,5 @@ resource "goodbye_goodbye" "res" {
 }
 // The resource name is based on the parameter value and the provider config
 output "parameterValue" {
-  value = goodbye_goodbye.res.parameter_value
+  value = goodbye.res.parameter_value
 }

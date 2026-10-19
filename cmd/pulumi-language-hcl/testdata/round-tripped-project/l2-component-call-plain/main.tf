@@ -14,7 +14,7 @@ call "configurer" "nested_plain_provider" {
 call "configurer" "plain_value" {
 }
 
-resource "configurer_configurer" "configurer" {
+resource "configurer" "configurer" {
   lifecycle {
     create_before_destroy = true
   }
