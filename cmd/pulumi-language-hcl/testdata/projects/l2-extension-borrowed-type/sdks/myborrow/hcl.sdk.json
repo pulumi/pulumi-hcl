@@ -1,0 +1,13 @@
+{
+  "Name": "borrowbase",
+  "Kind": "resource",
+  "Version": "56.0.0",
+  "PluginDownloadURL": "",
+  "Checksums": null,
+  "Parameterization": null,
+  "ExtensionParameterization": {
+    "Name": "myborrow",
+    "Version": "3.0.0",
+    "Value": "V2lkZ2V0"
+  }
+}

@@ -13,6 +13,27 @@ output "lookupOutputDefault" {
   value = lookup(aMap, "keyMissing", "default")
 }
 
+output "lookupLiteral" {
+  value = lookup({
+    "a" = 1
+    "b" = 2
+  }, "c", 3)
+}
+
+output "lookupLiteralMismatchedType" {
+  value = lookup({
+    "a" = 1
+    "b" = 2
+  }, "c", true)
+}
+
+output "deprecatedTwoArgumentLookup" {
+  value = {
+    "a" = 1
+    "b" = 2
+  }["a"]
+}
+
 # An untyped (dynamic) config value. Pins iterating dynamic entries in generated programs
 # (e.g. TypeScript's Object.entries over a value with no static type).
 config "alternativeNames" {
