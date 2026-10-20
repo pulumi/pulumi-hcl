@@ -2163,7 +2163,7 @@ func (e *Engine) buildResourceOptions(
 		if outputs, ok := e.nodeOutputs(key); ok {
 			if urn := urn.URN(ctyAsString(outputs.GetAttr("urn"))); urn != "" {
 				if !urn.IsValid() {
-					return nil, fmt.Errorf("invalid delete_with URN: %w", err)
+					return nil, fmt.Errorf("invalid delete_with URN: %q", urn)
 				}
 				opts.DeletedWith = urn
 			}
@@ -2177,6 +2177,9 @@ func (e *Engine) buildResourceOptions(
 		}
 		if outputs, ok := e.nodeOutputs(key); ok {
 			if urn := urn.URN(ctyAsString(outputs.GetAttr("urn"))); urn != "" {
+				if !urn.IsValid() {
+					return nil, fmt.Errorf("invalid replace_with URN: %q", urn)
+				}
 				opts.ReplaceWith = append(opts.ReplaceWith, urn)
 			}
 		}
