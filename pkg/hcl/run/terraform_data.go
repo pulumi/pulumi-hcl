@@ -95,7 +95,6 @@ func lowerTerraformDataInputs(resType string, inputs property.Map, opts *Resourc
 	opts.IgnoreChanges = kept
 	triggers := inputs.Get("triggers_replace")
 	inputs = inputs.Delete("triggers_replace")
-	delete(opts.PropertyDependencies, "triggers_replace")
 	if triggersIgnored {
 		triggers = property.New(property.Null)
 	}

@@ -106,6 +106,48 @@ func CollectDepURNs(val cty.Value) []string {
 	return urns
 }
 
+// UnmarkDeps removes the DepMarks on val itself and returns their URNs. Marks
+// of other kinds, and marks nested inside val, stay in place.
+func UnmarkDeps(val cty.Value) (cty.Value, []urn.URN) {
+	unmarked, marks := val.Unmark()
+	var urns []urn.URN
+	kept := make(cty.ValueMarks, len(marks))
+	for m := range marks {
+		if dm, ok := m.(DepMark); ok {
+			urns = append(urns, urn.URN(dm))
+		} else {
+			kept[m] = struct{}{}
+		}
+	}
+	return unmarked.WithMarks(kept), urns
+}
+
+// WithoutDepMarks removes every DepMark from val, at any depth. Marks of
+// other kinds stay in place.
+func WithoutDepMarks(val cty.Value) cty.Value {
+	unmarked, pathMarks := val.UnmarkDeepWithPaths()
+	kept := make([]cty.PathValueMarks, 0, len(pathMarks))
+	for _, pm := range pathMarks {
+		marks := make(cty.ValueMarks, len(pm.Marks))
+		for m := range pm.Marks {
+			if _, ok := m.(DepMark); !ok {
+				marks[m] = struct{}{}
+			}
+		}
+		kept = append(kept, cty.PathValueMarks{Path: pm.Path, Marks: marks})
+	}
+	return unmarked.MarkWithPaths(kept)
+}
+
+// DepMarks returns a DepMark for each URN.
+func DepMarks(urns []urn.URN) cty.ValueMarks {
+	marks := make(cty.ValueMarks, len(urns))
+	for _, u := range urns {
+		marks[DepMark(u)] = struct{}{}
+	}
+	return marks
+}
+
 // SensitiveArgumentDiagnostic returns the diagnostic Terraform emits when
 // a sensitive value is supplied as a meta-argument such as `for_each`.
 // argName is the meta-argument's name. The shape of the diagnostic

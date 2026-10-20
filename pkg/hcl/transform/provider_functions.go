@@ -118,7 +118,7 @@ func ProviderFunction(fn *schema.Function, variadic bool, dryRun bool, impl Prov
 			}
 			inputs := make(map[string]property.Value, len(positional)+1)
 			for i, p := range positional {
-				v, err := ctyToResourceProperty(params[i].Name, args[i], p.Type, nil, p.Secret, nil)
+				v, err := ctyToResourceProperty(params[i].Name, args[i], p.Type, nil, p.Secret, p.Plain, nil)
 				if err != nil {
 					return cty.NilVal, err
 				}
@@ -132,7 +132,7 @@ func ProviderFunction(fn *schema.Function, variadic bool, dryRun bool, impl Prov
 				elems := make([]property.Value, len(rest))
 				for i, arg := range rest {
 					v, err := ctyToResourceProperty(
-						fmt.Sprintf("%s[%d]", varParam.Name, i), arg, variadicElem, nil, variadicProp.Secret, nil)
+						fmt.Sprintf("%s[%d]", varParam.Name, i), arg, variadicElem, nil, variadicProp.Secret, variadicProp.Plain, nil)
 					if err != nil {
 						return cty.NilVal, err
 					}

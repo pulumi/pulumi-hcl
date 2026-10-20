@@ -167,9 +167,6 @@ var expectedFailures = map[string]string{
 	"l2-invoke-per-value-deps": "the runtime does not negotiate OutputValues on Invoke" +
 		" (accepts_outputs_in_invoke), so invoke results carry the union of all argument dependencies:" +
 		" expected d.Dependencies [b], got [a b] (added in v3.268.0)",
-	"l2-call-per-value-deps": "the runtime drops the dependencies of method call results:" +
-		" it sends no argument dependencies and ignores ReturnDependencies and OutputValues in the Call response," +
-		" so expected g.Dependencies [pa c], got [] (added in v3.270.0, https://github.com/pulumi/pulumi-hcl/issues/691)",
 	"l2-recover-invoke": "codegen lifts invoke() into a data source, so the failed invoke aborts the" +
 		" program before recover() can evaluate: invocation of fail_on_create:index:fail returned an error:" +
 		" failed invoke (added in v3.270.0)",

@@ -25,6 +25,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidresource"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/utils/rapidschema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -394,6 +395,67 @@ func TestCtyToResourceInputs(t *testing.T) {
 						"timeoutSeconds": property.New(float64(30)),
 					})),
 				})),
+			}),
+		},
+		{
+			name: "dependency marks become dependencies",
+			properties: []*schema.Property{
+				{Name: "leaf", Type: schema.StringType},
+				{Name: "secret", Type: schema.StringType},
+				{Name: "list", Type: &schema.ArrayType{ElementType: schema.StringType}},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"leaf":   cty.StringVal("a").Mark(eval.DepMark("urn:a")),
+				"secret": cty.StringVal("s").WithMarks(cty.NewValueMarks(eval.SensitiveMark, eval.DepMark("urn:s"))),
+				"list": cty.ListVal([]cty.Value{
+					cty.StringVal("x").Mark(eval.DepMark("urn:x")),
+				}).Mark(eval.DepMark("urn:list")),
+			}),
+			expected: property.NewMap(map[string]property.Value{
+				"leaf":   property.New("a").WithDependencies([]urn.URN{"urn:a"}),
+				"secret": property.New("s").WithSecret(true).WithDependencies([]urn.URN{"urn:s"}),
+				"list": property.New([]property.Value{
+					property.New("x").WithDependencies([]urn.URN{"urn:x"}),
+				}).WithDependencies([]urn.URN{"urn:list"}),
+			}),
+		},
+		{
+			name: "plain values carry no dependencies",
+			properties: []*schema.Property{
+				{
+					Name:  "wrapper",
+					Plain: true,
+					Type: &schema.ObjectType{
+						Properties: []*schema.Property{
+							{Name: "output", Type: schema.StringType},
+							{Name: "prompt", Type: schema.StringType, Plain: true},
+						},
+					},
+				},
+				{Name: "list", Plain: true, Type: &schema.ArrayType{ElementType: schema.StringType}},
+				{Name: "any", Plain: true, Type: schema.AnyType},
+			},
+			input: cty.ObjectVal(map[string]cty.Value{
+				"wrapper": cty.ObjectVal(map[string]cty.Value{
+					"output": cty.StringVal("o").Mark(eval.DepMark("urn:o")),
+					"prompt": cty.StringVal("p").Mark(eval.DepMark("urn:p")),
+				}).Mark(eval.DepMark("urn:wrapper")),
+				"list": cty.ListVal([]cty.Value{
+					cty.StringVal("x").Mark(eval.DepMark("urn:x")),
+				}),
+				"any": cty.ObjectVal(map[string]cty.Value{
+					"nested": cty.StringVal("n").WithMarks(cty.NewValueMarks(eval.SensitiveMark, eval.DepMark("urn:n"))),
+				}),
+			}),
+			expected: property.NewMap(map[string]property.Value{
+				"wrapper": property.New(map[string]property.Value{
+					"output": property.New("o").WithDependencies([]urn.URN{"urn:o"}),
+					"prompt": property.New("p"),
+				}),
+				"list": property.New([]property.Value{property.New("x")}),
+				"any": property.New(map[string]property.Value{
+					"nested": property.New("n").WithSecret(true),
+				}),
 			}),
 		},
 	}

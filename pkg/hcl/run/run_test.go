@@ -5280,13 +5280,13 @@ module "child" {
 	}
 
 	assert.Equal(t,
-		map[string][]string{"parentField": {urnOf(upstream)}},
-		first.PropertyDependencies)
+		map[property.Path][]urn.URN{property.Path{}.AppendKey("parentField"): {urn.URN(urnOf(upstream))}},
+		run.PropertyDependencies(first.Inputs))
 	assert.Equal(t, []string{urnOf(upstream)}, first.Dependencies)
 
 	assert.Equal(t,
-		map[string][]string{"siblingField": {urnOf(first)}},
-		second.PropertyDependencies)
+		map[property.Path][]urn.URN{property.Path{}.AppendKey("siblingField"): {urn.URN(urnOf(first))}},
+		run.PropertyDependencies(second.Inputs))
 	assert.Equal(t, []string{urnOf(first)}, second.Dependencies)
 }
 
@@ -5373,20 +5373,18 @@ resource "simple_resource" "r" {
 
 	assert.Equal(t, []run.RegisterResourceRequest{
 		{
-			Type:                 "pulumi:providers:simple",
-			Name:                 `by_key["a"]`,
-			Inputs:               property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
-			PropertyDependencies: map[string][]string{"prefix": nil},
-			Custom:               true,
-			Parent:               stackURN,
+			Type:   "pulumi:providers:simple",
+			Name:   `by_key["a"]`,
+			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("alpha")}),
+			Custom: true,
+			Parent: stackURN,
 		},
 		{
-			Type:                 "pulumi:providers:simple",
-			Name:                 `by_key["b"]`,
-			Inputs:               property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
-			PropertyDependencies: map[string][]string{"prefix": nil},
-			Custom:               true,
-			Parent:               stackURN,
+			Type:   "pulumi:providers:simple",
+			Name:   `by_key["b"]`,
+			Inputs: property.NewMap(map[string]property.Value{"prefix": property.New("beta")}),
+			Custom: true,
+			Parent: stackURN,
 		},
 	}, providerRegs)
 
@@ -5467,7 +5465,7 @@ resource "simple_resource" "consumer" {
 
 	configURN := "urn:pulumi:test::project::simple:index:Resource::config"
 	assert.Equal(t, []string{configURN}, provider.Dependencies)
-	assert.Equal(t, map[string][]string{"prefix": {configURN}}, provider.PropertyDependencies)
+	assert.Equal(t, map[property.Path][]urn.URN{property.Path{}.AppendKey("prefix"): {urn.URN(configURN)}}, run.PropertyDependencies(provider.Inputs))
 }
 
 // An aliased provider passed into a module via `providers` must survive a
@@ -5972,8 +5970,8 @@ output "amis" {
 		}, instanceInputs(mock))
 
 		assert.Equal(t, property.New([]property.Value{
-			property.New("base[0]-id"),
-			property.New("base[1]-id"),
+			property.New("base[0]-id").WithDependencies([]urn.URN{"urn:pulumi:test::project::aws:index:Instance::dependent[\"base[0]-id\"]"}),
+			property.New("base[1]-id").WithDependencies([]urn.URN{"urn:pulumi:test::project::aws:index:Instance::dependent[\"base[1]-id\"]"}),
 		}), mock.StackOutputs.Get("amis"))
 	})
 }
@@ -6020,8 +6018,8 @@ output "amis" {
 		}, instanceInputs(mock))
 
 		assert.Equal(t, property.New([]property.Value{
-			property.New("ami-0"),
-			property.New("ami-1"),
+			property.New("ami-0").WithDependencies([]urn.URN{"urn:pulumi:test::project::aws:index:Instance::dependent[0]"}),
+			property.New("ami-1").WithDependencies([]urn.URN{"urn:pulumi:test::project::aws:index:Instance::dependent[1]"}),
 		}), mock.StackOutputs.Get("amis"))
 	})
 }
@@ -6080,8 +6078,8 @@ output "amis" {
 		}, instanceInputs(mock))
 
 		assert.Equal(t, property.New([]property.Value{
-			property.New("second[0]-id"),
-			property.New("second[1]-id"),
+			property.New("second[0]-id").WithDependencies([]urn.URN{"urn:pulumi:test::project::aws:index:Instance::third[\"second[0]-id\"]"}),
+			property.New("second[1]-id").WithDependencies([]urn.URN{"urn:pulumi:test::project::aws:index:Instance::third[\"second[1]-id\"]"}),
 		}), mock.StackOutputs.Get("amis"))
 	})
 }
@@ -6279,9 +6277,8 @@ resource "aws_instance" "base" {
 // TestEngine_LifecycleRefDependencies: a resource referenced only from a
 // lifecycle precondition/postcondition/replace_triggered_by establishes a
 // dependency, as in TF — directly, through a local, and through a data
-// source's check rule — while body properties carry explicit empty
-// PropertyDependencies entries (the reference is ordering-only; an absent
-// map would make the engine assume every property depends on it). `self`
+// source's check rule — while body properties carry no dependencies (the
+// reference is ordering-only). `self`
 // in a postcondition is not a reference and must not break dep collection.
 func TestEngine_LifecycleRefDependencies(t *testing.T) {
 	t.Parallel()
@@ -6353,20 +6350,20 @@ resource "aws_instance" "reader" {
 		r := find(name)
 		require.NotNilf(t, r, "%s resource should be registered", name)
 		assert.Equal(t, []string{firstURN}, r.Dependencies)
-		assert.Equal(t, map[string][]string{"ami": nil}, r.PropertyDependencies)
+		assert.Equal(t, map[property.Path][]urn.URN{}, run.PropertyDependencies(r.Inputs))
 	}
 
 	reader := find("reader")
 	require.NotNil(t, reader, "reader resource should be registered")
 	assert.Equal(t, []string{firstURN}, reader.Dependencies)
-	assert.Equal(t, map[string][]string{"ami": {firstURN}}, reader.PropertyDependencies)
+	assert.Equal(t, map[property.Path][]urn.URN{property.Path{}.AppendKey("ami"): {urn.URN(firstURN)}}, run.PropertyDependencies(reader.Inputs))
 }
 
 // TestEngine_ProvisionerRefDependencies: a resource referenced only from a
 // provisioner command, a resource-level connection block, or a provisioner's
 // connection override establishes a dependency — directly and through a local
-// — while body properties carry explicit empty PropertyDependencies entries
-// (the reference is ordering-only).
+// — while body properties carry no dependencies (the reference is
+// ordering-only).
 // The referent is declared last so the edge, not source order, must sequence
 // its evaluation before the referencing resources register. `self` in a
 // create-time provisioner is not a reference and must not break dep
@@ -6433,10 +6430,37 @@ resource "aws_instance" "first" {
 		r := find(name)
 		require.NotNilf(t, r, "%s resource should be registered", name)
 		assert.Equal(t, []string{firstURN}, r.Dependencies)
-		assert.Equal(t, map[string][]string{"ami": nil}, r.PropertyDependencies)
+		assert.Equal(t, map[property.Path][]urn.URN{}, run.PropertyDependencies(r.Inputs))
 	}
 
 	dprov := find("dprov")
 	require.NotNil(t, dprov, "dprov resource should be registered")
 	assert.Empty(t, dprov.Dependencies)
+}
+
+func TestPropertyDependencies(t *testing.T) {
+	t.Parallel()
+
+	deps := run.PropertyDependencies(property.NewMap(map[string]property.Value{
+		"none": property.New("x"),
+		"obj": property.New(property.NewMap(map[string]property.Value{
+			"leaf": property.New("a").WithDependencies([]urn.URN{"urn:a"}),
+			"list": property.New([]property.Value{
+				property.New("b"),
+				property.New("c").WithDependencies([]urn.URN{"urn:c"}),
+			}),
+		})).WithDependencies([]urn.URN{"urn:obj"}),
+		"ref": property.New(property.ResourceReference{
+			URN: "urn:ref",
+			ID:  property.New("id").WithDependencies([]urn.URN{"urn:id"}),
+		}),
+	}))
+
+	obj := property.Path{}.AppendKey("obj")
+	assert.Equal(t, map[property.Path][]urn.URN{
+		obj:                                  {"urn:obj"},
+		obj.AppendKey("leaf"):                {"urn:a"},
+		obj.AppendKey("list").AppendIndex(1): {"urn:c"},
+		property.Path{}.AppendKey("ref"):     {"urn:id"},
+	}, deps)
 }

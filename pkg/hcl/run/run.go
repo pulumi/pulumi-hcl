@@ -163,7 +163,6 @@ type RegisterResourceRequest struct {
 	Name                    string
 	Inputs                  property.Map
 	Dependencies            []string
-	PropertyDependencies    map[string][]string // Map from property key to list of URNs it depends on
 	Custom                  bool
 	Remote                  bool
 	Protect                 bool
@@ -1427,38 +1426,44 @@ func evalSchemaInputs(
 	}
 }
 
-// evalResourceInputs evaluates resource inputs and records property dependencies.
-func evalResourceInputs(
-	hclCtx *hcl.EvalContext,
-	inputProperties []*schema.Property,
-	onEvaluated func(resource.PropertyKey, cty.Value),
-) (transform.EvalFunc, map[string][]string) {
-	plainInputProps := make(map[string]bool, len(inputProperties))
-	for _, p := range inputProperties {
-		plainInputProps[p.Name] = p.Plain
-	}
-
-	dependsOn := make(map[string][]string)
-	record := func(propKey resource.PropertyKey, val cty.Value) {
-		if onEvaluated != nil {
-			onEvaluated(propKey, val)
+// PropertyDependencies returns the dependencies of each value in m that has
+// dependencies, keyed by the path of the value. The dependencies of the ID of
+// a resource reference belong to the path of the reference.
+func PropertyDependencies(m property.Map) map[property.Path][]urn.URN {
+	deps := map[property.Path][]urn.URN{}
+	var walk func(property.Path, property.Value)
+	walk = func(path property.Path, v property.Value) {
+		if d := v.Dependencies(); len(d) > 0 {
+			deps[path] = append(deps[path], d...)
 		}
-
-		prop := string(propKey)
-		if _, ok := dependsOn[prop]; !ok {
-			dependsOn[prop] = nil
-		}
-		if plainInputProps[prop] {
-			return
-		}
-		for _, urn := range eval.CollectDepURNs(val) {
-			idx, found := slices.BinarySearch(dependsOn[prop], urn)
-			if !found {
-				dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
+		switch {
+		case v.IsArray():
+			for i, elem := range v.AsArray().All {
+				walk(path.AppendIndex(i), elem)
 			}
+		case v.IsMap():
+			for k, elem := range v.AsMap().All {
+				walk(path.AppendKey(k), elem)
+			}
+		case v.IsResourceReference():
+			walk(path, v.AsResourceReference().ID)
 		}
 	}
-	return evalSchemaInputs(hclCtx, record), dependsOn
+	for k, v := range m.All {
+		walk(property.Path{}.AppendKey(k), v)
+	}
+	return deps
+}
+
+// allDependencies returns every URN that a value in m depends on, at any depth.
+func allDependencies(m property.Map) []string {
+	var urns []string
+	for _, deps := range PropertyDependencies(m) {
+		for _, u := range deps {
+			urns = append(urns, string(u))
+		}
+	}
+	return urns
 }
 
 func (e *Engine) registerProviderInContext(
@@ -1487,9 +1492,8 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	providerMapping := e.resolver.ProviderConfigBodyMapping(ctx, pkgName)
-	inputEval, dependsOn := evalResourceInputs(hclCtx, resSchema.InputProperties, nil)
 	inputsMap, _, diags := transform.EvalResourceWithSchema(
-		provider.Config, resSchema, providerMapping, inputEval)
+		provider.Config, resSchema, providerMapping, evalSchemaInputs(hclCtx, nil))
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating provider %s config: %s", provider.Name, diags.Error())
 	}
@@ -1586,10 +1590,7 @@ func (e *Engine) registerProviderInContext(
 	}
 
 	req.Inputs = property.NewMap(inputs)
-	req.PropertyDependencies = dependsOn
-	for _, deps := range dependsOn {
-		req.Dependencies = append(req.Dependencies, deps...)
-	}
+	req.Dependencies = append(req.Dependencies, allDependencies(req.Inputs)...)
 	req.Dependencies = e.cellURNs.widen(req.Dependencies)
 
 	resp, err := e.resmon.RegisterResource(ctx, req)
@@ -1665,7 +1666,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	if res.Type == packages.TerraformDataType {
 		tdataEvaluated = map[string]cty.Value{}
 	}
-	inputEval, dependsOn := evalResourceInputs(hclCtx, resSchema.InputProperties,
+	inputEval := evalSchemaInputs(hclCtx,
 		func(propKey resource.PropertyKey, val cty.Value) {
 			if tdataEvaluated != nil {
 				tdataEvaluated[string(propKey)] = val
@@ -1694,12 +1695,6 @@ func (e *Engine) registerResourceInstanceInContext(
 		}
 		prop := resourceMapping.Lookup("timeouts").PulumiName
 		resourceInputs = resourceInputs.Set(prop, pv)
-		for _, urn := range eval.CollectDepURNs(timeouts) {
-			idx, found := slices.BinarySearch(dependsOn[prop], urn)
-			if !found {
-				dependsOn[prop] = slices.Insert(dependsOn[prop], idx, urn)
-			}
-		}
 	}
 
 	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs, timeouts)
@@ -1712,7 +1707,6 @@ func (e *Engine) registerResourceInstanceInContext(
 	resourceInputs = wrapTerraformDataInputs(res.Type, resourceInputs, tdataEvaluated)
 	opts.Custom = !resSchema.IsComponent
 	opts.Remote = resSchema.IsComponent
-	opts.PropertyDependencies = dependsOn
 
 	// An ephemeral value is free to differ on every run, so a property it
 	// flows into should not display a diff. The path arrives in the assembled
@@ -1727,13 +1721,11 @@ func (e *Engine) registerResourceInstanceInContext(
 			opts.HideDiffs = append(opts.HideDiffs, glob)
 		}
 	}
-	// The per-source collection may repeat URNs; widen dedups below.
-	for _, deps := range dependsOn {
-		opts.DependsOn = append(opts.DependsOn, deps...)
-	}
+	// The per-property collection may repeat URNs; widen dedups below.
+	opts.DependsOn = append(opts.DependsOn, allDependencies(resourceInputs)...)
 	// count/for_each, lifecycle precondition/postcondition, and
 	// provisioner/connection references are not tied to any body property, so
-	// they stay out of PropertyDependencies but still gate ordering through
+	// they carry no property dependencies but still gate ordering through
 	// DependsOn.
 	checkDeps := checkRuleDeps(res.Preconditions, hclCtx)
 	checkDeps = append(checkDeps, checkRuleDeps(res.Postconditions, hclCtx)...)
@@ -3434,7 +3426,6 @@ type ResourceOptions struct {
 	Custom                  bool
 	Remote                  bool
 	DependsOn               []string
-	PropertyDependencies    map[string][]string
 	Protect                 bool
 	IgnoreChanges           []property.Glob
 	Aliases                 []Alias
@@ -3489,7 +3480,6 @@ func (e *Engine) registerResource(
 		Name:                    name,
 		Inputs:                  inputs,
 		Dependencies:            opts.DependsOn,
-		PropertyDependencies:    opts.PropertyDependencies,
 		Custom:                  opts.Custom,
 		Remote:                  opts.Remote,
 		Protect:                 opts.Protect,
@@ -3936,6 +3926,8 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	if err != nil {
 		return fmt.Errorf("converting call outputs to HCL types: %w", err)
 	}
+	// The result of a method call depends on its receiver.
+	ctyOutputs = ctyOutputs.Mark(eval.DepMark(urnStr))
 
 	// Store outputs keyed as "resourceName.methodName"
 	callKey := ast.CallKey(call.ResourceName, call.MethodName)
@@ -4385,7 +4377,6 @@ func (e *Engine) initModuleCallIn(
 
 	// Evaluate module inputs for the component resource registration
 	inputs := make(map[string]property.Value)
-	inputDeps := make(map[string][]string)
 	attrs, _ := mod.Config.JustAttributes()
 	for name, attr := range attrs {
 		val, diags := attr.Expr.Value(parentEvalCtx.HCLContext())
@@ -4401,7 +4392,6 @@ func (e *Engine) initModuleCallIn(
 		pv, err := transform.CtyToPropertyValue(val)
 		if err == nil {
 			inputs[name] = pv
-			inputDeps[name] = eval.CollectDepURNs(val)
 		}
 	}
 
@@ -4416,13 +4406,10 @@ func (e *Engine) initModuleCallIn(
 			return nil, err
 		}
 		componentOpts := &ResourceOptions{
-			Parent:               parentURN,
-			Providers:            passedProviders,
-			PropertyDependencies: inputDeps,
+			Parent:    parentURN,
+			Providers: passedProviders,
 		}
-		for _, deps := range inputDeps {
-			componentOpts.DependsOn = append(componentOpts.DependsOn, deps...)
-		}
+		componentOpts.DependsOn = append(componentOpts.DependsOn, allDependencies(property.NewMap(inputs))...)
 		componentOpts.DependsOn = e.cellURNs.widen(componentOpts.DependsOn)
 		componentOpts.Aliases = e.moduleComponentAliases(instPath)
 		if mod.Protect != nil {
@@ -4675,14 +4662,13 @@ func (e *Engine) registerComponentResource(
 
 	deps := opts.DependsOn
 	resp, err := e.resmon.RegisterResource(ctx, RegisterResourceRequest{
-		Type:                 typeToken,
-		Name:                 name,
-		Inputs:               inputs,
-		Dependencies:         deps,
-		PropertyDependencies: opts.PropertyDependencies,
-		Parent:               opts.Parent,
-		Protect:              opts.Protect,
-		Providers:            opts.Providers,
+		Type:         typeToken,
+		Name:         name,
+		Inputs:       inputs,
+		Dependencies: deps,
+		Parent:       opts.Parent,
+		Protect:      opts.Protect,
+		Providers:    opts.Providers,
 	})
 	if err != nil {
 		return "", "", property.Map{}, err

@@ -20,6 +20,9 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
@@ -108,8 +111,11 @@ func TestConstructMonitorForwardsCallRouting(t *testing.T) {
 	args, err := structpb.NewStruct(map[string]any{"name": "x"})
 	require.NoError(t, err)
 	assert.Empty(t, cmp.Diff(&pulumirpc.ResourceCallRequest{
-		Tok:               "aws:index:Module/getOutput",
-		Args:              args,
+		Tok:  "aws:index:Module/getOutput",
+		Args: args,
+		ArgDependencies: map[string]*pulumirpc.ResourceCallRequest_ArgumentDependencies{
+			"name": {},
+		},
 		PackageRef:        "package-ref-uuid",
 		AcceptsByteString: true,
 	}, capture.callReq, protocmp.Transform()))
@@ -139,4 +145,111 @@ func newTestConstructMonitor(t *testing.T, srv pulumirpc.ResourceMonitorServer) 
 	t.Cleanup(func() { _ = conn.Close() })
 
 	return &constructResourceMonitor{client: pulumirpc.NewResourceMonitorClient(conn)}
+}
+
+// callDepsMonitorServer answers every Call the way the engine answers
+// getBoth(a = pa.text, b = pb.text): ReturnDependencies holds the coarse
+// union for `wrapper`, and the output-value return holds per-leaf deps.
+type callDepsMonitorServer struct {
+	pulumirpc.UnimplementedResourceMonitorServer
+	callReq *pulumirpc.ResourceCallRequest
+}
+
+func (s *callDepsMonitorServer) Call(
+	_ context.Context, req *pulumirpc.ResourceCallRequest,
+) (*pulumirpc.CallResponse, error) {
+	s.callReq = req
+	ret, err := plugin.MarshalProperties(resource.PropertyMap{
+		"wrapper": resource.NewProperty(resource.PropertyMap{
+			"a": resource.NewProperty(resource.Output{
+				Element: resource.NewProperty("pa"), Known: true, Dependencies: []resource.URN{"urn:pa"},
+			}),
+			"b": resource.NewProperty(resource.Output{
+				Element: resource.NewProperty("pb"), Known: true, Dependencies: []resource.URN{"urn:pb"},
+			}),
+		}),
+	}, plugin.MarshalOptions{KeepOutputValues: req.AcceptOutputValues})
+	if err != nil {
+		return nil, err
+	}
+	return &pulumirpc.CallResponse{
+		Return: ret,
+		ReturnDependencies: map[string]*pulumirpc.CallResponse_ReturnDependencies{
+			"wrapper": {Urns: []string{"urn:pa", "urn:pb"}},
+		},
+	}, nil
+}
+
+func TestCallMethodDependencies(t *testing.T) {
+	t.Parallel()
+
+	req := run.CallRequest{
+		Token: "pick-call:index:Picker/getBoth",
+		Args: property.NewMap(map[string]property.Value{
+			"a": property.New("pa").WithDependencies([]urn.URN{"urn:pa"}),
+			"b": property.New("pb").WithDependencies([]urn.URN{"urn:pb"}),
+		}),
+	}
+	argDeps := map[string]*pulumirpc.ResourceCallRequest_ArgumentDependencies{
+		"a": {Urns: []string{"urn:pa"}},
+		"b": {Urns: []string{"urn:pb"}},
+	}
+
+	t.Run("output values", func(t *testing.T) {
+		t.Parallel()
+		srv := &callDepsMonitorServer{}
+		m := newTestConstructMonitor(t, srv)
+
+		ret, _, err := callMethod(t.Context(), m.client, req, true, plugin.MarshalOptions{})
+		require.NoError(t, err)
+
+		args, err := plugin.MarshalProperties(resource.PropertyMap{
+			"a": resource.NewProperty(resource.Output{
+				Element: resource.NewProperty("pa"), Known: true, Dependencies: []resource.URN{"urn:pa"},
+			}),
+			"b": resource.NewProperty(resource.Output{
+				Element: resource.NewProperty("pb"), Known: true, Dependencies: []resource.URN{"urn:pb"},
+			}),
+		}, plugin.MarshalOptions{KeepOutputValues: true})
+		require.NoError(t, err)
+		assert.Empty(t, cmp.Diff(&pulumirpc.ResourceCallRequest{
+			Tok:                "pick-call:index:Picker/getBoth",
+			Args:               args,
+			ArgDependencies:    argDeps,
+			AcceptsByteString:  true,
+			AcceptOutputValues: true,
+		}, srv.callReq, protocmp.Transform()))
+
+		assert.Equal(t, property.NewMap(map[string]property.Value{
+			"wrapper": property.New(property.NewMap(map[string]property.Value{
+				"a": property.New("pa").WithDependencies([]urn.URN{"urn:pa"}),
+				"b": property.New("pb").WithDependencies([]urn.URN{"urn:pb"}),
+			})),
+		}), ret)
+	})
+
+	t.Run("dependency maps", func(t *testing.T) {
+		t.Parallel()
+		srv := &callDepsMonitorServer{}
+		m := newTestConstructMonitor(t, srv)
+
+		ret, _, err := callMethod(t.Context(), m.client, req, false, plugin.MarshalOptions{})
+		require.NoError(t, err)
+
+		args, err := structpb.NewStruct(map[string]any{"a": "pa", "b": "pb"})
+		require.NoError(t, err)
+		assert.Empty(t, cmp.Diff(&pulumirpc.ResourceCallRequest{
+			Tok:               "pick-call:index:Picker/getBoth",
+			Args:              args,
+			ArgDependencies:   argDeps,
+			AcceptsByteString: true,
+		}, srv.callReq, protocmp.Transform()))
+
+		assert.Equal(t, property.NewMap(map[string]property.Value{
+			"wrapper": property.New(property.NewMap(map[string]property.Value{
+				"a": property.New("pa"),
+				"b": property.New("pb"),
+			})).WithDependencies([]urn.URN{"urn:pa", "urn:pb"}),
+		}), ret)
+	})
 }

@@ -789,7 +789,7 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 			}
 		}
 		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr],
-			prop.Secret || alreadyInSecret, nestedMappingFor(prop.Name, mapping))
+			prop.Secret || alreadyInSecret, prop.Plain, nestedMappingFor(prop.Name, mapping))
 		if err != nil {
 			return property.Map{}, err
 		}
@@ -870,7 +870,21 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 
 // ctyToResourceProperty's expr, when non-nil, lets union-discrimination
 // failures attach an HCL source range to the returned error.
-func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret bool, mapping *bridge.BodyMapping) (property.Value, error) {
+//
+// The DepMarks on val become the dependencies of the result. A plain value
+// cannot be an output, so when plain is true the result and its elements
+// carry no dependencies. A nested object property that is not plain can
+// still carry its own.
+func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret, plain bool, mapping *bridge.BodyMapping) (property.Value, error) {
+	val, deps := eval.UnmarkDeps(val)
+	v, err := ctyToResourcePropertyValue(path, val, prop, expr, alreadyInSecret, plain, mapping)
+	if plain || len(deps) == 0 {
+		return v, err
+	}
+	return v.WithDependencies(append(v.Dependencies(), deps...)), err
+}
+
+func ctyToResourcePropertyValue(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret, plain bool, mapping *bridge.BodyMapping) (property.Value, error) {
 	// A whole-resource reference (e.g. `handler = aws_lambda_function.fn`) is
 	// identified by its resourceMark; capture the URN before the unmark below
 	// strips it, so the *schema.ResourceType case can build a reference from it.
@@ -884,7 +898,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		// the persistence concern that ephemerality exists to solve.
 		_, isEphemeral := marks[eval.EphemeralMark]
 		if (isSensitive || isEphemeral) && !alreadyInSecret {
-			v, err := ctyToResourceProperty(path, val, prop, expr, true, mapping)
+			v, err := ctyToResourceProperty(path, val, prop, expr, true, plain, mapping)
 			return v.WithSecret(true), err
 		}
 	}
@@ -922,7 +936,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 
 	// We don't have any type info, so do a direct conversion.
 	if prop == schema.AnyType {
-		return ctyToPropertyValue(val)
+		return ctyToPlainablePropertyValue(val, plain)
 	}
 
 	// Handle asset and archive types.
@@ -972,7 +986,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 			if i < len(elemExprs) {
 				sub = elemExprs[i]
 			}
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, i), elem, prop.ElementType, sub, alreadyInSecret, mapping)
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%d]", path, i), elem, prop.ElementType, sub, alreadyInSecret, plain, mapping)
 			if err != nil {
 				return property.Value{}, err
 			}
@@ -988,7 +1002,7 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 		for it := val.ElementIterator(); it.Next(); {
 			k, elem := it.Element()
 			key := k.AsString()
-			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, key), elem, prop.ElementType, elemExprs[key], alreadyInSecret, mapping)
+			convertedElem, err := ctyToResourceProperty(fmt.Sprintf("%s[%q]", path, key), elem, prop.ElementType, elemExprs[key], alreadyInSecret, plain, mapping)
 			if err != nil {
 				return property.Value{}, err
 			}
@@ -1007,13 +1021,22 @@ func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hc
 			}
 			return property.Value{}, fmt.Errorf("%s: %w", summary, err)
 		} else if chosen != nil {
-			return ctyToResourceProperty(path, val, chosen, expr, alreadyInSecret, mapping)
+			return ctyToResourceProperty(path, val, chosen, expr, alreadyInSecret, plain, mapping)
 		}
-		return ctyToPropertyValue(val)
+		return ctyToPlainablePropertyValue(val, plain)
 	default:
 		return property.Value{}, fmt.Errorf("%q: incorrect value type: cannot convert %s to %s",
 			path, val.Type().FriendlyName(), prop)
 	}
+}
+
+// ctyToPlainablePropertyValue converts val without type information. A plain
+// value carries no dependencies at any depth.
+func ctyToPlainablePropertyValue(val cty.Value, plain bool) (property.Value, error) {
+	if plain {
+		val = eval.WithoutDepMarks(val)
+	}
+	return ctyToPropertyValue(val)
 }
 
 // resourceReferenceFromOutputs builds a reference to a whole resource. The URN
@@ -1126,13 +1149,18 @@ func CtyToPropertyValue(val cty.Value) (property.Value, error) {
 
 func ctyToPropertyValue(val cty.Value) (property.Value, error) {
 	// Handle sensitive- and ephemeral-marked values by unwrapping, converting,
-	// and wrapping as secret.
+	// and wrapping as secret. DepMarks become dependencies.
 	if val.IsMarked() {
-		unmarked, marks := val.Unmark()
+		unmarked, deps := eval.UnmarkDeps(val)
+		unmarked, marks := unmarked.Unmark()
 		_, isSensitive := marks[eval.SensitiveMark]
 		_, isEphemeral := marks[eval.EphemeralMark]
 		pv, err := ctyToPropertyValue(unmarked)
-		return pv.WithSecret(isSensitive || isEphemeral), err
+		pv = pv.WithSecret(isSensitive || isEphemeral)
+		if len(deps) > 0 {
+			pv = pv.WithDependencies(append(pv.Dependencies(), deps...))
+		}
+		return pv, err
 	}
 
 	if val.IsNull() {
@@ -1860,6 +1888,10 @@ func propertyValueToCty(path string, v property.Value, typ schema.Type, dryRun b
 // nested fields land under their TF names.
 func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Type, mapping *bridge.BodyMapping, dryRun bool) (cty.Value, error) {
 	typ = codegen.UnwrapType(typ)
+	if deps := v.Dependencies(); len(deps) > 0 {
+		converted, err := propertyValueToCtyWithMapping(path, v.WithDependencies(nil), typ, mapping, dryRun)
+		return converted.WithMarks(eval.DepMarks(deps)), err
+	}
 	if v.Secret() {
 		computedV, err := propertyValueToCtyWithMapping(path, v.WithSecret(false), typ, mapping, dryRun)
 		return computedV.Mark(eval.SensitiveMark), err
@@ -2009,6 +2041,9 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 
 // PropertyValueToCty converts a Pulumi PropertyValue to a cty.Value.
 func PropertyValueToCty(pv property.Value) cty.Value {
+	if deps := pv.Dependencies(); len(deps) > 0 {
+		return PropertyValueToCty(pv.WithDependencies(nil)).WithMarks(eval.DepMarks(deps))
+	}
 	if pv.Secret() {
 		return PropertyValueToCty(pv.WithSecret(false)).
 			WithMarks(cty.NewValueMarks(eval.SensitiveMark))

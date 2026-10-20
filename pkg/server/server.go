@@ -1445,6 +1445,8 @@ type resourceMonitorAdapter struct {
 
 	hookMu  sync.Mutex
 	hookCBS *callbackServer
+
+	callOutputValues callOutputValuesProbe
 }
 
 // ResolveURN replicates the engine's URN generation; the langhost path
@@ -1558,13 +1560,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		}
 	}
 
-	// Convert PropertyDependencies to protobuf format
-	propDeps := make(map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies)
-	for prop, urns := range req.PropertyDependencies {
-		propDeps[prop] = &pulumirpc.RegisterResourceRequest_PropertyDependencies{
-			Urns: urns,
-		}
-	}
+	propDeps := propertyDependenciesToProto(req.Inputs)
 
 	ignoreChanges, err := globsToPropertyPaths(req.IgnoreChanges)
 	if err != nil {
@@ -1794,35 +1790,136 @@ func (r *resourceMonitorAdapter) Call(
 	ctx context.Context,
 	req run.CallRequest,
 ) (*run.CallResponse, error) {
-	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), r.pluginOptions())
+	ret, checkFailures, err := callMethod(ctx, r.monitorClient, req, r.callOutputValues.get(ctx, r.monitorClient), r.pluginOptions())
 	if err != nil {
-		return nil, fmt.Errorf("marshaling args: %w", err)
-	}
-
-	resp, err := r.monitorClient.Call(ctx, &pulumirpc.ResourceCallRequest{
-		Tok:               req.Token,
-		Args:              argsStruct,
-		PackageRef:        string(req.PackageRef),
-		AcceptsByteString: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("calling method: %w", err)
-	}
-
-	returnVal, err := plugin.UnmarshalProperties(resp.Return, r.pluginOptions())
-	if err != nil {
-		return nil, fmt.Errorf("unmarshaling return value: %w", err)
+		return nil, err
 	}
 
 	var failures []string
-	for _, f := range resp.Failures {
+	for _, f := range checkFailures {
 		failures = append(failures, fmt.Sprintf("%s: %s", f.Property, f.Reason))
 	}
 
 	return &run.CallResponse{
-		Return:   resource.FromResourcePropertyMap(returnVal),
+		Return:   ret,
 		Failures: failures,
 	}, nil
+}
+
+// propertyDependenciesToProto returns the dependencies of each value in
+// inputs, in the form of RegisterResourceRequest.PropertyDependencies.
+func propertyDependenciesToProto(
+	inputs property.Map,
+) map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies {
+	deps := keyDependencies(inputs)
+	propDeps := make(map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies, len(deps))
+	for k, urns := range deps {
+		propDeps[k] = &pulumirpc.RegisterResourceRequest_PropertyDependencies{Urns: urns}
+	}
+	return propDeps
+}
+
+// keyDependencies returns, for each key of m, the URNs that its value depends
+// on at any depth, sorted and without duplicates. Every key of m is present in
+// the result, because the engine gives a property every dependency of the
+// resource when the map has no entry for it.
+func keyDependencies(m property.Map) map[string][]string {
+	deps := make(map[string][]string, m.Len())
+	for k := range m.All {
+		deps[k] = []string{}
+	}
+	for path, urns := range run.PropertyDependencies(m) {
+		for seg := range path.Segments {
+			k := seg.(property.KeySegment).Key()
+			for _, u := range urns {
+				deps[k] = append(deps[k], string(u))
+			}
+			break
+		}
+	}
+	for k, urns := range deps {
+		slices.Sort(urns)
+		deps[k] = slices.Compact(urns)
+	}
+	return deps
+}
+
+// callMethod calls a method through the resource monitor.
+//
+// If outputValues is true, the arguments and the return travel as output
+// values with per-value dependencies. Otherwise, the dependencies travel in
+// the per-key ArgDependencies and ReturnDependencies maps.
+func callMethod(
+	ctx context.Context, client pulumirpc.ResourceMonitorClient, req run.CallRequest,
+	outputValues bool, opts plugin.MarshalOptions,
+) (property.Map, []*pulumirpc.CheckFailure, error) {
+	deps := keyDependencies(req.Args)
+	argDeps := make(map[string]*pulumirpc.ResourceCallRequest_ArgumentDependencies, len(deps))
+	for k, urns := range deps {
+		argDeps[k] = &pulumirpc.ResourceCallRequest_ArgumentDependencies{Urns: urns}
+	}
+
+	opts.KeepOutputValues = outputValues
+	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), opts)
+	if err != nil {
+		return property.Map{}, nil, fmt.Errorf("marshaling args: %w", err)
+	}
+
+	resp, err := client.Call(ctx, &pulumirpc.ResourceCallRequest{
+		Tok:                req.Token,
+		Args:               argsStruct,
+		ArgDependencies:    argDeps,
+		PackageRef:         string(req.PackageRef),
+		AcceptsByteString:  true,
+		AcceptOutputValues: outputValues,
+	})
+	if err != nil {
+		return property.Map{}, nil, fmt.Errorf("calling method: %w", err)
+	}
+
+	returnVal, err := plugin.UnmarshalProperties(resp.Return, opts)
+	if err != nil {
+		return property.Map{}, nil, fmt.Errorf("unmarshaling return value: %w", err)
+	}
+	ret := resource.FromResourcePropertyMap(returnVal)
+
+	// With output values, the engine already puts the ReturnDependencies on
+	// the returned values, at a finer grain.
+	if !outputValues {
+		for k, deps := range resp.GetReturnDependencies() {
+			if v, ok := ret.GetOk(k); ok {
+				ret = ret.Set(k, v.WithDependencies(append(v.Dependencies(), stringsToURNs(deps.GetUrns())...)))
+			}
+		}
+	}
+
+	return ret, resp.GetFailures(), nil
+}
+
+// callOutputValuesProbe caches whether a resource monitor advertises
+// RESOURCE_MONITOR_FEATURE_CALL_OUTPUT_VALUES. The zero value is ready to use.
+type callOutputValuesProbe struct {
+	once      sync.Once
+	supported bool
+}
+
+// get asks the monitor on the first call only. A monitor that does not
+// implement GetDeploymentInfo does not support the feature.
+func (p *callOutputValuesProbe) get(ctx context.Context, client pulumirpc.ResourceMonitorClient) bool {
+	p.once.Do(func() {
+		info, err := client.GetDeploymentInfo(ctx, &emptypb.Empty{})
+		p.supported = err == nil && slices.Contains(info.GetSupportedFeatures(),
+			pulumirpc.ResourceMonitorFeature_RESOURCE_MONITOR_FEATURE_CALL_OUTPUT_VALUES)
+	})
+	return p.supported
+}
+
+func stringsToURNs(ss []string) []urn.URN {
+	urns := make([]urn.URN, len(ss))
+	for i, s := range ss {
+		urns[i] = urn.URN(s)
+	}
+	return urns
 }
 
 func (r *resourceMonitorAdapter) RegisterResourceHook(
