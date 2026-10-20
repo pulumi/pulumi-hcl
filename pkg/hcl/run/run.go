@@ -162,7 +162,7 @@ type RegisterResourceRequest struct {
 	Type                    string
 	Name                    string
 	Inputs                  property.Map
-	Dependencies            []string
+	Dependencies            []urn.URN
 	Custom                  bool
 	Remote                  bool
 	Protect                 bool
@@ -231,7 +231,7 @@ type InvokeRequest struct {
 	Version           string
 	PluginDownloadURL string
 	PackageRef        PackageRef
-	DependsOn         []string
+	DependsOn         []urn.URN
 }
 
 // InvokeResponse contains the result of invoking a function.
@@ -469,7 +469,7 @@ type Engine struct {
 	// with unknowns, so a data source that `depends_on` one of them can defer
 	// its read to apply. An update that leaves every output known does not land
 	// here; catching those needs the engine's diff, not the outputs.
-	pendingURNs *util.SyncMap[string, struct{}]
+	pendingURNs *util.SyncMap[urn.URN, struct{}]
 
 	// pendingModuleCalls holds the cells of the module calls that contain a
 	// pending resource, so `depends_on` naming a module call — which covers
@@ -655,7 +655,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		parallel:                opts.Parallel,
 		expansions:              util.NewSyncMap[expansionCell, *graph.BlockExpansion](),
 		cellURNs:                newURNRegistry(),
-		pendingURNs:             util.NewSyncMap[string, struct{}](),
+		pendingURNs:             util.NewSyncMap[urn.URN, struct{}](),
 		pendingModuleCalls:      util.NewSyncMap[expansionCell, struct{}](),
 		failedNodes:             util.NewSyncMap[graph.InstanceKey, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
@@ -1456,14 +1456,13 @@ func PropertyDependencies(m property.Map) map[property.Path][]urn.URN {
 }
 
 // allDependencies returns every URN that a value in m depends on, at any depth.
-func allDependencies(m property.Map) []string {
-	var urns []string
+func allDependencies(m property.Map) []urn.URN {
+	var urns []urn.URN
 	for _, deps := range PropertyDependencies(m) {
-		for _, u := range deps {
-			urns = append(urns, string(u))
-		}
+		urns = append(urns, deps...)
 	}
-	return urns
+	slices.Sort(urns)
+	return slices.Compact(urns)
 }
 
 func (e *Engine) registerProviderInContext(
@@ -1652,7 +1651,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	evalCtx *eval.Context,
 	parentURN urn.URN,
 	modInst *moduleInstance,
-	metaArgDeps []string,
+	metaArgDeps []urn.URN,
 ) error {
 	evalCtx = evalCtx.WithIteration(instance.Index, instance.EachKey, instance.EachValue)
 
@@ -1777,7 +1776,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		return nil
 	}
 
-	e.cellURNs.add(cellKey(node, modInst), string(urn))
+	e.cellURNs.add(cellKey(node, modInst), urn)
 
 	outputs = outputs.Delete("id", "urn")
 
@@ -1817,7 +1816,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	e.resourceOutputs.Set(instance.Key, markedOutputs)
 
 	if !markedOutputs.IsWhollyKnown() {
-		e.pendingURNs.Set(string(urn), struct{}{})
+		e.pendingURNs.Set(urn, struct{}{})
 		for inst := modInst; inst != nil; inst = inst.Parent {
 			e.pendingModuleCalls.Set(moduleCallCell(inst), struct{}{})
 		}
@@ -2162,7 +2161,10 @@ func (e *Engine) buildResourceOptions(
 
 	if key, ok := graph.TraversalKey(node.Key.Module, res.DeletedWith); ok {
 		if outputs, ok := e.nodeOutputs(key); ok {
-			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+			if urn := urn.URN(ctyAsString(outputs.GetAttr("urn"))); urn != "" {
+				if !urn.IsValid() {
+					return nil, fmt.Errorf("invalid delete_with URN: %w", err)
+				}
 				opts.DeletedWith = urn
 			}
 		}
@@ -2174,7 +2176,7 @@ func (e *Engine) buildResourceOptions(
 			continue
 		}
 		if outputs, ok := e.nodeOutputs(key); ok {
-			if urn := ctyAsString(outputs.GetAttr("urn")); urn != "" {
+			if urn := urn.URN(ctyAsString(outputs.GetAttr("urn"))); urn != "" {
 				opts.ReplaceWith = append(opts.ReplaceWith, urn)
 			}
 		}
@@ -3425,7 +3427,7 @@ func objectProperties(t schema.Type) []*schema.Property {
 type ResourceOptions struct {
 	Custom                  bool
 	Remote                  bool
-	DependsOn               []string
+	DependsOn               []urn.URN
 	Protect                 bool
 	IgnoreChanges           []property.Glob
 	Aliases                 []Alias
@@ -3438,8 +3440,8 @@ type ResourceOptions struct {
 	ImportId                string
 	AdditionalSecretOutputs []string
 	RetainOnDelete          *bool
-	DeletedWith             string          // URN of the resource that, when deleted, causes this resource to be deleted
-	ReplaceWith             []string        // URNs of resources whose replacement triggers replacement of this resource
+	DeletedWith             urn.URN         // URN of the resource that, when deleted, causes this resource to be deleted
+	ReplaceWith             []urn.URN       // URNs of resources whose replacement triggers replacement of this resource
 	HideDiffs               []property.Glob // Property paths whose diffs should not be displayed
 	ReplaceOnChanges        []property.Glob // Property paths that if changed should force a replacement
 	ReplacementTrigger      property.Value  // Value whose change triggers replacement
@@ -3494,8 +3496,8 @@ func (e *Engine) registerResource(
 		ImportId:                opts.ImportId,
 		AdditionalSecretOutputs: opts.AdditionalSecretOutputs,
 		RetainOnDelete:          opts.RetainOnDelete,
-		DeletedWith:             opts.DeletedWith,
-		ReplaceWith:             opts.ReplaceWith,
+		DeletedWith:             string(opts.DeletedWith),
+		ReplaceWith:             sliceToString(opts.ReplaceWith),
 		HideDiffs:               opts.HideDiffs,
 		ReplaceOnChanges:        opts.ReplaceOnChanges,
 		ReplacementTrigger:      opts.ReplacementTrigger,
@@ -3539,7 +3541,7 @@ func (e *Engine) readResource(
 		ID:                      nameVal.AsString(),
 		Inputs:                  inputs,
 		Parent:                  opts.Parent,
-		Dependencies:            opts.DependsOn,
+		Dependencies:            sliceToString(opts.DependsOn),
 		Provider:                opts.Provider,
 		Version:                 opts.Version,
 		AdditionalSecretOutputs: opts.AdditionalSecretOutputs,
@@ -3575,8 +3577,8 @@ func (e *Engine) invokeDataSourceOnce(
 	}
 
 	depMarks := cty.ValueMarks{}
-	var depURNs []string
-	addURN := func(urn string) {
+	var depURNs []urn.URN
+	addURN := func(urn urn.URN) {
 		if urn == "" {
 			return
 		}
@@ -4797,8 +4799,8 @@ func Validate(config *ast.Config) []error {
 // expression, so no function fires early while values reached through locals
 // still carry their DepMarks. Traversals that do not resolve are skipped —
 // notably self, which is only in scope once a postcondition hook fires.
-func checkRuleDeps(rules []*ast.CheckRule, hclCtx *hcl.EvalContext) []string {
-	var deps []string
+func checkRuleDeps(rules []*ast.CheckRule, hclCtx *hcl.EvalContext) []urn.URN {
+	var deps []urn.URN
 	for _, rule := range rules {
 		for _, expr := range []hcl.Expression{rule.Condition, rule.ErrorMessage} {
 			if expr == nil {
@@ -4838,8 +4840,8 @@ func bodyTraversals(body hcl.Body) []hcl.Traversal {
 	return traversals
 }
 
-func provisionerDeps(res *ast.Resource, hclCtx *hcl.EvalContext) []string {
-	var deps []string
+func provisionerDeps(res *ast.Resource, hclCtx *hcl.EvalContext) []urn.URN {
+	var deps []urn.URN
 	collect := func(body hcl.Body) {
 		for _, traversal := range bodyTraversals(body) {
 			val, diags := traversal.TraverseAbs(hclCtx)
@@ -5246,19 +5248,19 @@ func (e *Engine) checkConfigPulumiVersion(
 // resource reference mark, while a reference to a resource with count or
 // for_each yields a tuple or object of such instance values. An attribute of a
 // resource inherits the mark but not its hash, so it yields no URNs.
-func resourceURNsFromValue(val cty.Value) []string {
+func resourceURNsFromValue(val cty.Value) []urn.URN {
 	if u, ok := eval.ResourceReferenceURN(val); ok {
-		return []string{string(u)}
+		return []urn.URN{u}
 	}
 	val, _ = val.Unmark()
 	if val.IsNull() || !val.IsKnown() || !val.CanIterateElements() {
 		return nil
 	}
-	var urns []string
+	var urns []urn.URN
 	for it := val.ElementIterator(); it.Next(); {
 		_, el := it.Element()
 		if u, ok := eval.ResourceReferenceURN(el); ok {
-			urns = append(urns, string(u))
+			urns = append(urns, u)
 		}
 	}
 	return urns
@@ -5291,4 +5293,12 @@ func renderErrorMessage(v cty.Value) string {
 		return sensitiveErrorMessageRef
 	}
 	return ctyAsString(v)
+}
+
+func sliceToString[T ~string](s []T) []string {
+	dst := make([]string, len(s))
+	for i, v := range s {
+		dst[i] = string(v)
+	}
+	return dst
 }

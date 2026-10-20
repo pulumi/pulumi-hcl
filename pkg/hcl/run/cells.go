@@ -75,25 +75,25 @@ func (e *Engine) cell(block graph.NodeKey, mi modulepath.Path) (*graph.BlockExpa
 // leaves that sibling free to destroy independently.
 type urnRegistry struct {
 	mu   sync.Mutex
-	m    map[expansionCell][]string
-	cell map[string]expansionCell // URN → owning cell
+	m    map[expansionCell][]urn.URN
+	cell map[urn.URN]expansionCell // URN → owning cell
 }
 
 func newURNRegistry() *urnRegistry {
 	return &urnRegistry{
-		m:    make(map[expansionCell][]string),
-		cell: make(map[string]expansionCell),
+		m:    make(map[expansionCell][]urn.URN),
+		cell: make(map[urn.URN]expansionCell),
 	}
 }
 
-func (r *urnRegistry) add(c expansionCell, urn string) {
+func (r *urnRegistry) add(c expansionCell, urn urn.URN) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.m[c] = append(r.m[c], urn)
 	r.cell[urn] = c
 }
 
-func (r *urnRegistry) get(c expansionCell) []string {
+func (r *urnRegistry) get(c expansionCell) []urn.URN {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.m[c])
@@ -102,10 +102,10 @@ func (r *urnRegistry) get(c expansionCell) []string {
 // widen replaces each URN owned by a known cell with that cell's full
 // registered instance set, passing unknown URNs through, and returns the
 // deduplicated, sorted result.
-func (r *urnRegistry) widen(urns []string) []string {
+func (r *urnRegistry) widen(urns []urn.URN) []urn.URN {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var out []string
+	var out []urn.URN
 	for _, u := range urns {
 		if c, ok := r.cell[u]; ok {
 			out = append(out, r.m[c]...)
@@ -326,7 +326,7 @@ func cellEvalState(e *Engine, mi *moduleInstance) (*eval.Context, urn.URN, *modu
 // dependencies that govern destroy ordering even when the body never uses the
 // target) and which argument if any was unknown.
 type metaArgs struct {
-	deps       []string
+	deps       []urn.URN
 	unknownArg string
 }
 

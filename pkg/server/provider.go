@@ -312,7 +312,7 @@ func (m *constructResourceMonitor) RegisterResource(
 		Custom:               req.Custom,
 		Object:               inputs,
 		Parent:               string(parent),
-		Dependencies:         req.Dependencies,
+		Dependencies:         sliceToString(req.Dependencies),
 		PropertyDependencies: propertyDependenciesToProto(req.Inputs),
 		Provider:             req.Provider,
 		Providers:            req.Providers,
@@ -446,7 +446,7 @@ func (m *constructResourceMonitor) Invoke(
 		PackageRef:        string(req.PackageRef),
 		AcceptResources:   true,
 		AcceptsByteString: true,
-		DependsOn:         req.DependsOn,
+		DependsOn:         sliceToString(req.DependsOn),
 	})
 	if err != nil {
 		return nil, err
@@ -553,4 +553,12 @@ func (m *constructResourceMonitor) ResolveURN(parent urn.URN, token, name string
 		parentType = parent.QualifiedType()
 	}
 	return urn.New(m.componentURN.Stack(), m.componentURN.Project(), parentType, tokens.Type(token), name), name
+}
+
+func sliceToString[T ~string, A ~[]T](s A) []string {
+	dst := make([]string, len(s))
+	for i, v := range s {
+		dst[i] = string(v)
+	}
+	return dst
 }

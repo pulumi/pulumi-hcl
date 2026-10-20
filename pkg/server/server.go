@@ -1583,7 +1583,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 		Remote:                     req.Remote,
 		Object:                     inputsStruct,
 		Protect:                    &req.Protect,
-		Dependencies:               req.Dependencies,
+		Dependencies:               sliceToString(req.Dependencies),
 		PropertyDependencies:       propDeps,
 		Provider:                   req.Provider,
 		Providers:                  req.Providers,
@@ -1715,7 +1715,7 @@ func (r *resourceMonitorAdapter) Invoke(
 		AcceptResources:   true,
 		AcceptsByteString: true,
 		PackageRef:        string(req.PackageRef),
-		DependsOn:         req.DependsOn,
+		DependsOn:         sliceToString(req.DependsOn),
 	}
 
 	// Call the resource monitor
