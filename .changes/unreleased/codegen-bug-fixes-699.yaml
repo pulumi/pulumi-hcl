@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Emit list- and set-nested attributes of plugin-framework providers as arguments
+time: 2026-10-20T18:34:43.000000+02:00
+custom:
+    Component: codegen
+    PR: "699"
