@@ -16,8 +16,11 @@ package tfexec
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
@@ -352,11 +355,15 @@ func valueToAny(v tftypes.Value) (any, error) {
 		}
 		n, _ := f.Float64()
 		return n, nil
-	// Sets keep their wire order. OpenTofu and the bridge could disagree on
-	// set element order (cty hashes vs. Pulumi array order); if a test
-	// provider ever grows a set attribute and recordings diverge on it, set
-	// elements need canonical ordering here.
-	case typ.Is(tftypes.List{}), typ.Is(tftypes.Set{}), typ.Is(tftypes.Tuple{}):
+	// A set has no order, but its wire order differs between the runtimes:
+	// OpenTofu sends cty's order, the bridge sends Pulumi array order.
+	case typ.Is(tftypes.Set{}):
+		elems, err := elementsToAny(v)
+		if err != nil {
+			return nil, err
+		}
+		return sortByJSON(elems)
+	case typ.Is(tftypes.List{}), typ.Is(tftypes.Tuple{}):
 		return elementsToAny(v)
 	case typ.Is(tftypes.Map{}), typ.Is(tftypes.Object{}):
 		var attrs map[string]tftypes.Value
@@ -375,6 +382,28 @@ func valueToAny(v tftypes.Value) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported value type %s", typ)
 	}
+}
+
+// sortByJSON sorts elems by their JSON encoding.
+func sortByJSON(elems []any) ([]any, error) {
+	type keyed struct {
+		key  string
+		elem any
+	}
+	ks := make([]keyed, len(elems))
+	for i, e := range elems {
+		b, err := json.Marshal(e)
+		if err != nil {
+			return nil, err
+		}
+		ks[i] = keyed{string(b), e}
+	}
+	slices.SortFunc(ks, func(a, b keyed) int { return strings.Compare(a.key, b.key) })
+	out := make([]any, len(ks))
+	for i, k := range ks {
+		out[i] = k.elem
+	}
+	return out, nil
 }
 
 func elementsToAny(v tftypes.Value) ([]any, error) {

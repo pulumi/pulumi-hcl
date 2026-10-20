@@ -1081,7 +1081,7 @@ func (g *generator) genInvokeDataSource(ctx context.Context, body *hclwrite.Body
 				hclName := transform.SnakeCaseFromPulumiCase(keyName)
 				target := inputBody(block.Body(), hclName, parser.DataReservedNames)
 				fm := mapping.Lookup(hclName)
-				if objType, ok := blockType(propType, fm); ok {
+				if objType, ok := transform.HCLBlockType(propType, fm); ok {
 					d := g.genBlocks(target, hclName, item.Value, objType, nestedMapping(fm))
 					diags = append(diags, d...)
 				} else {
@@ -1189,7 +1189,7 @@ func (g *generator) genInputs(
 		target := inputBody(body, hclName, reserved)
 		g.emitLeadingComments(target, attr.SyntaxNode())
 		fm := mapping.Lookup(hclName)
-		if objType, ok := blockType(inputType, fm); ok {
+		if objType, ok := transform.HCLBlockType(inputType, fm); ok {
 			d := g.genBlocks(target, hclName, attr.Value, objType, nestedMapping(fm))
 			diags = append(diags, d...)
 		} else {
@@ -2146,20 +2146,6 @@ func (g *generator) genBlocks(
 	}
 }
 
-// blockType returns the object type of a property that is written as nested
-// blocks: a list of objects, or a TF block that the bridge flattens to one
-// object (MaxItems=1). fm is the bridge mapping of the property, or nil.
-func blockType(typ schema.Type, fm *bridge.FieldMapping) (*schema.ObjectType, bool) {
-	if obj, ok := transform.AsHCLBlockType(typ); ok {
-		return obj, true
-	}
-	if fm == nil || !fm.TFBlock {
-		return nil, false
-	}
-	obj, ok := codegen.UnwrapType(typ).(*schema.ObjectType)
-	return obj, ok
-}
-
 func nestedMapping(fm *bridge.FieldMapping) *bridge.BodyMapping {
 	if fm == nil {
 		return nil
@@ -2217,7 +2203,7 @@ func (g *generator) genBlock(
 		}
 		var d hcl.Diagnostics
 		fm := mapping.Lookup(snakeName)
-		if innerObjType, ok := blockType(propType, fm); ok {
+		if innerObjType, ok := transform.HCLBlockType(propType, fm); ok {
 			d = g.genBlocks(block.Body(), snakeName, item.Value, innerObjType, nestedMapping(fm))
 		} else {
 			d = g.genExpression(block.Body(), snakeName, item.Value, propType)

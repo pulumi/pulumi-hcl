@@ -16,6 +16,7 @@ package providers
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -52,10 +53,39 @@ func (p *pfxProvider) Metadata(_ context.Context, _ provider.MetadataRequest, re
 }
 
 func (p *pfxProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
-	resp.Schema = pschema.Schema{}
+	resp.Schema = pschema.Schema{
+		Attributes: map[string]pschema.Attribute{
+			"registries": pschema.ListNestedAttribute{
+				Optional: true,
+				NestedObject: pschema.NestedAttributeObject{
+					Attributes: map[string]pschema.Attribute{
+						"url": pschema.StringAttribute{Optional: true},
+					},
+				},
+			},
+		},
+	}
 }
 
-func (p *pfxProvider) Configure(context.Context, provider.ConfigureRequest, *provider.ConfigureResponse) {
+type pfxProviderModel struct {
+	Registries []struct {
+		URL types.String `tfsdk:"url"`
+	} `tfsdk:"registries"`
+}
+
+// Configure hands the configured registry URLs to the data sources, so
+// pfx_set_lookup can echo them.
+func (p *pfxProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	var config pfxProviderModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	urls := make([]string, 0, len(config.Registries))
+	for _, r := range config.Registries {
+		urls = append(urls, r.URL.ValueString())
+	}
+	resp.DataSourceData = urls
 }
 
 func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
@@ -74,6 +104,7 @@ func (p *pfxProvider) DataSources(context.Context) []func() datasource.DataSourc
 	return []func() datasource.DataSource{
 		func() datasource.DataSource { return &pfxLookup{} },
 		func() datasource.DataSource { return &pfxObjLookup{} },
+		func() datasource.DataSource { return &pfxSetLookup{} },
 	}
 }
 
@@ -646,3 +677,67 @@ func (r *pfxAnon) Update(ctx context.Context, req resource.UpdateRequest, resp *
 }
 
 func (r *pfxAnon) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
+
+// pfxSetLookup carries an optional set-nested attribute. It echoes the sorted
+// names of its items and the provider's configured registry URLs.
+type pfxSetLookup struct {
+	registries []string
+}
+
+var _ datasource.DataSourceWithConfigure = (*pfxSetLookup)(nil)
+
+type pfxSetLookupModel struct {
+	Items      types.Set    `tfsdk:"items"`
+	Names      types.String `tfsdk:"names"`
+	Registries types.String `tfsdk:"registries"`
+}
+
+func (d *pfxSetLookup) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_set_lookup"
+}
+
+func (d *pfxSetLookup) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	resp.Schema = dschema.Schema{
+		Attributes: map[string]dschema.Attribute{
+			"items": dschema.SetNestedAttribute{
+				Optional: true,
+				NestedObject: dschema.NestedAttributeObject{
+					Attributes: map[string]dschema.Attribute{
+						"name": dschema.StringAttribute{Optional: true},
+					},
+				},
+			},
+			"names":      dschema.StringAttribute{Computed: true},
+			"registries": dschema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+func (d *pfxSetLookup) Configure(_ context.Context, req datasource.ConfigureRequest, _ *datasource.ConfigureResponse) {
+	if urls, ok := req.ProviderData.([]string); ok {
+		d.registries = urls
+	}
+}
+
+func (d *pfxSetLookup) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var state pfxSetLookupModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	var items []struct {
+		Name types.String `tfsdk:"name"`
+	}
+	resp.Diagnostics.Append(state.Items.ElementsAs(ctx, &items, false)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Name.ValueString())
+	}
+	slices.Sort(names)
+	state.Names = types.StringValue(strings.Join(names, ","))
+	state.Registries = types.StringValue(strings.Join(d.registries, ","))
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}

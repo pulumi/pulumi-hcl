@@ -201,12 +201,11 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, block.DefRange))
 		}
 
-		blockProps, isList := blockPropertiesOf(prop.Type)
+		fm := mapping.Lookup(name)
+		blockProps, isList := blockPropertiesOf(prop.Type, fm)
 		var nestedMapping *bridge.BodyMapping
-		if mapping != nil {
-			if fm := mapping.Lookup(name); fm != nil {
-				nestedMapping = fm.Nested
-			}
+		if fm != nil {
+			nestedMapping = fm.Nested
 		}
 		evaluated, _, d := evalBlockWithSchema(block.Body, blockProps, nestedMapping, eval)
 		diags = diags.Extend(d)
@@ -237,15 +236,16 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 // blockPropertiesOf returns the inner-block property list and whether the
 // outer container is a list-shaped block (Array<Object>). For Object-typed
 // Pulumi props (the bridge's MaxItemsOne flattening), the inner Properties
-// are still the block's contents and isList is false.
-func blockPropertiesOf(typ schema.Type) (props []*schema.Property, isList bool) {
-	if obj, ok := AsHCLBlockType(typ); ok {
-		return obj.Properties, true
+// are still the block's contents and isList is false. It returns nil props
+// when the property is not a block. fm is the bridge mapping of the
+// property, or nil.
+func blockPropertiesOf(typ schema.Type, fm *bridge.FieldMapping) (props []*schema.Property, isList bool) {
+	obj, ok := HCLBlockType(typ, fm)
+	if !ok {
+		return nil, false
 	}
-	if obj, ok := codegen.UnwrapType(typ).(*schema.ObjectType); ok {
-		return obj.Properties, false
-	}
-	return nil, false
+	_, isList = codegen.UnwrapType(typ).(*schema.ArrayType)
+	return obj.Properties, isList
 }
 
 // dynamicBlockSchema is the body schema for the inside of a dynamic block.
@@ -277,13 +277,12 @@ func evalDynamicBlock(
 	propName := block.Labels[0]
 
 	var prop *schema.Property
-	if mapping != nil {
-		if fm := mapping.Lookup(propName); fm != nil {
-			for _, p := range props {
-				if p.Name == fm.PulumiName {
-					prop = p
-					break
-				}
+	fm := mapping.Lookup(propName)
+	if fm != nil {
+		for _, p := range props {
+			if p.Name == fm.PulumiName {
+				prop = p
+				break
 			}
 		}
 	}
@@ -305,7 +304,7 @@ func evalDynamicBlock(
 		return diags
 	}
 
-	blockProps, isList := blockPropertiesOf(prop.Type)
+	blockProps, isList := blockPropertiesOf(prop.Type, fm)
 	if blockProps == nil {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
@@ -632,6 +631,26 @@ func AsHCLBlockType(typ schema.Type) (*schema.ObjectType, bool) {
 	return obj, ok
 }
 
+// HCLBlockType returns the object type of a property that is written as
+// nested HCL blocks, and whether the property is one. fm is the bridge
+// mapping of the property, or nil. The mapping decides when it is present:
+// the Pulumi schema types a list-nested attribute and a list-nested block the
+// same, and a MaxItems=1 block the same as an object attribute. Without a
+// mapping, a list of objects is a block.
+func HCLBlockType(typ schema.Type, fm *bridge.FieldMapping) (*schema.ObjectType, bool) {
+	if fm == nil {
+		return AsHCLBlockType(typ)
+	}
+	if !fm.TFBlock {
+		return nil, false
+	}
+	if obj, ok := AsHCLBlockType(typ); ok {
+		return obj, true
+	}
+	obj, ok := codegen.UnwrapType(typ).(*schema.ObjectType)
+	return obj, ok
+}
+
 func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) *hcl.BodySchema {
 	body := new(hcl.BodySchema)
 
@@ -648,8 +667,8 @@ func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) 
 		}
 	}
 
-	// addedBlocks tracks block names we've emitted so we don't double-add when
-	// a TF block also matches the convention-based block path.
+	// addedBlocks and addedAttrs track the names emitted for props, so the
+	// mapping-only blocks below are not added twice.
 	addedBlocks := map[string]bool{}
 	addedAttrs := map[string]bool{}
 
@@ -664,13 +683,7 @@ func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) 
 			}
 		}
 
-		if tfBlockNames[typeName] {
-			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{Type: typeName})
-			addedBlocks[typeName] = true
-			hasBlockTypes = true
-			continue
-		}
-		if _, ok := AsHCLBlockType(p.Type); ok {
+		if _, ok := HCLBlockType(p.Type, mapping.Lookup(typeName)); ok {
 			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{Type: typeName})
 			addedBlocks[typeName] = true
 			hasBlockTypes = true
