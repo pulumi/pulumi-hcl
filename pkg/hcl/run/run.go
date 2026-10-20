@@ -1520,9 +1520,7 @@ func (e *Engine) registerProviderInContext(
 		if vdiags.HasErrors() {
 			return fmt.Errorf("evaluating provider version: %s", vdiags.Error())
 		}
-		if val.Type() == cty.String {
-			version = val.AsString()
-		}
+		version = ctyAsString(val)
 	}
 	if version == "" {
 		version = e.pinnedVersion(provider.Name)
@@ -1569,7 +1567,11 @@ func (e *Engine) registerProviderInContext(
 			// Surface via Inputs so it appears as a top-level output;
 			// the resource-option field (req.PluginDownloadURL) is
 			// set below to the package's schema default.
-			inputs["pluginDownloadURL"] = property.New(val.AsString())
+			pv, err := transform.CtyToPropertyValue(val)
+			if err != nil {
+				return fmt.Errorf("converting plugin_download_url: %w", err)
+			}
+			inputs["pluginDownloadURL"] = pv
 		}
 	}
 
@@ -1578,11 +1580,12 @@ func (e *Engine) registerProviderInContext(
 		if vdiags.HasErrors() {
 			return fmt.Errorf("evaluating additional_secret_outputs: %s", vdiags.Error())
 		}
-		if val.Type().IsTupleType() || val.Type().IsListType() {
+		val, _ = val.UnmarkDeep()
+		if (val.Type().IsTupleType() || val.Type().IsListType()) && val.IsKnown() && !val.IsNull() {
 			for it := val.ElementIterator(); it.Next(); {
 				_, v := it.Element()
-				if v.Type() == cty.String {
-					req.AdditionalSecretOutputs = append(req.AdditionalSecretOutputs, v.AsString())
+				if name := ctyAsString(v); name != "" {
+					req.AdditionalSecretOutputs = append(req.AdditionalSecretOutputs, name)
 				}
 			}
 		}
@@ -1679,7 +1682,11 @@ func (e *Engine) registerResourceInstanceInContext(
 	if strings.HasPrefix(res.Type, "pulumi_providers_") && res.PluginDownloadURL != nil {
 		val, valDiags := res.PluginDownloadURL.Value(hclCtx)
 		if !valDiags.HasErrors() && val.Type() == cty.String {
-			resourceInputs = resourceInputs.Set("pluginDownloadURL", property.New(val.AsString()))
+			pv, err := transform.CtyToPropertyValue(val)
+			if err != nil {
+				return fmt.Errorf("converting plugin_download_url: %w", err)
+			}
+			resourceInputs = resourceInputs.Set("pluginDownloadURL", pv)
 		}
 	}
 
