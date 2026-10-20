@@ -61,7 +61,9 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/zclconf/go-cty/cty"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -1790,7 +1792,11 @@ func (r *resourceMonitorAdapter) Call(
 	ctx context.Context,
 	req run.CallRequest,
 ) (*run.CallResponse, error) {
-	ret, checkFailures, err := callMethod(ctx, r.monitorClient, req, r.callOutputValues.get(ctx, r.monitorClient), r.pluginOptions())
+	outputValues, err := r.callOutputValues.get(ctx, r.monitorClient)
+	if err != nil {
+		return nil, err
+	}
+	ret, checkFailures, err := callMethod(ctx, r.monitorClient, req, outputValues, r.pluginOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -1901,17 +1907,24 @@ func callMethod(
 type callOutputValuesProbe struct {
 	once      sync.Once
 	supported bool
+	err       error
 }
 
 // get asks the monitor on the first call only. A monitor that does not
 // implement GetDeploymentInfo does not support the feature.
-func (p *callOutputValuesProbe) get(ctx context.Context, client pulumirpc.ResourceMonitorClient) bool {
+func (p *callOutputValuesProbe) get(ctx context.Context, client pulumirpc.ResourceMonitorClient) (bool, error) {
 	p.once.Do(func() {
 		info, err := client.GetDeploymentInfo(ctx, &emptypb.Empty{})
-		p.supported = err == nil && slices.Contains(info.GetSupportedFeatures(),
-			pulumirpc.ResourceMonitorFeature_RESOURCE_MONITOR_FEATURE_CALL_OUTPUT_VALUES)
+		switch {
+		case status.Code(err) == codes.Unimplemented:
+		case err != nil:
+			p.err = fmt.Errorf("checking monitor features: %w", err)
+		default:
+			p.supported = slices.Contains(info.GetSupportedFeatures(),
+				pulumirpc.ResourceMonitorFeature_RESOURCE_MONITOR_FEATURE_CALL_OUTPUT_VALUES)
+		}
 	})
-	return p.supported
+	return p.supported, p.err
 }
 
 func stringsToURNs(ss []string) []urn.URN {

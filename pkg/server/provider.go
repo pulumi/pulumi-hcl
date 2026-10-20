@@ -474,7 +474,11 @@ func (m *constructResourceMonitor) Call(
 	ctx context.Context,
 	req run.CallRequest,
 ) (*run.CallResponse, error) {
-	ret, checkFailures, err := callMethod(ctx, m.client, req, m.callOutputValues.get(ctx, m.client), constructMarshalOptions())
+	outputValues, err := m.callOutputValues.get(ctx, m.client)
+	if err != nil {
+		return nil, err
+	}
+	ret, checkFailures, err := callMethod(ctx, m.client, req, outputValues, constructMarshalOptions())
 	if err != nil {
 		return nil, err
 	}

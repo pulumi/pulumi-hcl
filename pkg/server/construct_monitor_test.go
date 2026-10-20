@@ -28,8 +28,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
@@ -251,5 +254,70 @@ func TestCallMethodDependencies(t *testing.T) {
 				"b": property.New("pb"),
 			})).WithDependencies([]urn.URN{"urn:pa", "urn:pb"}),
 		}), ret)
+	})
+}
+
+// deploymentInfoMonitorServer answers GetDeploymentInfo with errs, one per
+// call, and with info after errs runs out.
+type deploymentInfoMonitorServer struct {
+	pulumirpc.UnimplementedResourceMonitorServer
+	errs  []error
+	info  *pulumirpc.DeploymentInfo
+	calls int
+}
+
+func (s *deploymentInfoMonitorServer) GetDeploymentInfo(
+	context.Context, *emptypb.Empty,
+) (*pulumirpc.DeploymentInfo, error) {
+	s.calls++
+	if len(s.errs) > 0 {
+		err := s.errs[0]
+		s.errs = s.errs[1:]
+		return nil, err
+	}
+	return s.info, nil
+}
+
+func TestCallOutputValuesProbe(t *testing.T) {
+	t.Parallel()
+
+	supported := &pulumirpc.DeploymentInfo{SupportedFeatures: []pulumirpc.ResourceMonitorFeature{
+		pulumirpc.ResourceMonitorFeature_RESOURCE_MONITOR_FEATURE_CALL_OUTPUT_VALUES,
+	}}
+
+	t.Run("an error is returned and cached", func(t *testing.T) {
+		t.Parallel()
+		srv := &deploymentInfoMonitorServer{
+			errs: []error{status.Error(codes.Unavailable, "try again")},
+			info: supported,
+		}
+		m := newTestConstructMonitor(t, srv)
+		var p callOutputValuesProbe
+
+		_, err := p.get(t.Context(), m.client)
+		assert.EqualError(t, err, "checking monitor features: rpc error: code = Unavailable desc = try again")
+
+		_, err = p.get(t.Context(), m.client)
+		assert.EqualError(t, err, "checking monitor features: rpc error: code = Unavailable desc = try again")
+		assert.Equal(t, 1, srv.calls)
+	})
+
+	t.Run("an unimplemented RPC means not supported", func(t *testing.T) {
+		t.Parallel()
+		srv := &deploymentInfoMonitorServer{
+			errs: []error{status.Error(codes.Unimplemented, "unimplemented")},
+			info: supported,
+		}
+		m := newTestConstructMonitor(t, srv)
+		var p callOutputValuesProbe
+
+		got, err := p.get(t.Context(), m.client)
+		require.NoError(t, err)
+		assert.False(t, got)
+
+		got, err = p.get(t.Context(), m.client)
+		require.NoError(t, err)
+		assert.False(t, got)
+		assert.Equal(t, 1, srv.calls)
 	})
 }
