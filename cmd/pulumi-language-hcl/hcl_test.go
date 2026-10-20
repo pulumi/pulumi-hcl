@@ -34,6 +34,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
@@ -445,7 +446,7 @@ resource target "test:index:Item" {
 
 		target := findResource(t, mock, "target")
 		assert.Equal(t, "test:index:Item", target.Type)
-		assert.Equal(t, property.New("src-0-ref"), target.Inputs.Get("name"))
+		assert.Equal(t, property.New("src-0-ref").WithDependencies([]urn.URN{"urn:pulumi:test::project::test:index:Item::source-0"}), target.Inputs.Get("name"))
 	})
 
 	t.Run("range_map_ref", func(t *testing.T) {
@@ -472,7 +473,7 @@ resource target "test:index:Item" {
 
 		target := findResource(t, mock, "target")
 		assert.Equal(t, "test:index:Item", target.Type)
-		assert.Equal(t, property.New("alpha-ref"), target.Inputs.Get("name"))
+		assert.Equal(t, property.New("alpha-ref").WithDependencies([]urn.URN{"urn:pulumi:test::project::test:index:Item::source-x"}), target.Inputs.Get("name"))
 	})
 }
 
@@ -1738,7 +1739,7 @@ resource indented "test:index:Res" {
 			found1 = true
 		case "indented":
 			assert.Equal(t, property.NewMap(map[string]property.Value{
-				"prop": property.New("hello: normal-id\n world\n"),
+				"prop": property.New("hello: normal-id\n world\n").WithDependencies([]urn.URN{"urn:pulumi:test::project::test:index:Res::normal"}),
 			}), r.Inputs)
 			found2 = true
 		}
@@ -2010,7 +2011,7 @@ output "name" {
 
 	result, ok := mock.StackOutputs.GetOk("name")
 	require.True(t, ok, "expected 'name' stack output")
-	assert.Equal(t, property.New("my-bucket"), result)
+	assert.Equal(t, property.New("my-bucket").WithDependencies([]urn.URN{"urn:pulumi:test::project::test:index:Bucket::mod-bucket"}), result)
 }
 
 // TestComponentRangedResourceNames verifies that a ranged resource inside a
@@ -2139,7 +2140,7 @@ output "bucketName" {
 
 	result, ok := mock.StackOutputs.GetOk("bucketName")
 	require.True(t, ok, "expected 'bucketName' stack output")
-	assert.Equal(t, property.New("inner(outer(my-bucket))"), result)
+	assert.Equal(t, property.New("inner(outer(my-bucket))").WithDependencies([]urn.URN{"urn:pulumi:test::project::test:index:Bucket::outer-inner-bucket"}), result)
 }
 
 // TestModuleDataSourceDependencies verifies that data sources inside modules
@@ -2280,7 +2281,7 @@ output "result" {
 
 	result, ok := mock.StackOutputs.GetOk("result")
 	require.True(t, ok, "expected 'result' stack output")
-	assert.Equal(t, property.New(float64(1)), result)
+	assert.Equal(t, property.New(float64(1)).WithDependencies([]urn.URN{"urn:pulumi:test::project::test:index:Bucket::mod.bucket"}), result)
 }
 
 // TestModuleScopeIsolation verifies that resources and data sources inside a
