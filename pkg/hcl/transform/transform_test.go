@@ -449,7 +449,7 @@ func TestCtyToResourceInputs(t *testing.T) {
 			}),
 			expected: property.NewMap(map[string]property.Value{
 				"wrapper": property.New(map[string]property.Value{
-					"output": property.New("o").WithDependencies([]urn.URN{"urn:o"}),
+					"output": property.New("o"),
 					"prompt": property.New("p"),
 				}),
 				"list": property.New([]property.Value{property.New("x")}),

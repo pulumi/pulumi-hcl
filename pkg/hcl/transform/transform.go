@@ -705,7 +705,7 @@ func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) 
 }
 
 func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string]hcl.Expression, mapping *bridge.BodyMapping) (property.Map, error) {
-	return ctyToObject(r.Token, val, r.InputProperties, attrExprs, false /* already in a secret */, mapping)
+	return ctyToObject(r.Token, val, r.InputProperties, attrExprs, false /* already in a secret */, false /* plain */, mapping)
 }
 
 // CtyToResourceOutputs converts a TF-shaped attributes object (e.g. decoded
@@ -721,7 +721,7 @@ func CtyToResourceOutputs(val cty.Value, r *schema.Resource, mapping *bridge.Bod
 		delete(attrs, "timeouts")
 		val = cty.ObjectVal(attrs)
 	}
-	return ctyToObject(r.Token, val, r.Properties, nil, false /* already in a secret */, mapping)
+	return ctyToObject(r.Token, val, r.Properties, nil, false /* already in a secret */, false /* plain */, mapping)
 }
 
 // IDProperty returns the Pulumi property that models the TF `id` attribute —
@@ -738,7 +738,7 @@ func ctyToFunctionInputs(val cty.Value, r *schema.Function, attrExprs map[string
 	if r.Inputs != nil {
 		inputs = r.Inputs.Properties
 	}
-	return ctyToObject(r.Token, val, inputs, attrExprs, false /* already in a secret */, mapping)
+	return ctyToObject(r.Token, val, inputs, attrExprs, false /* already in a secret */, false /* plain */, mapping)
 }
 
 // resolvePulumiProperty picks the Pulumi property for a TF (snake_case) name,
@@ -759,7 +759,7 @@ func resolvePulumiProperty(tfName string, props []*schema.Property, mapping *bri
 // ctyToObject's attrExprs maps each attribute's HCL (snake_case) name to
 // its source expression; passing nil disables source-range error
 // reporting for this object's children.
-func ctyToObject(path string, val cty.Value, properties []*schema.Property, attrExprs map[string]hcl.Expression, alreadyInSecret bool, mapping *bridge.BodyMapping) (property.Map, error) {
+func ctyToObject(path string, val cty.Value, properties []*schema.Property, attrExprs map[string]hcl.Expression, alreadyInSecret, plain bool, mapping *bridge.BodyMapping) (property.Map, error) {
 	seen := make(map[string]struct{})
 	result := map[string]property.Value{}
 	for it := val.ElementIterator(); it.Next(); {
@@ -789,7 +789,7 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 			}
 		}
 		result[puField], err = ctyToResourceProperty(keyStr, v, prop.Type, attrExprs[keyStr],
-			prop.Secret || alreadyInSecret, prop.Plain, nestedMappingFor(prop.Name, mapping))
+			prop.Secret || alreadyInSecret, prop.Plain || plain, nestedMappingFor(prop.Name, mapping))
 		if err != nil {
 			return property.Map{}, err
 		}
@@ -872,9 +872,8 @@ func getDefault(path string, d *schema.DefaultValue, typ schema.Type) (property.
 // failures attach an HCL source range to the returned error.
 //
 // The DepMarks on val become the dependencies of the result. A plain value
-// cannot be an output, so when plain is true the result and its elements
-// carry no dependencies. A nested object property that is not plain can
-// still carry its own.
+// cannot be an output, so when plain is true the result and everything
+// nested in it carry no dependencies, whatever the nested properties say.
 func ctyToResourceProperty(path string, val cty.Value, prop schema.Type, expr hcl.Expression, alreadyInSecret, plain bool, mapping *bridge.BodyMapping) (property.Value, error) {
 	val, deps := eval.UnmarkDeps(val)
 	v, err := ctyToResourcePropertyValue(path, val, prop, expr, alreadyInSecret, plain, mapping)
@@ -971,7 +970,7 @@ func ctyToResourcePropertyValue(path string, val cty.Value, prop schema.Type, ex
 		if !val.Type().IsObjectType() {
 			return property.Value{}, fmt.Errorf("expected object at %q, found %#v", path, val.Type())
 		}
-		m, err := ctyToObject(path, val, prop.Properties, attrExprsByKey(expr), alreadyInSecret, mapping)
+		m, err := ctyToObject(path, val, prop.Properties, attrExprsByKey(expr), alreadyInSecret, plain, mapping)
 		return property.New(m), err
 	case *schema.ArrayType:
 		if !val.Type().IsListType() && !val.Type().IsSetType() && !val.Type().IsTupleType() {
