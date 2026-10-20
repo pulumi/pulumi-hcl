@@ -5275,19 +5275,19 @@ module "child" {
 	require.NotNil(t, first, "child-first resource should be registered")
 	require.NotNil(t, second, "child-second resource should be registered")
 
-	urnOf := func(r *run.RegisterResourceRequest) string {
-		return "urn:pulumi:test::project::" + r.Type + "::" + r.Name
+	urnOf := func(r *run.RegisterResourceRequest) urn.URN {
+		return urn.URN("urn:pulumi:test::project::" + r.Type + "::" + r.Name)
 	}
 
 	assert.Equal(t,
-		map[property.Path][]urn.URN{property.Path{}.AppendKey("parentField"): {urn.URN(urnOf(upstream))}},
+		map[property.Path][]urn.URN{property.Path{}.AppendKey("parentField"): {urnOf(upstream)}},
 		run.PropertyDependencies(first.Inputs))
-	assert.Equal(t, []string{urnOf(upstream)}, first.Dependencies)
+	assert.Equal(t, []urn.URN{urnOf(upstream)}, first.Dependencies)
 
 	assert.Equal(t,
-		map[property.Path][]urn.URN{property.Path{}.AppendKey("siblingField"): {urn.URN(urnOf(first))}},
+		map[property.Path][]urn.URN{property.Path{}.AppendKey("siblingField"): {urnOf(first)}},
 		run.PropertyDependencies(second.Inputs))
-	assert.Equal(t, []string{urnOf(first)}, second.Dependencies)
+	assert.Equal(t, []urn.URN{urnOf(first)}, second.Dependencies)
 }
 
 // When both the root and a child module declare a default `provider "simple"`
@@ -5463,9 +5463,9 @@ resource "simple_resource" "consumer" {
 	}
 	require.NotNil(t, provider, "configured provider should register")
 
-	configURN := "urn:pulumi:test::project::simple:index:Resource::config"
-	assert.Equal(t, []string{configURN}, provider.Dependencies)
-	assert.Equal(t, map[property.Path][]urn.URN{property.Path{}.AppendKey("prefix"): {urn.URN(configURN)}}, run.PropertyDependencies(provider.Inputs))
+	configURN := urn.URN("urn:pulumi:test::project::simple:index:Resource::config")
+	assert.Equal(t, []urn.URN{configURN}, provider.Dependencies)
+	assert.Equal(t, map[property.Path][]urn.URN{property.Path{}.AppendKey("prefix"): {configURN}}, run.PropertyDependencies(provider.Inputs))
 }
 
 // An aliased provider passed into a module via `providers` must survive a
@@ -6344,19 +6344,19 @@ resource "aws_instance" "reader" {
 		}
 		return nil
 	}
-	firstURN := "urn:pulumi:test::project::aws:index:Instance::first"
+	firstURN := urn.URN("urn:pulumi:test::project::aws:index:Instance::first")
 
 	for _, name := range []string{"pre", "post", "replace"} {
 		r := find(name)
 		require.NotNilf(t, r, "%s resource should be registered", name)
-		assert.Equal(t, []string{firstURN}, r.Dependencies)
+		assert.Equal(t, []urn.URN{firstURN}, r.Dependencies)
 		assert.Equal(t, map[property.Path][]urn.URN{}, run.PropertyDependencies(r.Inputs))
 	}
 
 	reader := find("reader")
 	require.NotNil(t, reader, "reader resource should be registered")
-	assert.Equal(t, []string{firstURN}, reader.Dependencies)
-	assert.Equal(t, map[property.Path][]urn.URN{property.Path{}.AppendKey("ami"): {urn.URN(firstURN)}}, run.PropertyDependencies(reader.Inputs))
+	assert.Equal(t, []urn.URN{firstURN}, reader.Dependencies)
+	assert.Equal(t, map[property.Path][]urn.URN{property.Path{}.AppendKey("ami"): {firstURN}}, run.PropertyDependencies(reader.Inputs))
 }
 
 // TestEngine_ProvisionerRefDependencies: a resource referenced only from a
@@ -6424,12 +6424,12 @@ resource "aws_instance" "first" {
 		}
 		return nil
 	}
-	firstURN := "urn:pulumi:test::project::aws:index:Instance::first"
+	firstURN := urn.URN("urn:pulumi:test::project::aws:index:Instance::first")
 
 	for _, name := range []string{"prov", "conn", "provconn"} {
 		r := find(name)
 		require.NotNilf(t, r, "%s resource should be registered", name)
-		assert.Equal(t, []string{firstURN}, r.Dependencies)
+		assert.Equal(t, []urn.URN{firstURN}, r.Dependencies)
 		assert.Equal(t, map[property.Path][]urn.URN{}, run.PropertyDependencies(r.Inputs))
 	}
 

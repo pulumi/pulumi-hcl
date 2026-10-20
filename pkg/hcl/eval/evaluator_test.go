@@ -22,6 +22,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zclconf/go-cty/cty"
@@ -646,7 +647,7 @@ func TestCollectDepURNs(t *testing.T) {
 
 	t.Run("single leaf mark", func(t *testing.T) {
 		t.Parallel()
-		assert.Equal(t, []string{"urn:test::a"},
+		assert.Equal(t, []urn.URN{"urn:test::a"},
 			CollectDepURNs(cty.StringVal("hi").Mark(a)))
 	})
 
@@ -661,7 +662,7 @@ func TestCollectDepURNs(t *testing.T) {
 			}),
 		})
 		urns := CollectDepURNs(v)
-		assert.ElementsMatch(t, []string{"urn:test::a", "urn:test::b"}, urns)
+		assert.ElementsMatch(t, []urn.URN{"urn:test::a", "urn:test::b"}, urns)
 	})
 
 	t.Run("ignores non-DepMark marks like SensitiveMark", func(t *testing.T) {
@@ -677,7 +678,7 @@ func TestCollectDepURNs(t *testing.T) {
 		}).Mark(a)
 		// GetAttr propagates the container's mark to the attribute.
 		idAttr := obj.GetAttr("id")
-		assert.Equal(t, []string{"urn:test::a"}, CollectDepURNs(idAttr))
+		assert.Equal(t, []urn.URN{"urn:test::a"}, CollectDepURNs(idAttr))
 	})
 }
 
@@ -687,12 +688,12 @@ func TestStripSyntheticAttributes(t *testing.T) {
 	// resourceObj mirrors how the engine builds a resource output object: the
 	// container carries DepMark(urn), and the synthetic `urn` attribute carries
 	// SyntheticMark.
-	resourceObj := func(urn string) cty.Value {
+	resourceObj := func(u urn.URN) cty.Value {
 		return cty.ObjectVal(map[string]cty.Value{
 			"id":        cty.StringVal("simple-id"),
-			"urn":       cty.StringVal(urn).WithMarks(cty.NewValueMarks(SyntheticMark)),
+			"urn":       cty.StringVal(string(u)).WithMarks(cty.NewValueMarks(SyntheticMark)),
 			"input_one": cty.StringVal("hello"),
-		}).Mark(DepMark(urn))
+		}).Mark(DepMark(u))
 	}
 
 	// keysOf returns the sorted attribute names of an object.
@@ -709,11 +710,11 @@ func TestStripSyntheticAttributes(t *testing.T) {
 
 	t.Run("single resource object drops synthetic urn", func(t *testing.T) {
 		t.Parallel()
-		urn := "urn:pulumi:test::p::simple:index/resource:Resource::r"
-		got := stripSyntheticAttributes(resourceObj(urn))
+		u := urn.URN("urn:pulumi:test::p::simple:index/resource:Resource::r")
+		got := stripSyntheticAttributes(resourceObj(u))
 		assert.Equal(t, []string{"id", "input_one"}, keysOf(got))
 		// DepMark survives so pulumiResourceName/Type can recover the URN.
-		assert.Equal(t, []string{urn}, CollectDepURNs(got))
+		assert.Equal(t, []urn.URN{u}, CollectDepURNs(got))
 	})
 
 	t.Run("tuple of resource objects (count)", func(t *testing.T) {
