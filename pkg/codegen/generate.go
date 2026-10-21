@@ -96,12 +96,15 @@ func GenerateProgram(
 		comments:                     buildProgramComments(program),
 		skipRequiredProvidersVersion: o.skipRequiredProvidersVersion,
 		insideComponent:              o.insideComponent,
+		resourceMappings:             map[*pcl.Resource]*bridge.BodyMapping{},
+		invokeMappings:               map[*model.FunctionCallExpression]*bridge.BodyMapping{},
 	}
 
 	for _, node := range program.Nodes {
 		gen.collectInvokes(node)
 		gen.collectCalls(node)
 	}
+	gen.collectMappings(ctx)
 
 	source := program.Source()
 	fileOrder := orderedSourceFiles(source)
@@ -349,6 +352,62 @@ type generator struct {
 	// insideComponent marks this program as a component's module source.
 	// See insideComponentSource.
 	insideComponent bool
+	// resourceMappings and invokeMappings hold the bridge mapping of each
+	// resource and spilled invoke of the program, or nil when it has none.
+	// See collectMappings.
+	resourceMappings map[*pcl.Resource]*bridge.BodyMapping
+	invokeMappings   map[*model.FunctionCallExpression]*bridge.BodyMapping
+}
+
+// collectMappings looks up the bridge mapping of each resource and spilled
+// invoke of the program, so that code without a context (such as traversal
+// rewriting) can use them.
+func (g *generator) collectMappings(ctx context.Context) {
+	for _, node := range g.program.Nodes {
+		r, ok := node.(*pcl.Resource)
+		if !ok {
+			continue
+		}
+		token, _ := r.GetToken()
+		if r.Schema != nil && r.Schema.IsProvider {
+			g.resourceMappings[r] = g.mappings.ProviderConfigBodyMapping(ctx, providerPackageName(token))
+			continue
+		}
+		hclType, d := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(r.Schema), resourceSchemaToken(r.Schema, token))
+		if !d.HasErrors() {
+			g.resourceMappings[r] = g.mappings.ResourceBodyMapping(ctx, hclType)
+		}
+	}
+	for _, ds := range g.invokeDataSources {
+		token, ok := extractStringLiteral(ds.expr.Args[0])
+		if !ok {
+			continue
+		}
+		invokeSchema, schemaToken, _ := g.lookupInvokeSchema(token)
+		dsType, d := packages.PulumiFunctionTokenToHCL(invokeSchemaPackage(invokeSchema), invokeSchemaToken(invokeSchema, schemaToken))
+		if !d.HasErrors() {
+			g.invokeMappings[ds.expr] = g.mappings.DataSourceBodyMapping(ctx, dsType)
+		}
+	}
+}
+
+// providerPackageName returns the package name of the provider resource token
+// (e.g. "aws" for "pulumi:providers:aws").
+func providerPackageName(token string) string {
+	if i := strings.LastIndex(token, ":"); i >= 0 {
+		return token[i+1:]
+	}
+	return token
+}
+
+// hclField returns the HCL name of the Pulumi property pulumiName and its
+// bridge mapping (nil when mapping does not name it). mapping is the bridge
+// mapping of the body that holds the property, or nil.
+func hclField(pulumiName string, mapping *bridge.BodyMapping) (string, *bridge.FieldMapping) {
+	if fm := mapping.LookupPulumi(pulumiName); fm != nil {
+		return fm.TFName, fm
+	}
+	return transform.SnakeCaseFromPulumiCase(pulumiName), nil
 }
 
 // buildProgramComments parses the source of every PCL file in the program and
@@ -1065,7 +1124,7 @@ func (g *generator) genInvokeDataSource(ctx context.Context, body *hclwrite.Body
 	if len(invoke.Args) >= 2 {
 		argsExpr := invoke.Args[1]
 		if objExpr, ok := argsExpr.(*model.ObjectConsExpression); ok {
-			mapping := g.mappings.DataSourceBodyMapping(ctx, dsType)
+			mapping := g.invokeMappings[invoke]
 			for _, item := range objExpr.Items {
 				keyLit, ok := item.Key.(*model.LiteralValueExpression)
 				if !ok {
@@ -1078,9 +1137,8 @@ func (g *generator) genInvokeDataSource(ctx context.Context, body *hclwrite.Body
 						propType = inputSchema.Type
 					}
 				}
-				hclName := transform.SnakeCaseFromPulumiCase(keyName)
+				hclName, fm := hclField(keyName, mapping)
 				target := inputBody(block.Body(), hclName, parser.DataReservedNames)
-				fm := mapping.Lookup(hclName)
 				if objType, ok := transform.HCLBlockType(propType, fm); ok {
 					d := g.genBlocks(target, hclName, item.Value, objType, nestedMapping(fm))
 					diags = append(diags, d...)
@@ -1167,7 +1225,7 @@ func (g *generator) genResource(ctx context.Context, body *hclwrite.Body, r *pcl
 	d = g.genResourceOptions(block.Body(), r)
 	diags = append(diags, d...)
 
-	d = g.genInputs(block.Body(), r, g.mappings.ResourceBodyMapping(ctx, hclType), parser.ResourceReservedNames)
+	d = g.genInputs(block.Body(), r, g.resourceMappings[r], parser.ResourceReservedNames)
 	return append(diags, d...)
 }
 
@@ -1185,10 +1243,9 @@ func (g *generator) genInputs(
 	var diags hcl.Diagnostics
 	for _, attr := range r.Inputs {
 		inputType := findPropertyType(inputs, attr.Name)
-		hclName := transform.SnakeCaseFromPulumiCase(attr.Name)
+		hclName, fm := hclField(attr.Name, mapping)
 		target := inputBody(body, hclName, reserved)
 		g.emitLeadingComments(target, attr.SyntaxNode())
-		fm := mapping.Lookup(hclName)
 		if objType, ok := transform.HCLBlockType(inputType, fm); ok {
 			d := g.genBlocks(target, hclName, attr.Value, objType, nestedMapping(fm))
 			diags = append(diags, d...)
@@ -1218,10 +1275,7 @@ func inputBody(body *hclwrite.Body, name string, reserved map[string]bool) *hclw
 func (g *generator) genProvider(ctx context.Context, body *hclwrite.Body, r *pcl.Resource) hcl.Diagnostics {
 	contract.Assertf(r.Schema == nil || r.Schema.IsProvider, "genProvider not given provider")
 	token, _ := r.GetToken()
-	pkgName := token
-	if i := strings.LastIndex(token, ":"); i >= 0 {
-		pkgName = token[i+1:]
-	}
+	pkgName := providerPackageName(token)
 	block := body.AppendNewBlock("provider", []string{pkgName})
 	if r.LogicalName() != "" && r.LogicalName() != pkgName {
 		block.Body().SetAttributeValue("alias", cty.StringVal(r.LogicalName()))
@@ -1261,7 +1315,7 @@ func (g *generator) genProvider(ctx context.Context, body *hclwrite.Body, r *pcl
 			}
 		}
 		if opts.AdditionalSecretOutputs != nil {
-			g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs)
+			g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, g.resourceMappings[r])
 		}
 		if opts.EnvVarMappings != nil {
 			tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
@@ -1272,7 +1326,7 @@ func (g *generator) genProvider(ctx context.Context, body *hclwrite.Body, r *pcl
 		}
 	}
 
-	d := g.genInputs(block.Body(), r, g.mappings.ProviderConfigBodyMapping(ctx, pkgName), parser.ProviderReservedNames)
+	d := g.genInputs(block.Body(), r, g.resourceMappings[r], parser.ProviderReservedNames)
 	return append(diags, d...)
 }
 
@@ -1306,7 +1360,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 	emitReplaceOnChanges := func() {
 		if len(schemaReplaceOnChanges) > 0 || len(extractPropertyNames(optReplaceOnChanges)) > 0 {
-			g.genReplaceOnChanges(pulumiBody(), schemaReplaceOnChanges, optReplaceOnChanges, &diags)
+			g.genReplaceOnChanges(pulumiBody(), schemaReplaceOnChanges, optReplaceOnChanges, g.resourceMappings[r], &diags)
 		}
 	}
 
@@ -1369,7 +1423,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.AdditionalSecretOutputs != nil {
-		g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs)
+		g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, g.resourceMappings[r])
 	}
 
 	if opts.Protect != nil {
@@ -1405,7 +1459,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.HideDiffs != nil {
-		g.genPropertyPathTraversalList(pulumiBody(), "hide_diffs", opts.HideDiffs)
+		g.genPropertyPathTraversalList(pulumiBody(), "hide_diffs", opts.HideDiffs, g.resourceMappings[r])
 	}
 
 	emitReplaceOnChanges()
@@ -1745,24 +1799,31 @@ func extractPropertyNames(expr model.Expression) []string {
 // genPropertyPathTraversalList generates an HCL list attribute for property
 // paths emitted as bare traversals in TF snake_case (e.g.,
 // hide_diffs = [replace_prop]), matching the form of ignore_changes. Used for
-// hide_diffs, replace_on_changes, and additional_secret_outputs.
-func (g *generator) genPropertyPathTraversalList(body *hclwrite.Body, attrName string, optsExpr model.Expression) {
+// hide_diffs, replace_on_changes, and additional_secret_outputs. mapping is
+// the bridge mapping of the resource, or nil.
+func (g *generator) genPropertyPathTraversalList(
+	body *hclwrite.Body, attrName string, optsExpr model.Expression, mapping *bridge.BodyMapping,
+) {
 	names := extractPropertyNames(optsExpr)
 	if len(names) == 0 {
 		return
 	}
-	body.SetAttributeRaw(attrName, makeTraversalListTokens(snakeCasePropertyPaths(names)))
+	body.SetAttributeRaw(attrName, makeTraversalListTokens(hclPropertyPaths(names, mapping)))
 }
 
-// snakeCasePropertyPaths converts Pulumi camelCase property paths to their TF
-// snake_case form, segment by segment, so emitted property-path options name
-// properties in the same case as the resource's snake_case attributes.
-func snakeCasePropertyPaths(paths []string) []string {
+// hclPropertyPaths converts Pulumi property paths to their TF form, segment by
+// segment, so emitted property-path options name properties the same way as
+// the resource's attributes. mapping is the bridge mapping of the resource, or
+// nil.
+func hclPropertyPaths(paths []string, mapping *bridge.BodyMapping) []string {
 	out := make([]string, len(paths))
 	for i, p := range paths {
 		segs := strings.Split(p, ".")
+		m := mapping
 		for j, s := range segs {
-			segs[j] = transform.SnakeCaseFromPulumiCase(s)
+			var fm *bridge.FieldMapping
+			segs[j], fm = hclField(s, m)
+			m = nestedMapping(fm)
 		}
 		out[i] = strings.Join(segs, ".")
 	}
@@ -1867,7 +1928,9 @@ func createBeforeDestroyTokens(g *generator, opts *pcl.ResourceOptions, diags *h
 // genReplaceOnChanges generates the replace_on_changes attribute, merging
 // schema-based and option-based paths. Paths are emitted as bare traversals in
 // TF snake_case, matching the resource's snake_case attribute names.
-func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []string, optsExpr model.Expression, diags *hcl.Diagnostics) {
+func (g *generator) genReplaceOnChanges(
+	body *hclwrite.Body, schemaPaths []string, optsExpr model.Expression, mapping *bridge.BodyMapping, diags *hcl.Diagnostics,
+) {
 	optPaths := extractPropertyNames(optsExpr)
 	if len(schemaPaths) == 0 && len(optPaths) == 0 {
 		return
@@ -1889,7 +1952,7 @@ func (g *generator) genReplaceOnChanges(body *hclwrite.Body, schemaPaths []strin
 		}
 	}
 
-	body.SetAttributeRaw("replace_on_changes", makeTraversalListTokens(snakeCasePropertyPaths(allPaths)))
+	body.SetAttributeRaw("replace_on_changes", makeTraversalListTokens(hclPropertyPaths(allPaths, mapping)))
 }
 
 func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {
@@ -1993,7 +2056,13 @@ func (g *generator) genLocalVariable(body *hclwrite.Body, lv *pcl.LocalVariable)
 // that has been promoted to a data source block.
 func (g *generator) isInvokeLocal(lv *pcl.LocalVariable) bool {
 	call, ok := lv.Definition.Value.(*model.FunctionCallExpression)
-	if !ok || call.Name != pcl.Invoke {
+	return ok && g.isSpilledInvoke(call)
+}
+
+// isSpilledInvoke reports whether call is an invoke call that has been
+// promoted to a data source block.
+func (g *generator) isSpilledInvoke(call *model.FunctionCallExpression) bool {
+	if call.Name != pcl.Invoke {
 		return false
 	}
 	for _, ds := range g.invokeDataSources {
@@ -2202,13 +2271,12 @@ func (g *generator) genBlock(
 	var diags hcl.Diagnostics
 	for _, item := range obj.Items {
 		keyName, _ := extractStringLiteral(item.Key)
-		snakeName := transform.SnakeCaseFromPulumiCase(keyName)
+		snakeName, fm := hclField(keyName, mapping)
 		propType := schema.AnyType
 		if p, ok := objType.Property(keyName); ok {
 			propType = p.Type
 		}
 		var d hcl.Diagnostics
-		fm := mapping.Lookup(snakeName)
 		if innerObjType, ok := transform.HCLBlockType(propType, fm); ok {
 			d = g.genBlocks(block.Body(), snakeName, item.Value, innerObjType, nestedMapping(fm))
 		} else {
@@ -2741,10 +2809,13 @@ func (g *generator) getOutputTokens(expr *model.FunctionCallExpression) (hclwrit
 }
 
 // schemaAwareRewriteTraversal rewrites a traversal's attribute names from PCL (camelCase)
-// to HCL (snake_case), using schema property definitions to correctly map names through
-// nested objects, maps, and arrays. When schema information is unavailable for a step,
-// the remaining traversal is returned unchanged.
-func schemaAwareRewriteTraversal(props []*schema.Property, traversal hcl.Traversal) hcl.Traversal {
+// to HCL (snake_case), using schema property definitions and their bridge mapping (nil
+// when there is none) to correctly map names through nested objects, maps, and arrays.
+// When schema information is unavailable for a step, the remaining traversal is
+// returned unchanged.
+func schemaAwareRewriteTraversal(
+	props []*schema.Property, mapping *bridge.BodyMapping, traversal hcl.Traversal,
+) hcl.Traversal {
 	if len(traversal) == 0 || len(props) == 0 {
 		return traversal
 	}
@@ -2754,17 +2825,34 @@ func schemaAwareRewriteTraversal(props []*schema.Property, traversal hcl.Travers
 	}
 	for _, p := range props {
 		if p.Name == t.Name {
-			t = hcl.TraverseAttr{Name: transform.SnakeCaseFromPulumiCase(p.Name), SrcRange: t.SrcRange}
-			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(p.Type, traversal[1:])...)
+			name, fm := hclField(p.Name, mapping)
+			result := hcl.Traversal{hcl.TraverseAttr{Name: name, SrcRange: t.SrcRange}}
+			rest := traversal[1:]
+			// The bridge flattens a MaxItems=1 block to its one element, which
+			// HCL still indexes.
+			if idx, ok := firstIndexStep(rest); ok && fm != nil && fm.MaxItemsOne {
+				result, rest = append(result, idx), rest[1:]
+			}
+			return append(result, schemaAwareRewriteTyped(p.Type, nestedMapping(fm), rest)...)
 		}
 	}
 	return traversal
 }
 
+// firstIndexStep returns the first step of traversal when it is an index step.
+func firstIndexStep(traversal hcl.Traversal) (hcl.TraverseIndex, bool) {
+	if len(traversal) == 0 {
+		return hcl.TraverseIndex{}, false
+	}
+	idx, ok := traversal[0].(hcl.TraverseIndex)
+	return idx, ok
+}
+
 // schemaAwareRewriteTyped rewrites a traversal's attribute names using schema type
-// information, dispatching to [schemaAwareRewriteTraversal] for object properties and
-// recursing through map/array element types for index steps.
-func schemaAwareRewriteTyped(typ schema.Type, traversal hcl.Traversal) hcl.Traversal {
+// information and the bridge mapping of typ's fields, dispatching to
+// [schemaAwareRewriteTraversal] for object properties and recursing through
+// map/array element types for index steps.
+func schemaAwareRewriteTyped(typ schema.Type, mapping *bridge.BodyMapping, traversal hcl.Traversal) hcl.Traversal {
 	if len(traversal) == 0 {
 		return traversal
 	}
@@ -2773,18 +2861,18 @@ func schemaAwareRewriteTyped(typ schema.Type, traversal hcl.Traversal) hcl.Trave
 	case hcl.TraverseAttr:
 		switch s := codegen.UnwrapType(typ).(type) {
 		case *schema.ResourceType:
-			return schemaAwareRewriteTraversal(s.Resource.Properties, traversal)
+			return schemaAwareRewriteTraversal(s.Resource.Properties, nil, traversal)
 		case *schema.ObjectType:
-			return schemaAwareRewriteTraversal(s.Properties, traversal)
+			return schemaAwareRewriteTraversal(s.Properties, mapping, traversal)
 		default:
 			return traversal
 		}
 	case hcl.TraverseIndex:
 		switch s := codegen.UnwrapType(typ).(type) {
 		case *schema.MapType:
-			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(s.ElementType, traversal[1:])...)
+			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(s.ElementType, mapping, traversal[1:])...)
 		case *schema.ArrayType:
-			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(s.ElementType, traversal[1:])...)
+			return append(hcl.Traversal{t}, schemaAwareRewriteTyped(s.ElementType, mapping, traversal[1:])...)
 		default:
 			return traversal
 		}
@@ -2820,9 +2908,12 @@ func traversalStepsToTokens(traversal hcl.Traversal) hclwrite.Tokens {
 // types (e.g. array(object)) are handled correctly and so that traversal into
 // untyped territory (e.g. map<string> values) stops being rewritten. When no
 // schema is available we fall back to a naive camelCase→snake_case rewrite.
-func rewriteInvokeOutputTraversal(fn *schema.Function, traversal hcl.Traversal) hcl.Traversal {
+// mapping is the bridge mapping of the data source, or nil.
+func rewriteInvokeOutputTraversal(
+	fn *schema.Function, mapping *bridge.BodyMapping, traversal hcl.Traversal,
+) hcl.Traversal {
 	if fn != nil && fn.ReturnType != nil {
-		return schemaAwareRewriteTyped(fn.ReturnType, traversal)
+		return schemaAwareRewriteTyped(fn.ReturnType, mapping, traversal)
 	}
 	return naiveRewriteTraversal(traversal)
 }
@@ -2845,33 +2936,38 @@ func naiveRewriteTraversal(traversal hcl.Traversal) hcl.Traversal {
 }
 
 // splatElementProps resolves the schema properties of the element type that a splat
-// expression iterates over. It walks the Source expression's schema through its traversal
-// to find the array type, then returns the element's properties.
-func splatElementProps(source model.Expression) []*schema.Property {
+// expression iterates over, and their bridge mapping. It walks the Source expression's
+// schema through its traversal to find the array type, then returns the element's
+// properties.
+func (g *generator) splatElementProps(source model.Expression) ([]*schema.Property, *bridge.BodyMapping) {
 	scope, ok := source.(*model.ScopeTraversalExpression)
 	if !ok || len(scope.Parts) == 0 {
-		return nil
+		return nil, nil
 	}
 	res, ok := scope.Parts[0].(*pcl.Resource)
 	if !ok || res.Schema == nil {
-		return nil
+		return nil, nil
 	}
 	// Walk through the source traversal to find the final schema type.
 	// Start from the resource's properties, skip the root traversal step.
 	var typ schema.Type = &schema.ObjectType{Properties: res.Schema.Properties}
+	mapping := g.resourceMappings[res]
 	for _, step := range scope.Traversal[1:] {
 		if typ == nil {
-			return nil
+			return nil, nil
 		}
 		typ = traverseSchemaType(typ, step)
+		if attr, ok := step.(hcl.TraverseAttr); ok {
+			mapping = nestedMapping(mapping.LookupPulumi(attr.Name))
+		}
 	}
 	// The source type should be an array; return the element's properties.
 	if arr, ok := codegen.UnwrapType(typ).(*schema.ArrayType); ok {
 		if obj, ok := codegen.UnwrapType(arr.ElementType).(*schema.ObjectType); ok {
-			return obj.Properties
+			return obj.Properties, mapping
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // traverseSchemaType applies a single traversal step to a schema type, returning the
@@ -2947,7 +3043,7 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 								hcl.TraverseAttr{Name: dsType},
 								hcl.TraverseAttr{Name: ds.name},
 							}
-							return hclwrite.TokensForTraversal(append(rewritten, rewriteInvokeOutputTraversal(invokeSchema, traversal[1:])...)), nil
+							return hclwrite.TokensForTraversal(append(rewritten, rewriteInvokeOutputTraversal(invokeSchema, g.invokeMappings[call], traversal[1:])...)), nil
 						}
 					}
 					break
@@ -2980,7 +3076,8 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 			if part.Schema != nil {
 				props = part.Schema.Properties
 			}
-			return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(props, traversal[1:])...)), nil
+			return hclwrite.TokensForTraversal(append(rewritten,
+				schemaAwareRewriteTraversal(props, g.resourceMappings[part], traversal[1:])...)), nil
 		}
 		hclType, diags := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(part.Schema), resourceSchemaToken(part.Schema, token))
 		if diags.HasErrors() {
@@ -3002,7 +3099,8 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		if part.Schema != nil {
 			props = part.Schema.Properties
 		}
-		return hclwrite.TokensForTraversal(append(rewritten, schemaAwareRewriteTraversal(props, traversal[1:])...)), nil
+		return hclwrite.TokensForTraversal(append(rewritten,
+			schemaAwareRewriteTraversal(props, g.resourceMappings[part], traversal[1:])...)), nil
 	case *pcl.Component:
 		// Rewrite "someComponent.output" → "module.someComponent.output".
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
@@ -3154,6 +3252,12 @@ func (g *generator) relativeTraversalTokens(expr *model.RelativeTraversalExpress
 	if diags.HasErrors() {
 		return nil, diags
 	}
+	if call, ok := expr.Source.(*model.FunctionCallExpression); ok && g.isSpilledInvoke(call) {
+		token, _ := extractStringLiteral(call.Args[0])
+		invokeSchema, _, _ := g.lookupInvokeSchema(token)
+		traversal := rewriteInvokeOutputTraversal(invokeSchema, g.invokeMappings[call], expr.Traversal)
+		return append(sourceTokens, traversalStepsToTokens(traversal)...), diags
+	}
 	return append(sourceTokens, traversalStepsToTokens(naiveRewriteTraversal(expr.Traversal))...), diags
 }
 
@@ -3287,8 +3391,8 @@ func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, h
 
 	// Rewrite attribute names using schema info from the source's element type,
 	// falling back to naive camelCase → snake_case conversion.
-	if props := splatElementProps(expr.Source); len(props) > 0 {
-		eachTraversal = schemaAwareRewriteTraversal(props, eachTraversal)
+	if props, mapping := g.splatElementProps(expr.Source); len(props) > 0 {
+		eachTraversal = schemaAwareRewriteTraversal(props, mapping, eachTraversal)
 	} else {
 		eachTraversal = naiveRewriteTraversal(eachTraversal)
 	}

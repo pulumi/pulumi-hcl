@@ -99,15 +99,11 @@ func renamedCase(expectedOutputs map[string]string) putest.Case {
 // `arn` to confirm default-cased outputs still work alongside renames.
 func TestL2RenamedOutputs(t *testing.T) {
 	t.Parallel()
-	c := renamedCase(map[string]string{
+	putest.RunCase(t, "l2_renamed_outputs", renamedCase(map[string]string{
 		"fn_name": "alpha",
 		"arn":     "arn:test:alpha",
 		"window":  "5",
-	})
-	// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: HCL -> PCL ignores bridge property renames.
-	// TODO[https://github.com/pulumi/pulumi-hcl/issues/681]: PCL -> HCL emits a MaxItems=1 nested block as an attribute.
-	c.SkipRoundTrip = "HCL -> PCL ignores the Customize renames, and PCL -> HCL emits a nested block as an attribute."
-	putest.RunCase(t, "l2_renamed_outputs", c)
+	}))
 }
 
 // TestL2RenamedDataSourceOutputs covers data-source scalar output renames.
@@ -132,9 +128,8 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 		"endpoint_seen": "https://example.test/api",
 		"retries_seen":  "3",
 	})
-	// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: HCL -> PCL ignores bridge property renames.
 	// TODO[https://github.com/pulumi/pulumi-hcl/issues/677]: HCL -> PCL drops nested blocks in provider blocks.
-	c.SkipRoundTrip = "HCL -> PCL ignores the Customize renames and drops the nested block of the provider."
+	c.SkipRoundTrip = "HCL -> PCL drops the nested block of the provider."
 	putest.RunCase(t, "l2_renamed_provider_config", c)
 }
 
@@ -147,9 +142,8 @@ func TestL2RenamedDataSourceInputs(t *testing.T) {
 	c := renamedCase(map[string]string{
 		"matched": "hit:lambda:trigger",
 	})
-	// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: HCL -> PCL ignores bridge property renames.
-	// TODO[https://github.com/pulumi/pulumi-hcl/issues/681]: PCL -> HCL emits a MaxItems=1 nested block as an attribute.
-	c.SkipRoundTrip = "HCL -> PCL ignores the Customize renames, and PCL -> HCL emits a nested block as an attribute."
+	// TODO[https://github.com/pulumi/pulumi-hcl/issues/702]: HCL -> PCL writes MaxItems=1 blocks as lists.
+	c.SkipRoundTrip = "HCL -> PCL writes the MaxItems=1 block `filter` as a list, and the invoke takes an object."
 	putest.RunCase(t, "l2_renamed_data_source_inputs", c)
 }
 

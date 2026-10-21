@@ -4,6 +4,6 @@ output "tag" {
   # TF names so this traversal works.
   value = invoke("renamed:index/getLookup:getLookup", {
     query = "lambda"
-  }).result[0].tag
+  }).outcome[0].label
 }
 

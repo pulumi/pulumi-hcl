@@ -1,5 +1,5 @@
 resource "r" "single:index/single:Single" {
-  inputValue = "world"
+  myInput = "world"
   options {
     deleteBeforeReplace = true
   }
@@ -7,8 +7,8 @@ resource "r" "single:index/single:Single" {
 
 output "data_answer" {
   value = invoke("single:index/getSingle:getSingle", {
-    query    = "hi"
-    tagValue = "v"
+    query       = "hi"
+    taggedThing = "v"
   }).answer
 }
 

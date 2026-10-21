@@ -10,6 +10,6 @@ output "from" {
   # Engine must surface it as `upstream` (the TF name) in the eval context.
   value = invoke("renamed:index/getLookup:getLookup", {
     query = "lambda"
-  }).upstream
+  }).source
 }
 

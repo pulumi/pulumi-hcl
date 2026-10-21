@@ -71,6 +71,20 @@ func (m *BodyMapping) Lookup(tfName string) *FieldMapping {
 	return m.Fields[tfName]
 }
 
+// LookupPulumi returns the mapping of the field whose Pulumi name is
+// pulumiName, or nil if no such field exists.
+func (m *BodyMapping) LookupPulumi(pulumiName string) *FieldMapping {
+	if m == nil {
+		return nil
+	}
+	for _, f := range m.Fields {
+		if f.PulumiName == pulumiName {
+			return f
+		}
+	}
+	return nil
+}
+
 // TFBlockNames returns the TF names of all block-shaped fields. Order is not
 // stable; callers should not rely on it.
 func (m *BodyMapping) TFBlockNames() []string {

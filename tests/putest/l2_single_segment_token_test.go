@@ -54,6 +54,5 @@ func TestL2SingleSegmentToken(t *testing.T) {
 			"data_answer":     "a-hi:v",
 			"resource_result": "r-world",
 		},
-		// TODO[https://github.com/pulumi/pulumi-hcl/issues/679]: The PCL golden has `tagValue` and `inputValue`, not the renamed `taggedThing` and `myInput`.
 	})
 }
