@@ -148,6 +148,11 @@ var expectedFailures = map[string]string{
 		" (added in v3.265.0)",
 	"l2-resource-read-id-rewrite": "PCL pcl.ReadResource nodes not yet supported by HCL codegen" +
 		" (added in pulumi/pulumi#25228)",
+	"l2-failed-read-continue-on-error": "PCL pcl.ReadResource nodes not yet supported by HCL codegen" +
+		" (added in pulumi/pulumi#25169)",
+	"l2-failed-create-downstream-continue-on-error": "the runtime halts the program when a resource" +
+		" registration fails, instead of resolving the failed resource's outputs as unknown:" +
+		" expected stack output 'failingValue' to be registered, got map[] (added in pulumi/pulumi#25168)",
 	"l2-resource-self-reference": "the runtime sends a resource assigned to a union-typed input" +
 		" (oneOf [resource reference, string]) as a plain object, not as a resource reference:" +
 		" expected 'parentOrName' to be a reference to 'root', got {id: \"root\"} (added in v3.265.0)",
