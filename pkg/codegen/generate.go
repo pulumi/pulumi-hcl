@@ -1907,17 +1907,18 @@ func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariabl
 		{Type: hclsyntax.TokenIdent, Bytes: []byte(hclTypeStr)},
 	})
 
-	// Set the default value if present.
-	if cv.DefaultValue != nil {
-		tokens, diags := g.exprTokens(cv.DefaultValue, schema.AnyType)
+	if attr, ok := cv.Definition.Body.Attribute("default"); ok {
+		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
+		diags := g.genAttributeWithTrailing(block.Body(), "default", cv.DefaultValue, schema.AnyType, attr.SyntaxNode())
 		if diags.HasErrors() {
 			return diags
 		}
-		block.Body().SetAttributeRaw("default", tokens)
 	}
 
-	if cv.Description != "" {
-		block.Body().SetAttributeValue("description", cty.StringVal(cv.Description))
+	if attr, ok := cv.Definition.Body.Attribute("description"); ok && cv.Description != "" {
+		g.emitLeadingComments(block.Body(), attr.SyntaxNode())
+		block.Body().SetAttributeRaw("description",
+			g.withTrailing(hclwrite.TokensForValue(cty.StringVal(cv.Description)), attr.SyntaxNode()))
 	}
 
 	return nil
@@ -2005,7 +2006,12 @@ func (g *generator) isInvokeLocal(lv *pcl.LocalVariable) bool {
 
 func (g *generator) genOutput(body *hclwrite.Body, ov *pcl.OutputVariable) hcl.Diagnostics {
 	block := body.AppendNewBlock("output", []string{ov.LogicalName()})
-	return g.genExpression(block.Body(), "value", ov.Value, schema.AnyType)
+	attr, ok := ov.Definition.Body.Attribute("value")
+	if !ok {
+		return g.genExpression(block.Body(), "value", ov.Value, schema.AnyType)
+	}
+	g.emitLeadingComments(block.Body(), attr.SyntaxNode())
+	return g.genAttributeWithTrailing(block.Body(), "value", ov.Value, schema.AnyType, attr.SyntaxNode())
 }
 
 func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnostics {

@@ -12,5 +12,8 @@ data "renamed_lookup" "invoke_0" {
 }
 
 output "tag" {
+  # TF `result { tag }` (a computed nested block) is renamed by the bridge
+  # to `outcome.label`. The engine must surface the output back under the
+  # TF names so this traversal works.
   value = data.renamed_lookup.invoke_0.result[0].tag
 }
