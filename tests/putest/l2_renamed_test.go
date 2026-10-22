@@ -154,3 +154,15 @@ func TestL2RenamedDataSourceNestedOutputs(t *testing.T) {
 		"tag": "tag-for-lambda",
 	}))
 }
+
+// TestL2RenamedParentheses covers renamed references inside parentheses, on a
+// resource and on a data source.
+func TestL2RenamedParentheses(t *testing.T) {
+	t.Parallel()
+	putest.RunCase(t, "l2_renamed_parentheses", renamedCase(map[string]string{
+		"fn_name": "alpha",
+		"window":  "6",
+		"nested":  "alpha",
+		"from":    "registry",
+	}))
+}

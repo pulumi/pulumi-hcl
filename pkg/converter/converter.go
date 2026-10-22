@@ -1233,6 +1233,10 @@ func (ft *fileTransformer) transformTypedExpr(
 		return ft.transformIndexExpr(e)
 	case *hclsyntax.RelativeTraversalExpr:
 		return ft.transformRelativeTraversal(e)
+	case *hclsyntax.ParenthesesExpr:
+		tokens := hclwrite.Tokens{{Type: hclsyntax.TokenOParen, Bytes: []byte("(")}}
+		tokens = append(tokens, ft.transformExpr(e.Expression)...)
+		return append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")})
 	default:
 		r := expr.Range()
 		return hclwrite.Tokens{
