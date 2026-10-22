@@ -3216,7 +3216,7 @@ func (g *generator) passthroughFuncCallTokensExpand(
 
 // indexExprTokens generates tokens for an index expression: collection[key].
 func (g *generator) indexExprTokens(expr *model.IndexExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	collTokens, diags := g.exprTokens(expr.Collection, schema.AnyType)
+	collTokens, diags := g.operandTokens(expr.Collection, primaryPrecedence)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -3248,7 +3248,7 @@ func (g *generator) relativeTraversalTokens(expr *model.RelativeTraversalExpress
 			return append(tokens, traversalStepsToTokens(naiveRewriteTraversal(expr.Traversal[1:]))...), nil
 		}
 	}
-	sourceTokens, diags := g.exprTokens(expr.Source, schema.AnyType)
+	sourceTokens, diags := g.operandTokens(expr.Source, primaryPrecedence)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -3362,7 +3362,7 @@ func perIterationIndexTokens(kind rangeKind) hclwrite.Tokens {
 // [TraverseRoot, TraverseAttr("value"), ...]. We emit source, [*], then the
 // traversal steps after the root.
 func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	sourceTokens, diags := g.exprTokens(expr.Source, schema.AnyType)
+	sourceTokens, diags := g.operandTokens(expr.Source, primaryPrecedence)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -3721,12 +3721,14 @@ func heredocOpen(expr *model.TemplateExpression) (delim string, indented bool, o
 
 // binaryOpTokens generates HCL tokens for a binary operation expression.
 func (g *generator) binaryOpTokens(expr *model.BinaryOpExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	leftTokens, diags := g.exprTokens(expr.LeftOperand, schema.AnyType)
+	// HCL binary operators are left-associative.
+	prec := hclPrecedence(expr)
+	leftTokens, diags := g.operandTokens(expr.LeftOperand, prec)
 	if diags.HasErrors() {
 		return nil, diags
 	}
 
-	rightTokens, d := g.exprTokens(expr.RightOperand, schema.AnyType)
+	rightTokens, d := g.operandTokens(expr.RightOperand, prec+1)
 	diags = append(diags, d...)
 	if d.HasErrors() {
 		return nil, diags
@@ -3779,9 +3781,56 @@ func (g *generator) binaryOpTokens(expr *model.BinaryOpExpression) (hclwrite.Tok
 	return tokens, diags
 }
 
+// primaryPrecedence is the [hclPrecedence] of an expression that is not an
+// operator expression, so it never needs parentheses.
+const primaryPrecedence = 8
+
+// hclPrecedence returns how tightly expr binds when it is written as HCL, from
+// 0 (a conditional) to [primaryPrecedence]. PCL binding drops parentheses, so
+// the generator must add them back where precedence requires.
+func hclPrecedence(expr model.Expression) int {
+	switch e := expr.(type) {
+	case *model.ConditionalExpression:
+		return 0
+	case *model.BinaryOpExpression:
+		switch e.Operation {
+		case hclsyntax.OpLogicalOr:
+			return 1
+		case hclsyntax.OpLogicalAnd:
+			return 2
+		case hclsyntax.OpEqual, hclsyntax.OpNotEqual:
+			return 3
+		case hclsyntax.OpGreaterThan, hclsyntax.OpGreaterThanOrEqual,
+			hclsyntax.OpLessThan, hclsyntax.OpLessThanOrEqual:
+			return 4
+		case hclsyntax.OpAdd, hclsyntax.OpSubtract:
+			return 5
+		default:
+			return 6
+		}
+	case *model.UnaryOpExpression:
+		return 7
+	default:
+		return primaryPrecedence
+	}
+}
+
+// operandTokens is exprTokens for an operand that must bind at least as
+// tightly as minPrecedence. It wraps the operand in parentheses when it does
+// not.
+func (g *generator) operandTokens(expr model.Expression, minPrecedence int) (hclwrite.Tokens, hcl.Diagnostics) {
+	tokens, diags := g.exprTokens(expr, schema.AnyType)
+	if diags.HasErrors() || hclPrecedence(expr) >= minPrecedence {
+		return tokens, diags
+	}
+	out := hclwrite.Tokens{{Type: hclsyntax.TokenOParen, Bytes: []byte("(")}}
+	out = append(out, tokens...)
+	return append(out, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")}), diags
+}
+
 // conditionalTokens generates HCL tokens for a conditional expression (condition ? true : false).
 func (g *generator) conditionalTokens(expr *model.ConditionalExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	condTokens, diags := g.exprTokens(expr.Condition, schema.AnyType)
+	condTokens, diags := g.operandTokens(expr.Condition, hclPrecedence(expr)+1)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -3818,7 +3867,7 @@ func (g *generator) conditionalTokens(expr *model.ConditionalExpression) (hclwri
 
 // unaryOpTokens generates HCL tokens for a unary operation expression.
 func (g *generator) unaryOpTokens(expr *model.UnaryOpExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	operandTokens, diags := g.exprTokens(expr.Operand, schema.AnyType)
+	operandTokens, diags := g.operandTokens(expr.Operand, hclPrecedence(expr))
 	if diags.HasErrors() {
 		return nil, diags
 	}
