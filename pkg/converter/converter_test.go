@@ -139,7 +139,7 @@ func TestSchemaAwareTraversalAttrs(t *testing.T) {
 		hcl.TraverseAttr{Name: "nested_output"},
 	}
 
-	result := schemaAwareTraversalAttrs(trav, topProps, nil)
+	result, _ := schemaAwareTraversalAttrs(trav, topProps, nil)
 	require.Len(t, result, 5)
 	assert.Equal(t, "the_output", result[1].(hcl.TraverseAttr).Name)
 	assert.Equal(t, "nested_output", result[4].(hcl.TraverseAttr).Name)
@@ -169,7 +169,7 @@ func TestSchemaAwareTraversalAttrs_CamelCase(t *testing.T) {
 		hcl.TraverseAttr{Name: "nested_output"},
 	}
 
-	result := schemaAwareTraversalAttrs(trav, topProps, nil)
+	result, _ := schemaAwareTraversalAttrs(trav, topProps, nil)
 	require.Len(t, result, 5)
 	assert.Equal(t, "theOutput", result[1].(hcl.TraverseAttr).Name)
 	assert.Equal(t, "nestedOutput", result[4].(hcl.TraverseAttr).Name)

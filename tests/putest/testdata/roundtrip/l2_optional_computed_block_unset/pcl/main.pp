@@ -10,18 +10,18 @@ resource "t" "optcomp:index/thing:Thing" {
 }
 
 output "identity_is_null" {
-  value = t.identity == null
+  value = (t.identity == null ? null : [t.identity]) == null
 }
 
 output "identity_json" {
-  value = toJSON(t.identity)
+  value = toJSON((t.identity == null ? null : [t.identity]))
 }
 
 output "identity_set_is_null" {
-  value = t.identitySet == null
+  value = (t.identitySet == null ? [] : [t.identitySet]) == null
 }
 
 output "identity_set_json" {
-  value = toJSON(t.identitySet)
+  value = toJSON((t.identitySet == null ? [] : [t.identitySet]))
 }
 

@@ -196,3 +196,17 @@ func TestL2RenamedRangedDataSource(t *testing.T) {
 		"arn":  "arn:test:trigger",
 	}))
 }
+
+// TestL2RenamedMaxItemsOneWhole covers references to whole MaxItems=1
+// blocks, which HCL reads as a list and the bridge flattens to one object or
+// null, on a resource and on a data source. The outputs do not return a
+// whole block, because its keys are TF names in HCL and Pulumi names in PCL.
+func TestL2RenamedMaxItemsOneWhole(t *testing.T) {
+	t.Parallel()
+	putest.RunCase(t, "l2_renamed_max_items_one_whole", renamedCase(map[string]string{
+		"set_len":       "1",
+		"unset_len":     "0",
+		"unset_is_null": "false",
+		"data_len":      "1",
+	}))
+}

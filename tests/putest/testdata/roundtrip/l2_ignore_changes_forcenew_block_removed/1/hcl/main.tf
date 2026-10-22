@@ -19,5 +19,5 @@ resource "fnblock_resource" "r" {
   note = "y"
 }
 output "settings" {
-  value = fnblock_resource.r.settings
+  value = one(fnblock_resource.r.settings) == null ? [] : [one(fnblock_resource.r.settings)]
 }

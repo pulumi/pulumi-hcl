@@ -1342,7 +1342,7 @@ func (ft *fileTransformer) transformRelativeTraversal(e *hclsyntax.RelativeTrave
 	dummy := make(hcl.Traversal, len(e.Traversal)+1)
 	dummy[0] = hcl.TraverseRoot{Name: "_"}
 	copy(dummy[1:], e.Traversal)
-	converted := schemaAwareTraversalAttrs(dummy, props, mapping)
+	converted, block := schemaAwareTraversalAttrs(dummy, props, mapping)
 	for _, step := range converted[1:] {
 		switch s := step.(type) {
 		case hcl.TraverseAttr:
@@ -1353,6 +1353,9 @@ func (ft *fileTransformer) transformRelativeTraversal(e *hclsyntax.RelativeTrave
 		case hcl.TraverseIndex:
 			tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
 		}
+	}
+	if block != nil {
+		return blockListTokens(block, tokens)
 	}
 	return tokens
 }
@@ -1385,7 +1388,15 @@ func (ft *fileTransformer) relativeTraversalSourceProps(
 // The HCL and PCL syntax are identical, so we just need to transform the
 // sub-expressions while preserving the [*] structure.
 func (ft *fileTransformer) transformSplatExpr(e *hclsyntax.SplatExpr) hclwrite.Tokens {
-	tokens := ft.transformExpr(e.Source)
+	// A PCL splat reads a MaxItems=1 block, which the bridge flattens to one
+	// object or null, the same way HCL reads the block's list. So the source
+	// is the block itself, not the list that HCL reads.
+	var tokens hclwrite.Tokens
+	if src, ok := e.Source.(*hclsyntax.ScopeTraversalExpr); ok {
+		tokens, _ = ft.transformTraversalRef(src)
+	} else {
+		tokens = ft.transformExpr(e.Source)
+	}
 	tokens = append(tokens,
 		&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
 		&hclwrite.Token{Type: hclsyntax.TokenStar, Bytes: []byte("*")},
@@ -1466,7 +1477,10 @@ func (ft *fileTransformer) transformSplatEach(
 		dummy := make(hcl.Traversal, len(e.Traversal)+1)
 		dummy[0] = hcl.TraverseRoot{Name: "_"}
 		copy(dummy[1:], e.Traversal)
-		converted := schemaAwareTraversalAttrs(dummy, elementProps, elementMapping)
+		// TODO[https://github.com/pulumi/pulumi-hcl/issues/729]: A splat whose
+		// elements end on a MaxItems=1 block reads a list of objects in PCL,
+		// where HCL reads a list of lists.
+		converted, _ := schemaAwareTraversalAttrs(dummy, elementProps, elementMapping)
 
 		for _, step := range converted[1:] {
 			switch s := step.(type) {
@@ -1631,6 +1645,19 @@ func unaryOpToken(op *hclsyntax.Operation) *hclwrite.Token {
 
 // transformTraversal converts an HCL scope traversal to PCL tokens.
 func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) hclwrite.Tokens {
+	tokens, block := ft.transformTraversalRef(e)
+	if block != nil {
+		return blockListTokens(block, tokens)
+	}
+	return tokens
+}
+
+// transformTraversalRef converts an HCL scope traversal to PCL tokens. block
+// is as for [schemaAwareTraversalAttrs]: if it is not nil, the tokens are the
+// one element or null that the bridge flattens the block to.
+func (ft *fileTransformer) transformTraversalRef(
+	e *hclsyntax.ScopeTraversalExpr,
+) (tokens hclwrite.Tokens, block *bridge.FieldMapping) {
 	root := e.Traversal.RootName()
 
 	// Provider references: `<pkg>.<alias>.x` → `<alias>.x` in PCL.
@@ -1656,7 +1683,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 						stripped[i] = hcl.TraverseAttr{Name: name, SrcRange: a.SrcRange}
 					}
 				}
-				return hclwrite.TokensForTraversal(stripped)
+				return hclwrite.TokensForTraversal(stripped), nil
 			}
 		}
 	}
@@ -1674,10 +1701,11 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				ft.stackRefNames[logicalName.Name] && idx.Key.Type() == cty.String {
 				refTokens := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: logicalName.Name}})
 				keyTokens := hclwrite.TokensForValue(idx.Key)
-				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens)
+				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens), nil
 			}
 		}
-		return hclwrite.TokensForTraversal(ft.traversalAttrs(stripped, root))
+		converted, block := ft.traversalAttrs(stripped, root)
+		return hclwrite.TokensForTraversal(converted), block
 	}
 
 	switch root {
@@ -1706,12 +1734,14 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 					returnProps = propertiesOf(fn.ReturnType)
 				}
 				returnMapping := ft.functionMappings[typeAttr.Name]
+				var block *bridge.FieldMapping
 				if len(remaining) > 0 {
 					// Build a dummy traversal with a root so schemaAwareTraversalAttrs works.
 					dummy := make(hcl.Traversal, len(remaining)+1)
 					dummy[0] = hcl.TraverseRoot{Name: "_"}
 					copy(dummy[1:], remaining)
-					converted := schemaAwareTraversalAttrs(dummy, returnProps, returnMapping)
+					var converted hcl.Traversal
+					converted, block = schemaAwareTraversalAttrs(dummy, returnProps, returnMapping)
 					for _, step := range converted[1:] {
 						switch s := step.(type) {
 						case hcl.TraverseAttr:
@@ -1724,7 +1754,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 						}
 					}
 				}
-				return tokens
+				return tokens, block
 			}
 		}
 	case "call":
@@ -1742,13 +1772,13 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 						)
 					}
 				}
-				return tokens
+				return tokens, nil
 			}
 		}
 	case "count":
 		if s := ft.rangeSubst; s != nil && s.index != "" &&
 			traversalString(e.Traversal[:min(2, len(e.Traversal))]) == "count.index" {
-			return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.index))
+			return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.index)), nil
 		}
 		// count.index → range.value
 		trav := make(hcl.Traversal, len(e.Traversal))
@@ -1760,33 +1790,33 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				trav[i] = e.Traversal[i]
 			}
 		}
-		return hclwrite.TokensForTraversal(trav)
+		return hclwrite.TokensForTraversal(trav), nil
 	case "each":
 		if s := ft.rangeSubst; s != nil {
 			switch traversalString(e.Traversal[:min(2, len(e.Traversal))]) {
 			case "each.key":
-				return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.key))
+				return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.key)), nil
 			case "each.value":
-				return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.value))
+				return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.value)), nil
 			}
 		}
 		// each.key → range.key, each.value → range.value
 		trav := make(hcl.Traversal, len(e.Traversal))
 		trav[0] = hcl.TraverseRoot{Name: "range"}
 		copy(trav[1:], e.Traversal[1:])
-		return hclwrite.TokensForTraversal(trav)
+		return hclwrite.TokensForTraversal(trav), nil
 	case "var", "local", "module":
-		return hclwrite.TokensForTraversal(ft.rewriteTraversalRoot(stripRoot(e.Traversal)))
+		return hclwrite.TokensForTraversal(ft.rewriteTraversalRoot(stripRoot(e.Traversal))), nil
 	case "pulumi":
 		if len(e.Traversal) >= 2 {
 			if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
 				switch attr.Name {
 				case "stack":
-					return hclwrite.TokensForFunctionCall("stack")
+					return hclwrite.TokensForFunctionCall("stack"), nil
 				case "project":
-					return hclwrite.TokensForFunctionCall("project")
+					return hclwrite.TokensForFunctionCall("project"), nil
 				case "organization":
-					return hclwrite.TokensForFunctionCall("organization")
+					return hclwrite.TokensForFunctionCall("organization"), nil
 				}
 			}
 		}
@@ -1796,7 +1826,7 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 				switch attr.Name {
 				case "cwd":
 					// PCL's rootDirectory() generates to path.cwd; invert.
-					return hclwrite.TokensForFunctionCall("rootDirectory")
+					return hclwrite.TokensForFunctionCall("rootDirectory"), nil
 				}
 				// Bare path.root / path.module follow Terraform semantics
 				// (path.root is "."), so leave them untouched. PCL's cwd()
@@ -1805,48 +1835,82 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 			}
 		}
 	}
-	return hclwrite.TokensForTraversal(e.Traversal)
+	return hclwrite.TokensForTraversal(e.Traversal), nil
 }
 
 // schemaAwareTraversalAttrs converts traversal attribute names from snake_case
 // to their schema property names, tracking the schema type and the bridge
 // mapping through each step. m is the bridge mapping of props, or nil.
 //
-// The bridge flattens a MaxItems=1 block to its one element, but HCL reads
-// the block as a list. So the [0] after such a block is removed.
-func schemaAwareTraversalAttrs(trav hcl.Traversal, props []*schema.Property, m *bridge.BodyMapping) hcl.Traversal {
+// The bridge flattens a MaxItems=1 block to its one element, or to null when
+// the block is absent, but HCL reads the block as a list. So the [0] after
+// such a block is removed. If the traversal ends on such a block, block is
+// its mapping, and the caller must write the value as the list that HCL reads
+// (see [blockListTokens]).
+func schemaAwareTraversalAttrs(
+	trav hcl.Traversal, props []*schema.Property, m *bridge.BodyMapping,
+) (result hcl.Traversal, block *bridge.FieldMapping) {
 	if len(trav) <= 1 {
-		return trav
+		return trav, nil
 	}
-	result := hcl.Traversal{trav[0]}
+	result = hcl.Traversal{trav[0]}
 	// currentType tracks the schema type at the current traversal position.
 	// We start with a synthetic object wrapping the top-level properties.
 	var currentType schema.Type
 	if len(props) > 0 {
 		currentType = &schema.ObjectType{Properties: props}
 	}
-	// flattened is true when the previous step is a MaxItems=1 block.
-	var flattened bool
 	for _, step := range trav[1:] {
 		switch step := step.(type) {
 		case hcl.TraverseAttr:
-			fm := m.Lookup(step.Name)
-			flattened = fm != nil && fm.MaxItemsOne
+			block = nil
+			if fm := m.Lookup(step.Name); fm != nil && fm.MaxItemsOne {
+				block = fm
+			}
 			name, matched, nested := lookupProperty(step.Name, propertiesOf(currentType), m)
 			result = append(result, hcl.TraverseAttr{Name: name})
 			m = nested
 			currentType = propertyType(matched)
 		case hcl.TraverseIndex:
-			if flattened && isZeroIndex(step.Key) {
-				flattened = false
+			if block != nil && isZeroIndex(step.Key) {
+				block = nil
 				continue
 			}
-			flattened = false
+			block = nil
 			result = append(result, step)
 			currentType = elementTypeOf(currentType)
 		}
 	}
-	return result
+	return result, block
+}
+
+// blockListTokens writes the value that HCL reads for the MaxItems=1 field
+// fm. ref is the one element or null that the bridge flattens the field to.
+func blockListTokens(fm *bridge.FieldMapping, ref hclwrite.Tokens) hclwrite.Tokens {
+	unset := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("["), SpacesBefore: 1},
+		{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+	}
+	if transform.UnsetSingularIsNull(fm) {
+		unset = hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("null"), SpacesBefore: 1}}
+	}
+	out := hclwrite.Tokens{{Type: hclsyntax.TokenOParen, Bytes: []byte("(")}}
+	out = append(out, ref...)
+	out = append(out,
+		&hclwrite.Token{Type: hclsyntax.TokenEqualOp, Bytes: []byte("=="), SpacesBefore: 1},
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("null"), SpacesBefore: 1},
+		&hclwrite.Token{Type: hclsyntax.TokenQuestion, Bytes: []byte("?"), SpacesBefore: 1},
+	)
+	out = append(out, unset...)
+	out = append(out,
+		&hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1},
+		&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("["), SpacesBefore: 1},
+	)
+	out = append(out, ref...)
+	return append(out,
+		&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+		&hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")},
+	)
 }
 
 // isZeroIndex reports whether key is the number 0.
@@ -1880,7 +1944,7 @@ func elementTypeOf(t schema.Type) schema.Type {
 // traversalAttrs is [schemaAwareTraversalAttrs] against the schema and bridge
 // mapping cached for hclType. The root (logical resource name) is left
 // unchanged.
-func (ft *fileTransformer) traversalAttrs(trav hcl.Traversal, hclType string) hcl.Traversal {
+func (ft *fileTransformer) traversalAttrs(trav hcl.Traversal, hclType string) (hcl.Traversal, *bridge.FieldMapping) {
 	var props []*schema.Property
 	if res := ft.resourceSchemas[hclType]; res != nil {
 		props = res.Properties

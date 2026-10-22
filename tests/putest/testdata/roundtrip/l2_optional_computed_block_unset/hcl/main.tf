@@ -15,14 +15,14 @@ resource "optcomp_thing" "t" {
   name = "probe"
 }
 output "identity_is_null" {
-  value = optcomp_thing.t.identity == null
+  value = ((optcomp_thing.t.identity == null ? null : one(optcomp_thing.t.identity)) == null ? null : [(optcomp_thing.t.identity == null ? null : one(optcomp_thing.t.identity))]) == null
 }
 output "identity_json" {
-  value = jsonencode(optcomp_thing.t.identity)
+  value = jsonencode((optcomp_thing.t.identity == null ? null : one(optcomp_thing.t.identity)) == null ? null : [(optcomp_thing.t.identity == null ? null : one(optcomp_thing.t.identity))])
 }
 output "identity_set_is_null" {
-  value = optcomp_thing.t.identity_set == null
+  value = (one(optcomp_thing.t.identity_set) == null ? [] : [one(optcomp_thing.t.identity_set)]) == null
 }
 output "identity_set_json" {
-  value = jsonencode(optcomp_thing.t.identity_set)
+  value = jsonencode(one(optcomp_thing.t.identity_set) == null ? [] : [one(optcomp_thing.t.identity_set)])
 }

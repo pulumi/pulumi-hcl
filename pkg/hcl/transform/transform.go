@@ -1437,22 +1437,9 @@ func propertyObjectToCtyMap(
 		}
 		if singular {
 			if convertedV.IsNull() {
-				switch {
-				case !fieldIsBlock(mapping, p.Name):
-					// A flattened attribute's null output stands for both an
-					// unset field and an explicitly-empty list — the wire
-					// encoding collapses them
-					// (pulumi/pulumi-terraform-bridge#3558) — so it renders
-					// as null, the unset shape.
+				if UnsetSingularIsNull(mapping.LookupPulumi(p.Name)) {
 					convertedV = cty.NullVal(cty.List(convertedV.Type()))
-				case fieldIsComputed(mapping, p.Name) && !setField:
-					// An unset Computed list block is provider-controlled:
-					// absence means null, so `r.block == null` holds. Unset
-					// set blocks materialize as empty either way.
-					convertedV = cty.NullVal(cty.List(convertedV.Type()))
-				default:
-					// An omitted MaxItems=1 block is an empty list of blocks, not a
-					// single-element list holding null, so `length(r.block)` is 0.
+				} else {
 					convertedV = cty.ListValEmpty(convertedV.Type())
 				}
 			} else {
@@ -1466,6 +1453,29 @@ func propertyObjectToCtyMap(
 	}
 
 	return result, nil
+}
+
+// UnsetSingularIsNull reports whether HCL reads the MaxItemsOne field fm as
+// null when its flattened Pulumi value is null. Otherwise HCL reads it as an
+// empty list, or as an empty set for a TF TypeSet field.
+func UnsetSingularIsNull(fm *bridge.FieldMapping) bool {
+	switch {
+	case !fm.TFBlock:
+		// A flattened attribute's null output stands for both an unset field
+		// and an explicitly-empty list — the wire encoding collapses them
+		// (pulumi/pulumi-terraform-bridge#3558) — so it renders as null, the
+		// unset shape.
+		return true
+	case fm.TFComputed && !fm.TFSet:
+		// An unset Computed list block is provider-controlled: absence means
+		// null, so `r.block == null` holds. Unset set blocks materialize as
+		// empty either way.
+		return true
+	default:
+		// An omitted MaxItems=1 block is an empty list of blocks, not a
+		// single-element list holding null, so `length(r.block)` is 0.
+		return false
+	}
 }
 
 func fieldIsQuery[T any](mapping *bridge.BodyMapping, pulumiName string, query func(*bridge.FieldMapping) T) T {
@@ -1486,22 +1496,6 @@ func fieldIsQuery[T any](mapping *bridge.BodyMapping, pulumiName string, query f
 func fieldIsSingular(mapping *bridge.BodyMapping, pulumiName string) bool {
 	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
 		return fm.MaxItemsOne
-	})
-}
-
-// fieldIsBlock reports whether the Pulumi property is a TF block per the
-// bridge mapping.
-func fieldIsBlock(mapping *bridge.BodyMapping, pulumiName string) bool {
-	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
-		return fm.TFBlock
-	})
-}
-
-// fieldIsComputed reports whether the Pulumi property is Computed in the TF
-// schema per the bridge mapping.
-func fieldIsComputed(mapping *bridge.BodyMapping, pulumiName string) bool {
-	return fieldIsQuery(mapping, pulumiName, func(fm *bridge.FieldMapping) bool {
-		return fm.TFComputed
 	})
 }
 

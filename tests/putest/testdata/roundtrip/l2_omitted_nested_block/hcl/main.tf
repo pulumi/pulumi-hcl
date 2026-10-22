@@ -16,8 +16,8 @@ resource "blocky_thing" "t" {
   }
 }
 output "rule" {
-  value = blocky_thing.t.policy[0].rule
+  value = one(blocky_thing.t.policy[0].rule) == null ? [] : [one(blocky_thing.t.policy[0].rule)]
 }
 output "rule_len" {
-  value = length(blocky_thing.t.policy[0].rule)
+  value = length(one(blocky_thing.t.policy[0].rule) == null ? [] : [one(blocky_thing.t.policy[0].rule)])
 }

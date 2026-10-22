@@ -13,6 +13,6 @@ resource "r" "fnblock:index/resource:Resource" {
 }
 
 output "settings" {
-  value = r.settings
+  value = (r.settings == null ? [] : [r.settings])
 }
 
