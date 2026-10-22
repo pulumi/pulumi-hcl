@@ -90,6 +90,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     outputs:
       # The sdk-releases commit that carries this version's registry payload
       # (registry/schema.json and registry/_index.md). Empty when the version was
@@ -97,12 +98,19 @@ jobs:
       registry-sha: ${{ steps.commit.outputs.registry-sha }}
     env:
       VERSION: ${{ needs.release.outputs.version }}
-      GH_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
+      ESC_ACTION_OIDC_AUTH: true
+      ESC_ACTION_OIDC_ORGANIZATION: pulumi
+      ESC_ACTION_OIDC_REQUESTED_TOKEN_TYPE: urn:pulumi:token-type:access_token:organization
+      ESC_ACTION_ENVIRONMENT: imports/github-secrets
+      ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: GH_TOKEN=PULUMI_BOT_TOKEN
     steps:
+      - name: Fetch the bot token from ESC
+        id: esc-secrets
+        uses: pulumi/esc-action@32dda43ffe7a2ab21e6bce11c781b44a3e5623cf # v3
       - uses: actions/checkout@v7
         with:
           ref: sdk-releases
-          token: ${{ secrets.PULUMI_BOT_TOKEN }}
+          token: ${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}
       - name: Read the Go toolchain from the released source
         run: |
           git fetch --depth 1 origin "refs/tags/${VERSION}"
@@ -115,7 +123,7 @@ jobs:
         with:
           pulumi-version: "latest"
         env:
-          GITHUB_TOKEN: ${{ secrets.PULUMI_BOT_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}
       - name: Check if the Go SDK tag already exists
         id: already-tagged
         run: |
