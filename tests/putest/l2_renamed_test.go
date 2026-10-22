@@ -140,10 +140,9 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 // when the renamed nested input was forwarded through the bridge.
 func TestL2RenamedDataSourceInputs(t *testing.T) {
 	t.Parallel()
-	c := renamedCase(map[string]string{
+	putest.RunCase(t, "l2_renamed_data_source_inputs", renamedCase(map[string]string{
 		"matched": "hit:lambda:trigger",
-	})
-	putest.RunCase(t, "l2_renamed_data_source_inputs", c)
+	}))
 }
 
 // TestL2RenamedDataSourceNestedOutputs covers nested-block output renames on
