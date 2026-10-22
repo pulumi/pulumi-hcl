@@ -1415,22 +1415,35 @@ func (ft *fileTransformer) splatElementProps(trav hcl.Traversal) ([]*schema.Prop
 	// the splat point.
 	var currentType schema.Type = &schema.ObjectType{Properties: res.Properties}
 	mapping := ft.resourceMappings[root]
+	// flattened is true when the current step is a MaxItems=1 block, which
+	// the bridge flattens to its one element.
+	var flattened bool
 	for _, step := range trav[2:] {
 		switch attr := step.(type) {
 		case hcl.TraverseAttr:
+			fm := mapping.Lookup(attr.Name)
 			_, prop, nested := lookupProperty(attr.Name, propertiesOf(currentType), mapping)
 			if prop == nil {
 				return nil, nil
 			}
 			currentType, mapping = prop.Type, nested
+			flattened = fm != nil && fm.MaxItemsOne
 		case hcl.TraverseIndex:
-			currentType = elementTypeOf(currentType)
+			if !flattened {
+				currentType = elementTypeOf(currentType)
+			}
+			flattened = false
 		}
 		if currentType == nil {
 			return nil, nil
 		}
 	}
 
+	// A splat over a MaxItems=1 block reads its one element, which PCL
+	// splats the same way.
+	if flattened {
+		return propertiesOf(currentType), mapping
+	}
 	// The splat operates on an array/list — unwrap to get element properties.
 	return propertiesOf(elementTypeOf(currentType)), mapping
 }

@@ -2952,13 +2952,30 @@ func (g *generator) splatElementProps(source model.Expression) ([]*schema.Proper
 			mapping = nestedMapping(mapping.LookupPulumi(attr.Name))
 		}
 	}
-	// The source type should be an array; return the element's properties.
+	// A splat over an array reads its elements. A splat over one object,
+	// such as a MaxItems=1 block that the bridge flattens, reads the object.
 	if arr, ok := codegen.UnwrapType(typ).(*schema.ArrayType); ok {
-		if obj, ok := codegen.UnwrapType(arr.ElementType).(*schema.ObjectType); ok {
-			return obj.Properties, mapping
-		}
+		typ = arr.ElementType
+	}
+	if obj, ok := codegen.UnwrapType(typ).(*schema.ObjectType); ok {
+		return obj.Properties, mapping
 	}
 	return nil, nil
+}
+
+// splatSource returns the source of expr as the PCL program writes it. The
+// binder wraps a source that is not a list in a one-element tuple, but an HCL
+// splat reads such a source the same way, and the value can be a list in HCL
+// (a MaxItems=1 block that the bridge flattens).
+func splatSource(expr *model.SplatExpression) model.Expression {
+	tuple, ok := expr.Source.(*model.TupleConsExpression)
+	if !ok || len(tuple.Expressions) != 1 || expr.Syntax == nil {
+		return expr.Source
+	}
+	if _, isTuple := expr.Syntax.Source.(*hclsyntax.TupleConsExpr); isTuple {
+		return expr.Source
+	}
+	return tuple.Expressions[0]
 }
 
 // traverseSchemaType applies a single traversal step to a schema type, returning the
@@ -3353,7 +3370,8 @@ func perIterationIndexTokens(kind rangeKind) hclwrite.Tokens {
 // [TraverseRoot, TraverseAttr("value"), ...]. We emit source, [*], then the
 // traversal steps after the root.
 func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, hcl.Diagnostics) {
-	sourceTokens, diags := g.operandTokens(expr.Source, primaryPrecedence)
+	source := splatSource(expr)
+	sourceTokens, diags := g.operandTokens(source, primaryPrecedence)
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -3382,7 +3400,7 @@ func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, h
 
 	// Rewrite attribute names using schema info from the source's element type,
 	// falling back to naive camelCase → snake_case conversion.
-	if props, mapping := g.splatElementProps(expr.Source); len(props) > 0 {
+	if props, mapping := g.splatElementProps(source); len(props) > 0 {
 		eachTraversal = schemaAwareRewriteTraversal(props, mapping, eachTraversal)
 	} else {
 		eachTraversal = naiveRewriteTraversal(eachTraversal)

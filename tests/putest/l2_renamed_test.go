@@ -165,3 +165,23 @@ func TestL2RenamedParentheses(t *testing.T) {
 		"from":    "registry",
 	}))
 }
+
+// TestL2RenamedMaxItemsOneSplat covers a splat over a MaxItems=1 block, which
+// the bridge flattens to one object.
+func TestL2RenamedMaxItemsOneSplat(t *testing.T) {
+	t.Parallel()
+	putest.RunCase(t, "l2_renamed_max_items_one_splat", renamedCase(map[string]string{
+		"splat": "[5]",
+	}))
+}
+
+// TestL2RenamedMaxItemsOneSplatUnset covers a splat over an absent MaxItems=1
+// block, which the bridge flattens to null.
+func TestL2RenamedMaxItemsOneSplatUnset(t *testing.T) {
+	t.Parallel()
+	c := renamedCase(map[string]string{
+		"splat": "[]",
+	})
+	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi/issues/25328]: A PCL splat over null fails, where HCL gives an empty list."
+	putest.RunCase(t, "l2_renamed_max_items_one_splat_unset", c)
+}
