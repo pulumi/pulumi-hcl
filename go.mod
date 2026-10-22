@@ -28,8 +28,8 @@ require (
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-go-provider v1.7.0
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.138.0
-	github.com/pulumi/pulumi/pkg/v3 v3.271.0
-	github.com/pulumi/pulumi/sdk/v3 v3.271.1-0.20261021180255-3b3c825e3590
+	github.com/pulumi/pulumi/pkg/v3 v3.271.1-0.20261021190933-1a366becdb62
+	github.com/pulumi/pulumi/sdk/v3 v3.271.1-0.20261021190933-1a366becdb62
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.42.0
