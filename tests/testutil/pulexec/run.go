@@ -143,6 +143,13 @@ func NewYAMLDriver(t *testing.T, pkgDir string, provs []Provider, config map[str
 	return newDriver(t, provs, config, "yaml", pkgDir)
 }
 
+// NewPCLDriver builds a project whose program is PCL. The engine runs it with
+// the pulumi-language-pcl binary that ships with the CLI.
+func NewPCLDriver(t *testing.T, provs []Provider, config map[string]string) *Driver {
+	t.Helper()
+	return newDriver(t, provs, config, "pcl", "")
+}
+
 // newDriver builds the project with the given Pulumi.yaml runtime and the
 // local component directory the project consumes, if any.
 func newDriver(

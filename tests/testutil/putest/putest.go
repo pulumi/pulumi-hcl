@@ -87,6 +87,9 @@ type Case struct {
 	// SkipRoundTrip, if set, skips the HCL -> PCL -> HCL round trip. It is the
 	// reason the case cannot round trip.
 	SkipRoundTrip string
+	// SkipRunPCL, if set, skips the run of the PCL that the round trip
+	// generates. It is the reason the PCL cannot run.
+	SkipRunPCL string
 }
 
 // RunCase resolves testdata/cases/<caseName>/ relative to the calling test
@@ -97,9 +100,10 @@ type Case struct {
 // RunCase then converts each stage HCL -> PCL -> HCL with `pulumi convert`
 // and compares both results against the golden files in
 // testdata/roundtrip/<caseName>/[<stage>/]{pcl,hcl}/. If PULUMI_ACCEPT is
-// truthy, it writes the golden files instead. If the round-tripped HCL differs
-// from the source, RunCase runs the round-tripped stages on a new stack and
-// applies the Case's assertions again.
+// truthy, it writes the golden files instead. RunCase runs the PCL stages on a
+// new stack and applies the Case's assertions again. If the round-tripped HCL
+// differs from the source, RunCase also runs the round-tripped HCL stages on a
+// new stack and applies the Case's assertions again.
 func RunCase(t *testing.T, caseName string, c Case) {
 	t.Helper()
 
@@ -108,13 +112,14 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	stages, staged, err := testutil.LoadStages(filepath.Join(testdataDir, "cases", caseName))
 	require.NoError(t, err)
 
-	driver := run(t, c, stages)
+	driver := run(t, c, stages, pulexec.NewDriver)
 
 	t.Run("round-trip", func(t *testing.T) {
 		if c.SkipRoundTrip != "" {
 			t.Skip(c.SkipRoundTrip)
 		}
 		goldenDir := filepath.Join(testdataDir, "roundtrip", caseName)
+		pcls := make([]map[string]string, len(stages))
 		roundTripped := make([]map[string]string, len(stages))
 		identical := true
 		for i, files := range stages {
@@ -128,18 +133,31 @@ func RunCase(t *testing.T, caseName string, c Case) {
 			hcl, err := driver.Convert(t, pcl, "pcl", "hcl")
 			require.NoErrorf(t, err, "stage %d: PCL -> HCL", i)
 			assertGoldenDir(t, filepath.Join(stageDir, "hcl"), hcl)
+			pcls[i] = pcl
 			roundTripped[i] = hcl
 			identical = identical && maps.Equal(files, hcl)
 		}
-		if !identical {
-			run(t, c, roundTripped)
-		}
+		t.Run("pcl", func(t *testing.T) {
+			if c.SkipRunPCL != "" {
+				t.Skip(c.SkipRunPCL)
+			}
+			run(t, c, pcls, pulexec.NewPCLDriver)
+		})
+		t.Run("hcl", func(t *testing.T) {
+			if identical {
+				t.Skip("The round-tripped HCL is identical to the source.")
+			}
+			run(t, c, roundTripped, pulexec.NewDriver)
+		})
 	})
 }
 
-// run applies stages in order on a new stack, applies the Case's assertions,
-// and returns the driver.
-func run(t *testing.T, c Case, stages []map[string]string) *pulexec.Driver {
+// run applies stages in order on a new stack from newDriver, applies the Case's
+// assertions, and returns the driver.
+func run(
+	t *testing.T, c Case, stages []map[string]string,
+	newDriver func(*testing.T, []pulexec.Provider, map[string]string) *pulexec.Driver,
+) *pulexec.Driver {
 	t.Helper()
 
 	rec := &tfexec.Recorder{}
@@ -162,7 +180,7 @@ func run(t *testing.T, c Case, stages []map[string]string) *pulexec.Driver {
 		}
 	}
 
-	driver := pulexec.NewDriver(t, provs, c.Config)
+	driver := newDriver(t, provs, c.Config)
 	var res pulexec.Result
 	var err error
 	for i, files := range stages {

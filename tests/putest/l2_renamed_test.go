@@ -99,11 +99,13 @@ func renamedCase(expectedOutputs map[string]string) putest.Case {
 // `arn` to confirm default-cased outputs still work alongside renames.
 func TestL2RenamedOutputs(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_outputs", renamedCase(map[string]string{
+	c := renamedCase(map[string]string{
 		"fn_name": "alpha",
 		"arn":     "arn:test:alpha",
 		"window":  "5",
-	}))
+	})
+	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/702]: HCL -> PCL writes the MaxItems=1 block `settings` as a list."
+	putest.RunCase(t, "l2_renamed_outputs", c)
 }
 
 // TestL2RenamedDataSourceOutputs covers data-source scalar output renames.
@@ -124,10 +126,13 @@ func TestL2RenamedDataSourceOutputs(t *testing.T) {
 // test asserts the renamed inputs reached the upstream Configure call intact.
 func TestL2RenamedProviderConfig(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_provider_config", renamedCase(map[string]string{
+	c := renamedCase(map[string]string{
 		"endpoint_seen": "https://example.test/api",
 		"retries_seen":  "3",
-	}))
+	})
+	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/702], TODO[https://github.com/pulumi/pulumi-hcl/issues/710]: HCL -> PCL writes the MaxItems=1 block " +
+		"`default_options` as a list, and the PCL resource does not use the configured `renamed` provider."
+	putest.RunCase(t, "l2_renamed_provider_config", c)
 }
 
 // TestL2RenamedDataSourceInputs covers data-source nested-block input renames:

@@ -28,6 +28,7 @@ import (
 func TestL2PFCollectionNestedAttr(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_pf_collection_nested_attr", putest.Case{
+		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/710]: The PCL invoke does not use the configured `pfx` provider.",
 		Providers: []putest.Provider{
 			{Name: "pfx", PFFactory: providers.PFXProvider},
 		},
