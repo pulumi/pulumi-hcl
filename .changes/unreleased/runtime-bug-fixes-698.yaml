@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Make resources that use the result of a `call` depend on the call receiver and on the call arguments
-time: 2026-10-20T09:00:00.000000+02:00
-custom:
-    Component: runtime
-    PR: "698"

@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Keep nested blocks in `provider` blocks when converting HCL to PCL
-time: 2026-10-22T12:00:00.000000+02:00
-custom:
-    Component: converter
-    PR: "706"

@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Resolve types whose module contains a `.`, `get`-less data sources in multi-segment modules, and properties whose names are not HCL identifiers
-time: 2026-09-25T22:40:15.600271+01:00
-custom:
-    Component: runtime
-    PR: "647"

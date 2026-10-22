@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: "Emit `MaxItems: 1` blocks of bridged providers as nested blocks"
-time: 2026-10-19T15:45:13.000000+02:00
-custom:
-    Component: codegen
-    PR: "696"
