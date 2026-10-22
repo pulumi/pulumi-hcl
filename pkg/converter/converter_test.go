@@ -15,6 +15,7 @@
 package converter
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -53,7 +55,7 @@ func transformSingleFile(
 	f, parseDiags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
 	require.False(t, parseDiags.HasErrors(), parseDiags.Error())
 	body := f.Body.(*hclsyntax.Body)
-	ft, scanDiags := newProjectTransformer(t.Context(), loader, []*hclsyntax.Body{body})
+	ft, scanDiags := newProjectTransformer(t.Context(), loader, nil, nil, []*hclsyntax.Body{body})
 	require.False(t, scanDiags.HasErrors(), scanDiags.Error())
 	emitDiags, err := ft.emitFile(t.Context(), src, filename, body, out, paramInfos)
 	require.NoError(t, err)
@@ -136,7 +138,7 @@ func TestSchemaAwareTraversalAttrs(t *testing.T) {
 		hcl.TraverseAttr{Name: "nested_output"},
 	}
 
-	result := schemaAwareTraversalAttrs(trav, topProps)
+	result := schemaAwareTraversalAttrs(trav, topProps, nil)
 	require.Len(t, result, 5)
 	assert.Equal(t, "the_output", result[1].(hcl.TraverseAttr).Name)
 	assert.Equal(t, "nested_output", result[4].(hcl.TraverseAttr).Name)
@@ -166,7 +168,7 @@ func TestSchemaAwareTraversalAttrs_CamelCase(t *testing.T) {
 		hcl.TraverseAttr{Name: "nested_output"},
 	}
 
-	result := schemaAwareTraversalAttrs(trav, topProps)
+	result := schemaAwareTraversalAttrs(trav, topProps, nil)
 	require.Len(t, result, 5)
 	assert.Equal(t, "theOutput", result[1].(hcl.TraverseAttr).Name)
 	assert.Equal(t, "nestedOutput", result[4].(hcl.TraverseAttr).Name)
@@ -249,7 +251,7 @@ func TestBlocksToObjectAttrs(t *testing.T) {
 			require.False(t, diags.HasErrors(), diags.Error())
 
 			ft := &fileTransformer{sources: map[string][]byte{"test.tf": src}}
-			result := ft.blocksToObjectAttrs(file.Body.(*hclsyntax.Body).Blocks, tt.props)
+			result := ft.blocksToObjectAttrs(file.Body.(*hclsyntax.Body).Blocks, tt.props, nil)
 			assert.Equal(t, tt.expected, string(hclwrite.TokensForObject(result).Bytes()))
 		})
 	}
@@ -576,14 +578,22 @@ func parseAndBindMultiFile(
 	return program
 }
 
-// serveLoader hosts loader on a local gRPC port and returns the host:port
-// address. The server is torn down via t.Cleanup.
-func serveLoader(t *testing.T, loader schema.ReferenceLoader) string {
+// noMappings is a convert.Mapper that has no mapping for any provider.
+type noMappings struct{}
+
+func (noMappings) GetMapping(context.Context, string, *convert.MapperPackageHint, string) ([]byte, error) {
+	return nil, nil
+}
+
+// serveEngine hosts loader and a mapper with no mappings on a local gRPC port,
+// and returns the host:port address. The server is torn down via t.Cleanup.
+func serveEngine(t *testing.T, loader schema.ReferenceLoader) string {
 	t.Helper()
 	cancel := make(chan bool)
 	handle, err := rpcutil.ServeWithOptions(rpcutil.ServeOptions{
 		Init: func(srv *grpc.Server) error {
 			schema.LoaderRegistration(schema.NewLoaderServer(loader))(srv)
+			convert.MapperRegistration(convert.NewMapperServer(noMappings{}))(srv)
 			return nil
 		},
 		Cancel: cancel,
@@ -789,7 +799,7 @@ func TestConvertProgramCrossFileReferences(t *testing.T) {
 		},
 	}
 	loader := schemaloader.New(t, testSchema)
-	loaderTarget := serveLoader(t, loader)
+	engineTarget := serveEngine(t, loader)
 
 	sourceDir := t.TempDir()
 	targetDir := t.TempDir()
@@ -831,7 +841,8 @@ output "echoed" {
 	resp, err := New().ConvertProgram(t.Context(), &plugin.ConvertProgramRequest{
 		SourceDirectory: sourceDir,
 		TargetDirectory: targetDir,
-		LoaderTarget:    loaderTarget,
+		LoaderTarget:    engineTarget,
+		MapperTarget:    engineTarget,
 	})
 	require.NoError(t, err)
 	require.False(t, resp.Diagnostics.HasErrors(), resp.Diagnostics.Error())
@@ -882,7 +893,7 @@ func TestEjectMultiFileHCL(t *testing.T) {
 	t.Parallel()
 
 	loader := schemaloader.New(t, multiFileTestSchema)
-	loaderTarget := serveLoader(t, loader)
+	engineTarget := serveEngine(t, loader)
 
 	sourceDir := t.TempDir()
 	targetDir := t.TempDir()
@@ -916,7 +927,8 @@ func TestEjectMultiFileHCL(t *testing.T) {
 	resp, err := New().ConvertProgram(t.Context(), &plugin.ConvertProgramRequest{
 		SourceDirectory: sourceDir,
 		TargetDirectory: targetDir,
-		LoaderTarget:    loaderTarget,
+		LoaderTarget:    engineTarget,
+		MapperTarget:    engineTarget,
 	})
 	require.NoError(t, err)
 	require.False(t, resp.Diagnostics.HasErrors(), resp.Diagnostics.Error())

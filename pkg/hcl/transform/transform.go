@@ -167,7 +167,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 	attrExprs := make(map[string]hcl.Expression, len(body.Attributes))
 	resourceInputs := make(map[string]cty.Value, len(body.Attributes)+len(body.Blocks))
 	for name, attr := range body.Attributes {
-		puName, prop := resolvePulumiProperty(name, props, mapping)
+		puName, prop := ResolvePulumiProperty(name, props, mapping)
 		if prop == nil {
 			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, attr.Range))
 		}
@@ -196,7 +196,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 			continue
 		}
 
-		puName, prop := resolvePulumiProperty(name, props, mapping)
+		puName, prop := ResolvePulumiProperty(name, props, mapping)
 		if prop == nil {
 			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, block.DefRange))
 		}
@@ -742,7 +742,7 @@ func CtyToResourceOutputs(val cty.Value, r *schema.Resource, mapping *bridge.Bod
 // model id. Always resolve via the mapping: fixID's naming rule varies with
 // the schema's other fields.
 func IDProperty(r *schema.Resource, mapping *bridge.BodyMapping) *schema.Property {
-	_, p := resolvePulumiProperty("id", r.Properties, mapping)
+	_, p := ResolvePulumiProperty("id", r.Properties, mapping)
 	return p
 }
 
@@ -754,11 +754,11 @@ func ctyToFunctionInputs(val cty.Value, r *schema.Function, attrExprs map[string
 	return ctyToObject(r.Token, val, inputs, attrExprs, false /* already in a secret */, false /* plain */, mapping)
 }
 
-// resolvePulumiProperty picks the Pulumi property for a TF (snake_case) name,
+// ResolvePulumiProperty picks the Pulumi property for a TF (snake_case) name,
 // going through the mapping when available (for renames the snake↔camel
 // convention cannot recover, e.g. pluralized list fields), falling back to
 // the convention otherwise.
-func resolvePulumiProperty(tfName string, props []*schema.Property, mapping *bridge.BodyMapping) (string, *schema.Property) {
+func ResolvePulumiProperty(tfName string, props []*schema.Property, mapping *bridge.BodyMapping) (string, *schema.Property) {
 	if fm := mapping.Lookup(tfName); fm != nil {
 		for _, p := range props {
 			if p.Name == fm.PulumiName {
@@ -778,7 +778,7 @@ func ctyToObject(path string, val cty.Value, properties []*schema.Property, attr
 	for it := val.ElementIterator(); it.Next(); {
 		k, v := it.Element()
 		keyStr := k.AsString()
-		puField, prop := resolvePulumiProperty(keyStr, properties, mapping)
+		puField, prop := ResolvePulumiProperty(keyStr, properties, mapping)
 		if prop == nil {
 			// We have not found the correct field in the property list, so we should put together an error
 			// message.
