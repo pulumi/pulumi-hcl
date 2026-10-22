@@ -837,21 +837,6 @@ func (ft *fileTransformer) emitFile(
 						}
 						opts = append(opts, optEntry{pclName, tokens})
 					}
-				case "dynamic":
-					d := ft.convertDynamicBlock(blk.Body(), subBlock, res.InputProperties, mapping)
-					resultDiags = append(resultDiags, d...)
-				case "_":
-					// Blocks in the escaping block are input properties
-					// whatever their names; the runtime still expands a
-					// dynamic block written there.
-					for _, escaped := range subBlock.Body.Blocks {
-						if escaped.Type == "dynamic" {
-							d := ft.convertDynamicBlock(blk.Body(), escaped, res.InputProperties, mapping)
-							resultDiags = append(resultDiags, d...)
-						} else {
-							propertyBlocks = append(propertyBlocks, escaped)
-						}
-					}
 				case "lifecycle":
 					for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
 						switch attr.Name {
@@ -897,11 +882,7 @@ func (ft *fileTransformer) emitFile(
 					propertyBlocks = append(propertyBlocks, subBlock)
 				}
 			}
-			// Convert property sub-blocks to PCL object-list attributes.
-			for _, objAttr := range ft.blocksToObjectAttrs(propertyBlocks, res.InputProperties, mapping) {
-				name := strings.TrimSpace(string(objAttr.Name.Bytes()))
-				blk.Body().SetAttributeRaw(name, objAttr.Value)
-			}
+			resultDiags = append(resultDiags, ft.emitPropertyBlocks(blk.Body(), propertyBlocks, res.InputProperties, mapping)...)
 			if !sawCreateBeforeDestroy {
 				opts = append(opts, optEntry{
 					"deleteBeforeReplace",
@@ -985,8 +966,10 @@ func (ft *fileTransformer) emitFile(
 				blk.Body().SetAttributeRaw(name, ft.withTrailing(value, start))
 			}
 			// Pulumi-specific provider options live in a nested `pulumi` block.
+			var propertyBlocks []*hclsyntax.Block
 			for _, subBlock := range block.Body.Blocks {
 				if subBlock.Type != "pulumi" {
+					propertyBlocks = append(propertyBlocks, subBlock)
 					continue
 				}
 				for _, attr := range sortedAttributes(subBlock.Body.Attributes) {
@@ -1002,6 +985,7 @@ func (ft *fileTransformer) emitFile(
 					}
 				}
 			}
+			resultDiags = append(resultDiags, ft.emitPropertyBlocks(blk.Body(), propertyBlocks, providerRes.InputProperties, mapping)...)
 			if len(opts) > 0 {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
 				for _, o := range opts {
@@ -2008,6 +1992,36 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 		return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
 	}
 	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens, hclwrite.TokensForObject(optAttrs))
+}
+
+// emitPropertyBlocks writes the PCL form of blocks, the input property blocks
+// of a resource or provider, to body. Each dynamic block becomes a for
+// expression. The blocks of a `_` escaping block are input properties whatever
+// their names, and the runtime still expands a dynamic block written there.
+// props and m are the input properties and their bridge mapping (m may be nil).
+func (ft *fileTransformer) emitPropertyBlocks(
+	body *hclwrite.Body, blocks []*hclsyntax.Block, props []*schema.Property, m *bridge.BodyMapping,
+) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	var objectBlocks []*hclsyntax.Block
+	for _, block := range blocks {
+		children := []*hclsyntax.Block{block}
+		if block.Type == "_" {
+			children = block.Body.Blocks
+		}
+		for _, child := range children {
+			if child.Type == "dynamic" {
+				diags = append(diags, ft.convertDynamicBlock(body, child, props, m)...)
+			} else {
+				objectBlocks = append(objectBlocks, child)
+			}
+		}
+	}
+	for _, objAttr := range ft.blocksToObjectAttrs(objectBlocks, props, m) {
+		name := strings.TrimSpace(string(objAttr.Name.Bytes()))
+		body.SetAttributeRaw(name, objAttr.Value)
+	}
+	return diags
 }
 
 // blocksToObjectAttrs converts HCL blocks (which represent array-of-object

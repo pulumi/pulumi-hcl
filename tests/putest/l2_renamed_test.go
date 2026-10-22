@@ -124,13 +124,10 @@ func TestL2RenamedDataSourceOutputs(t *testing.T) {
 // test asserts the renamed inputs reached the upstream Configure call intact.
 func TestL2RenamedProviderConfig(t *testing.T) {
 	t.Parallel()
-	c := renamedCase(map[string]string{
+	putest.RunCase(t, "l2_renamed_provider_config", renamedCase(map[string]string{
 		"endpoint_seen": "https://example.test/api",
 		"retries_seen":  "3",
-	})
-	// TODO[https://github.com/pulumi/pulumi-hcl/issues/677]: HCL -> PCL drops nested blocks in provider blocks.
-	c.SkipRoundTrip = "HCL -> PCL drops the nested block of the provider."
-	putest.RunCase(t, "l2_renamed_provider_config", c)
+	}))
 }
 
 // TestL2RenamedDataSourceInputs covers data-source nested-block input renames:
