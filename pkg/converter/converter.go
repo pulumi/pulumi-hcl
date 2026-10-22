@@ -1791,49 +1791,50 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 	return hclwrite.TokensForTraversal(e.Traversal)
 }
 
-// traversalAttrs converts all TraverseAttr names after the root to camelCase,
-// using schema-aware lookup when a cached schema is available for hclType.
-// The root (logical resource name) is left unchanged.
 // schemaAwareTraversalAttrs converts traversal attribute names from snake_case
 // to their schema property names, tracking the schema type and the bridge
 // mapping through each step. m is the bridge mapping of props, or nil.
+//
+// The bridge flattens a MaxItems=1 block to its one element, but HCL reads
+// the block as a list. So the [0] after such a block is removed.
 func schemaAwareTraversalAttrs(trav hcl.Traversal, props []*schema.Property, m *bridge.BodyMapping) hcl.Traversal {
 	if len(trav) <= 1 {
 		return trav
 	}
-	result := make(hcl.Traversal, len(trav))
-	copy(result, trav)
+	result := hcl.Traversal{trav[0]}
 	// currentType tracks the schema type at the current traversal position.
 	// We start with a synthetic object wrapping the top-level properties.
 	var currentType schema.Type
 	if len(props) > 0 {
 		currentType = &schema.ObjectType{Properties: props}
 	}
-	// flattened is true when the previous step is a MaxItems=1 block, which
-	// the bridge flattens to its one element but HCL still indexes.
+	// flattened is true when the previous step is a MaxItems=1 block.
 	var flattened bool
-	for i := 1; i < len(result); i++ {
-		switch step := result[i].(type) {
+	for _, step := range trav[1:] {
+		switch step := step.(type) {
 		case hcl.TraverseAttr:
-			stepProps := propertiesOf(currentType)
 			fm := m.Lookup(step.Name)
 			flattened = fm != nil && fm.MaxItemsOne
-			name, matched, nested := lookupProperty(step.Name, stepProps, m)
-			result[i] = hcl.TraverseAttr{Name: name}
+			name, matched, nested := lookupProperty(step.Name, propertiesOf(currentType), m)
+			result = append(result, hcl.TraverseAttr{Name: name})
 			m = nested
-			if matched != nil {
-				currentType = matched.Type
-			} else {
-				currentType = nil
-			}
+			currentType = propertyType(matched)
 		case hcl.TraverseIndex:
-			if !flattened {
-				currentType = elementTypeOf(currentType)
+			if flattened && isZeroIndex(step.Key) {
+				flattened = false
+				continue
 			}
 			flattened = false
+			result = append(result, step)
+			currentType = elementTypeOf(currentType)
 		}
 	}
 	return result
+}
+
+// isZeroIndex reports whether key is the number 0.
+func isZeroIndex(key cty.Value) bool {
+	return key.IsKnown() && key.Type() == cty.Number && key.RawEquals(cty.Zero)
 }
 
 // propertiesOf extracts []*schema.Property from a schema type.
@@ -1859,6 +1860,9 @@ func elementTypeOf(t schema.Type) schema.Type {
 	}
 }
 
+// traversalAttrs is [schemaAwareTraversalAttrs] against the schema and bridge
+// mapping cached for hclType. The root (logical resource name) is left
+// unchanged.
 func (ft *fileTransformer) traversalAttrs(trav hcl.Traversal, hclType string) hcl.Traversal {
 	var props []*schema.Property
 	if res := ft.resourceSchemas[hclType]; res != nil {

@@ -99,13 +99,11 @@ func renamedCase(expectedOutputs map[string]string) putest.Case {
 // `arn` to confirm default-cased outputs still work alongside renames.
 func TestL2RenamedOutputs(t *testing.T) {
 	t.Parallel()
-	c := renamedCase(map[string]string{
+	putest.RunCase(t, "l2_renamed_outputs", renamedCase(map[string]string{
 		"fn_name": "alpha",
 		"arn":     "arn:test:alpha",
 		"window":  "5",
-	})
-	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/718]: HCL -> PCL keeps the list index in `settings[0].window_size`."
-	putest.RunCase(t, "l2_renamed_outputs", c)
+	}))
 }
 
 // TestL2RenamedDataSourceOutputs covers data-source scalar output renames.
@@ -160,12 +158,10 @@ func TestL2RenamedDataSourceNestedOutputs(t *testing.T) {
 // resource and on a data source.
 func TestL2RenamedParentheses(t *testing.T) {
 	t.Parallel()
-	c := renamedCase(map[string]string{
+	putest.RunCase(t, "l2_renamed_parentheses", renamedCase(map[string]string{
 		"fn_name": "alpha",
 		"window":  "6",
 		"nested":  "alpha",
 		"from":    "registry",
-	})
-	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/718]: HCL -> PCL keeps the list index in `settings[0].window_size`."
-	putest.RunCase(t, "l2_renamed_parentheses", c)
+	}))
 }

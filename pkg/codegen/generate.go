@@ -2828,24 +2828,15 @@ func schemaAwareRewriteTraversal(
 			name, fm := hclField(p.Name, mapping)
 			result := hcl.Traversal{hcl.TraverseAttr{Name: name, SrcRange: t.SrcRange}}
 			rest := traversal[1:]
-			// The bridge flattens a MaxItems=1 block to its one element, which
-			// HCL still indexes.
-			if idx, ok := firstIndexStep(rest); ok && fm != nil && fm.MaxItemsOne {
-				result, rest = append(result, idx), rest[1:]
+			// The bridge flattens a MaxItems=1 block to its one element, but
+			// HCL reads the block as a list.
+			if fm != nil && fm.MaxItemsOne && len(rest) > 0 {
+				result = append(result, hcl.TraverseIndex{Key: cty.Zero})
 			}
 			return append(result, schemaAwareRewriteTyped(p.Type, nestedMapping(fm), rest)...)
 		}
 	}
 	return traversal
-}
-
-// firstIndexStep returns the first step of traversal when it is an index step.
-func firstIndexStep(traversal hcl.Traversal) (hcl.TraverseIndex, bool) {
-	if len(traversal) == 0 {
-		return hcl.TraverseIndex{}, false
-	}
-	idx, ok := traversal[0].(hcl.TraverseIndex)
-	return idx, ok
 }
 
 // schemaAwareRewriteTyped rewrites a traversal's attribute names using schema type

@@ -15,7 +15,7 @@ output "fn_name" {
 }
 
 output "window" {
-  value = (r.config[0].sizeWindow) + 1
+  value = (r.config.sizeWindow) + 1
 }
 
 output "nested" {

@@ -22,6 +22,6 @@ output "arn" {
 output "window" {
   # Nested block field, also non-default rename (window_size → windowSize via
   # explicit Name, plus the block itself is renamed settings → config).
-  value = r.config[0].sizeWindow
+  value = r.config.sizeWindow
 }
 

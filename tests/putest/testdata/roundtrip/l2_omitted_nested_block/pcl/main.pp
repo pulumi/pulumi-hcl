@@ -11,10 +11,10 @@ resource "t" "blocky:index/thing:Thing" {
 }
 
 output "rule" {
-  value = t.policy[0].rule
+  value = t.policy.rule
 }
 
 output "rule_len" {
-  value = length(t.policy[0].rule)
+  value = length(t.policy.rule)
 }
 

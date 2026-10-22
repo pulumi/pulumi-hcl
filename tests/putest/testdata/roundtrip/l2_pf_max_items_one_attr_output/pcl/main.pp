@@ -12,7 +12,7 @@ output "settings" {
 }
 
 output "enabled" {
-  value = this.settings[0].enabled
+  value = this.settings.enabled
 }
 
 output "count" {

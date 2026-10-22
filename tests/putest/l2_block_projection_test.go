@@ -34,7 +34,7 @@ import (
 func TestL2OmittedNestedBlock(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_omitted_nested_block", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/718]: HCL -> PCL keeps the list index in `policy[0].rule`.",
+		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/720]: The PCL reads the MaxItems=1 block `rule` as an object, not as a list.",
 		Providers: []putest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
