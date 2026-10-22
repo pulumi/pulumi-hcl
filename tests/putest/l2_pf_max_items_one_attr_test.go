@@ -30,8 +30,7 @@ import (
 func TestL2PFMaxItemsOneAttr(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_pf_max_items_one_attr", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/702]: HCL -> PCL writes the MaxItems=1 attribute `settings` as a list.",
-		Providers:  []putest.Provider{pfxFlatMaxItemsOne()},
+		Providers: []putest.Provider{pfxFlatMaxItemsOne()},
 		ExpectedOutputs: map[string]string{
 			"id": "pfx-flat-id",
 		},
@@ -44,7 +43,7 @@ func TestL2PFMaxItemsOneAttr(t *testing.T) {
 func TestL2PFMaxItemsOneAttrOutput(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_pf_max_items_one_attr_output", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/702]: HCL -> PCL writes the MaxItems=1 attribute `settings` as a list.",
+		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/718]: HCL -> PCL keeps the list index in `settings[0].enabled`.",
 		Providers:  []putest.Provider{pfxFlatMaxItemsOne()},
 		ExpectedOutputs: map[string]string{
 			"settings": `[{"enabled":true}]`,

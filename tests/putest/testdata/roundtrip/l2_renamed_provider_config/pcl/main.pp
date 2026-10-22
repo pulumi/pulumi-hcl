@@ -1,8 +1,8 @@
 resource "renamed" "pulumi:providers:renamed" {
   host = "https://example.test/api"
-  defaults = [{
+  defaults = {
     retryCount = 3
-  }]
+  }
 }
 
 resource "r" "renamed:index/thing:Thing" {

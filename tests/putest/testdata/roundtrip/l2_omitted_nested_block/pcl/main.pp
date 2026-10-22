@@ -2,9 +2,9 @@
 # `[]`, matching OpenTofu. The plugin path reads null (https://github.com/pulumi/pulumi-hcl/issues/508).
 resource "t" "blocky:index/thing:Thing" {
   name = "omit"
-  policy = [{
+  policy = {
     effect = "deny"
-  }]
+  }
   options {
     deleteBeforeReplace = true
   }

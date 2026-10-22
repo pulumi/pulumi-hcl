@@ -2,10 +2,10 @@
 # in ignore_changes. `verbose` is an ordinary in-place attribute.
 resource "r" "fnblock:index/resource:Resource" {
   note = "x"
-  settings = [{
+  settings = {
     mode    = "a"
     verbose = false
-  }]
+  }
   options {
     ignoreChanges       = [settings[0].mode]
     deleteBeforeReplace = true

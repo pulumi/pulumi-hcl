@@ -34,7 +34,7 @@ import (
 func TestL2OmittedNestedBlock(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_omitted_nested_block", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/702]: HCL -> PCL writes the MaxItems=1 block `policy` as a list.",
+		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/718]: HCL -> PCL keeps the list index in `policy[0].rule`.",
 		Providers: []putest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
@@ -85,8 +85,7 @@ func TestL2SetBlockEquality(t *testing.T) {
 func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_ignore_changes_forcenew_block_removed", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/702], TODO[https://github.com/pulumi/pulumi-hcl/issues/712]: HCL -> PCL writes the MaxItems=1 block " +
-			"`settings` as a list, and keeps the list index in `ignoreChanges`.",
+		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/712]: HCL -> PCL keeps the list index in `ignoreChanges`.",
 		Providers: []putest.Provider{
 			{Name: "fnblock", Factory: providers.FNBlockProvider},
 		},

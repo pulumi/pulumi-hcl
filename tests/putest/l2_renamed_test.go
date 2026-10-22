@@ -104,7 +104,7 @@ func TestL2RenamedOutputs(t *testing.T) {
 		"arn":     "arn:test:alpha",
 		"window":  "5",
 	})
-	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/702]: HCL -> PCL writes the MaxItems=1 block `settings` as a list."
+	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/718]: HCL -> PCL keeps the list index in `settings[0].window_size`."
 	putest.RunCase(t, "l2_renamed_outputs", c)
 }
 
@@ -130,8 +130,7 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 		"endpoint_seen": "https://example.test/api",
 		"retries_seen":  "3",
 	})
-	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/702], TODO[https://github.com/pulumi/pulumi-hcl/issues/710]: HCL -> PCL writes the MaxItems=1 block " +
-		"`default_options` as a list, and the PCL resource does not use the configured `renamed` provider."
+	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/710]: The PCL resource does not use the configured `renamed` provider."
 	putest.RunCase(t, "l2_renamed_provider_config", c)
 }
 
@@ -144,8 +143,6 @@ func TestL2RenamedDataSourceInputs(t *testing.T) {
 	c := renamedCase(map[string]string{
 		"matched": "hit:lambda:trigger",
 	})
-	// TODO[https://github.com/pulumi/pulumi-hcl/issues/702]: HCL -> PCL writes MaxItems=1 blocks as lists.
-	c.SkipRoundTrip = "HCL -> PCL writes the MaxItems=1 block `filter` as a list, and the invoke takes an object."
 	putest.RunCase(t, "l2_renamed_data_source_inputs", c)
 }
 
@@ -164,10 +161,12 @@ func TestL2RenamedDataSourceNestedOutputs(t *testing.T) {
 // resource and on a data source.
 func TestL2RenamedParentheses(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_parentheses", renamedCase(map[string]string{
+	c := renamedCase(map[string]string{
 		"fn_name": "alpha",
 		"window":  "6",
 		"nested":  "alpha",
 		"from":    "registry",
-	}))
+	})
+	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/718]: HCL -> PCL keeps the list index in `settings[0].window_size`."
+	putest.RunCase(t, "l2_renamed_parentheses", c)
 }

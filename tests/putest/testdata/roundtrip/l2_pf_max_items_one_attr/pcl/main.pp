@@ -1,7 +1,7 @@
 resource "this" "pfx:index/flat:Flat" {
-  settings = [{
+  settings = {
     enabled = true
-  }]
+  }
   options {
     deleteBeforeReplace = true
   }

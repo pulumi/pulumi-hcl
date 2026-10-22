@@ -8,9 +8,9 @@ terraform {
 }
 
 resource "pfx_flat" "this" {
-  settings = [{
-    "enabled" = true
-  }]
+  settings = {
+    enabled = true
+  }
 }
 output "settings" {
   value = pfx_flat.this.settings

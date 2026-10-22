@@ -1171,6 +1171,16 @@ func (ft *fileTransformer) transformTypedExpr(
 	case *hclsyntax.TemplateWrapExpr:
 		return ft.transformExpr(e.Wrapped)
 	case *hclsyntax.TupleConsExpr:
+		// The bridge flattens a MaxItems=1 list to its one element, or to
+		// null when the list is empty, and types it as that element.
+		if _, ok := codegen.UnwrapType(t).(*schema.ObjectType); ok {
+			switch len(e.Exprs) {
+			case 0:
+				return hclwrite.TokensForValue(cty.NullVal(cty.DynamicPseudoType))
+			case 1:
+				return ft.transformTypedExpr(e.Exprs[0], t, m)
+			}
+		}
 		elemType := elementTypeOf(t)
 		var elems []hclwrite.Tokens
 		for _, item := range e.Exprs {
@@ -2069,9 +2079,13 @@ func (ft *fileTransformer) blocksToObjectAttrs(
 			objAttrs = append(objAttrs, ft.blocksToObjectAttrs(block.Body.Blocks, elemProps, elemMapping)...)
 			elems = append(elems, hclwrite.TokensForObject(objAttrs))
 		}
+		value := hclwrite.TokensForTuple(elems)
+		if isObjectProperty(matched) && len(elems) == 1 {
+			value = elems[0]
+		}
 		result = append(result, hclwrite.ObjectAttrTokens{
 			Name:  hclwrite.TokensForIdentifier(name),
-			Value: hclwrite.TokensForTuple(elems),
+			Value: value,
 		})
 	}
 	return result
@@ -2416,6 +2430,16 @@ func elementObjectProperties(p *schema.Property) []*schema.Property {
 			return nil
 		}
 	}
+}
+
+// isObjectProperty reports whether the schema types p as one object, as the
+// bridge types a MaxItems=1 block.
+func isObjectProperty(p *schema.Property) bool {
+	if p == nil {
+		return false
+	}
+	_, ok := codegen.UnwrapType(p.Type).(*schema.ObjectType)
+	return ok
 }
 
 // isBoolLiteral reports whether expr is the literal boolean want.

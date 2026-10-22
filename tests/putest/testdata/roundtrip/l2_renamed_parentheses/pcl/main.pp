@@ -1,8 +1,8 @@
 resource "r" "renamed:index/thing:Thing" {
   name = "alpha"
-  config = [{
+  config = {
     sizeWindow = 5
-  }]
+  }
   options {
     deleteBeforeReplace = true
   }
