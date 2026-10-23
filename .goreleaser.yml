@@ -19,6 +19,9 @@ builds:
       - -trimpath
     ldflags:
       - -w -s -X github.com/pulumi/pulumi-hcl/pkg/version.version={{.Tag}}
+    hooks:
+      post:
+        - scripts/sign-windows-binary.sh {{ .Path }}
 
   - id: pulumi-converter-hcl
     binary: pulumi-converter-hcl
@@ -38,6 +41,9 @@ builds:
       - -trimpath
     ldflags:
       - -w -s -X github.com/pulumi/pulumi-hcl/pkg/version.version={{.Tag}}
+    hooks:
+      post:
+        - scripts/sign-windows-binary.sh {{ .Path }}
 
   - id: pulumi-resource-hcl
     binary: pulumi-resource-hcl
@@ -57,6 +63,9 @@ builds:
       - -trimpath
     ldflags:
       - -w -s -X github.com/pulumi/pulumi-hcl/pkg/version.version={{.Tag}}
+    hooks:
+      post:
+        - scripts/sign-windows-binary.sh {{ .Path }}
 
 archives:
   - id: pulumi-language-hcl
