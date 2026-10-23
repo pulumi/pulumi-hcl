@@ -1339,11 +1339,8 @@ func (ft *fileTransformer) transformIndexExpr(e *hclsyntax.IndexExpr) hclwrite.T
 func (ft *fileTransformer) transformRelativeTraversal(e *hclsyntax.RelativeTraversalExpr) hclwrite.Tokens {
 	tokens := ft.transformExpr(e.Source)
 	props, mapping := ft.relativeTraversalSourceProps(e.Source)
-	dummy := make(hcl.Traversal, len(e.Traversal)+1)
-	dummy[0] = hcl.TraverseRoot{Name: "_"}
-	copy(dummy[1:], e.Traversal)
-	converted, block := schemaAwareTraversalAttrs(dummy, props, mapping)
-	for _, step := range converted[1:] {
+	converted, block := mapSteps(e.Traversal, props, mapping)
+	for _, step := range converted {
 		switch s := step.(type) {
 		case hcl.TraverseAttr:
 			tokens = append(tokens,
@@ -1377,26 +1374,40 @@ func (ft *fileTransformer) relativeTraversalSourceProps(
 	if !ok {
 		return nil, nil
 	}
-	fn := ft.functionSchemas[typeAttr.Name]
-	if fn == nil || fn.ReturnType == nil {
-		return nil, nil
-	}
-	return propertiesOf(fn.ReturnType), ft.functionMappings[typeAttr.Name]
+	return ft.dataResultProps(typeAttr.Name)
 }
 
-// dataResultBlock returns the mapping of the MaxItems=1 field that steps end
-// on in the result of the data source hclType, or nil.
-func (ft *fileTransformer) dataResultBlock(hclType string, steps hcl.Traversal) *bridge.FieldMapping {
-	if len(steps) == 0 {
-		return nil
-	}
+// dataResultProps returns the schema properties of the result of the data
+// source hclType and their bridge mapping.
+func (ft *fileTransformer) dataResultProps(hclType string) ([]*schema.Property, *bridge.BodyMapping) {
 	var props []*schema.Property
 	if fn := ft.functionSchemas[hclType]; fn != nil && fn.ReturnType != nil {
 		props = propertiesOf(fn.ReturnType)
 	}
+	return props, ft.functionMappings[hclType]
+}
+
+// dataSteps returns the steps of the data reference trav (data.<type>.<name>
+// ...) that read the result of one invoke. For a ranged data block, idx is
+// the index that selects that result, or nil.
+func (ft *fileTransformer) dataSteps(ref dataReference, trav hcl.Traversal) (idx *hcl.TraverseIndex, steps hcl.Traversal) {
+	steps = trav[3:]
+	if len(steps) > 0 && rangeAttribute(ft.dataBlocks[ref], isDataMeta) != nil {
+		if i, ok := steps[0].(hcl.TraverseIndex); ok {
+			return &i, steps[1:]
+		}
+	}
+	return nil, steps
+}
+
+// mapSteps maps steps, which read a value with the schema properties props
+// and the bridge mapping m. block is as for [schemaAwareTraversalAttrs].
+func mapSteps(
+	steps hcl.Traversal, props []*schema.Property, m *bridge.BodyMapping,
+) (hcl.Traversal, *bridge.FieldMapping) {
 	dummy := append(hcl.Traversal{hcl.TraverseRoot{Name: "_"}}, steps...)
-	_, block := schemaAwareTraversalAttrs(dummy, props, ft.functionMappings[hclType])
-	return block
+	converted, block := schemaAwareTraversalAttrs(dummy, props, m)
+	return converted[1:], block
 }
 
 // transformSplatExpr converts a splat expression (source[*].attr) to PCL tokens.
@@ -1731,42 +1742,31 @@ func (ft *fileTransformer) transformTraversalRef(
 			typeAttr, ok1 := e.Traversal[1].(hcl.TraverseAttr)
 			nameAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
 			if ok1 && ok2 {
-				remaining := e.Traversal[3:]
+				ref := dataReference{typeAttr.Name, nameAttr.Name}
+				idx, steps := ft.dataSteps(ref, e.Traversal)
 				var tokens hclwrite.Tokens
-				if plan := ft.dataPlans[dataReference{typeAttr.Name, nameAttr.Name}]; plan != nil && plan.local != "" {
+				if plan := ft.dataPlans[ref]; plan != nil && plan.local != "" {
 					tokens = hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: plan.local}})
-					// The index of a ranged data block selects an invoke
-					// result; the schema applies to the steps after it.
-					if idx, ok := firstIndex(remaining); ok && plan.ranged {
-						tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{idx})...)
-						remaining = remaining[1:]
+					if idx != nil {
+						tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{*idx})...)
 					}
 				} else {
+					// The planner inlines a ranged data block only at a
+					// reference data.<type>.<name>[key] with no other steps.
+					contract.Assertf(idx == nil, "inlined data reference %s has an index", ref.name)
 					tokens = ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
 				}
-				var returnProps []*schema.Property
-				if fn := ft.functionSchemas[typeAttr.Name]; fn != nil && fn.ReturnType != nil {
-					returnProps = propertiesOf(fn.ReturnType)
-				}
-				returnMapping := ft.functionMappings[typeAttr.Name]
-				var block *bridge.FieldMapping
-				if len(remaining) > 0 {
-					// Build a dummy traversal with a root so schemaAwareTraversalAttrs works.
-					dummy := make(hcl.Traversal, len(remaining)+1)
-					dummy[0] = hcl.TraverseRoot{Name: "_"}
-					copy(dummy[1:], remaining)
-					var converted hcl.Traversal
-					converted, block = schemaAwareTraversalAttrs(dummy, returnProps, returnMapping)
-					for _, step := range converted[1:] {
-						switch s := step.(type) {
-						case hcl.TraverseAttr:
-							tokens = append(tokens,
-								&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-								&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
-							)
-						case hcl.TraverseIndex:
-							tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
-						}
+				props, mapping := ft.dataResultProps(typeAttr.Name)
+				converted, block := mapSteps(steps, props, mapping)
+				for _, step := range converted {
+					switch s := step.(type) {
+					case hcl.TraverseAttr:
+						tokens = append(tokens,
+							&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
+						)
+					case hcl.TraverseIndex:
+						tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
 					}
 				}
 				return tokens, block
@@ -2133,15 +2133,6 @@ func (ft *fileTransformer) hoistedInvokeTokens(
 // by the variable name.
 func substRoot(trav hcl.Traversal, name string) hcl.Traversal {
 	return append(hcl.Traversal{hcl.TraverseRoot{Name: name}}, trav[2:]...)
-}
-
-// firstIndex returns the first step of trav when it is an index.
-func firstIndex(trav hcl.Traversal) (hcl.TraverseIndex, bool) {
-	if len(trav) == 0 {
-		return hcl.TraverseIndex{}, false
-	}
-	idx, ok := trav[0].(hcl.TraverseIndex)
-	return idx, ok
 }
 
 // emitPropertyBlocks writes the PCL form of blocks, the input property blocks
