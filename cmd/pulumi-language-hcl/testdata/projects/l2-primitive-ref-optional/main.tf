@@ -76,3 +76,9 @@ output "unsetNumberArray" {
 output "unsetBooleanMap" {
   value = optional-primitive-ref_resource.unsetRes.data.boolean_map == null ? "null" : "not null"
 }
+output "setOptionalData" {
+  value = optional-primitive-ref_resource.setRes.optional_data == null ? "null" : "not null"
+}
+output "unsetOptionalData" {
+  value = optional-primitive-ref_resource.unsetRes.optional_data == null ? "null" : "not null"
+}
