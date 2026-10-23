@@ -15,6 +15,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -30,6 +31,8 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -1184,6 +1187,203 @@ func getRequiredPackages(t *testing.T, dir string) *pulumirpc.GetRequiredPackage
 	})
 	require.NoError(t, err)
 	return resp
+}
+
+// logRecorder is an engine client that records the messages logged to it.
+type logRecorder struct {
+	pulumirpc.EngineClient
+	logs []*pulumirpc.LogRequest
+}
+
+func (r *logRecorder) Log(
+	_ context.Context, req *pulumirpc.LogRequest, _ ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	r.logs = append(r.logs, req)
+	return &emptypb.Empty{}, nil
+}
+
+// TestGetRequiredPackages_InvalidProgram verifies that a program which fails
+// to parse or to resolve, in its root, a component or a module it calls, logs
+// each error to the engine once and fails, instead of reporting that it
+// requires no packages. A failure does not stop the search for other errors.
+func TestGetRequiredPackages_InvalidProgram(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		files    map[string]string
+		wantLogs func(dir string) []string
+	}{
+		{
+			name: "root",
+			files: map[string]string{
+				"main.tf": `
+ephemeral "random_password" "db" {}
+
+not_a_block "x" {}
+`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "main.tf") + `:2,1-10: Unsupported block type; ` +
+						`Blocks of type "ephemeral" are not expected here.`,
+					filepath.Join(dir, "main.tf") + `:4,1-12: Unsupported block type; ` +
+						`Blocks of type "not_a_block" are not expected here.`,
+				}
+			},
+		},
+		{
+			name: "child module",
+			files: map[string]string{
+				"main.tf": `
+module "child" {
+  source = "./child"
+}
+`,
+				"child/main.tf": `resource "random_pet" "p" {`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "child", "main.tf") + `:1,27-28: Unclosed configuration block; ` +
+						`There is no closing brace for this block before the end of the file. ` +
+						`This may be caused by incorrect brace nesting elsewhere in this file.`,
+				}
+			},
+		},
+		{
+			name: "unresolvable module",
+			files: map[string]string{
+				"main.tf": `
+module "child" {
+  source = "./missing"
+}
+`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "main.tf") + `:2,1-15: Cannot load module "./missing"; ` +
+						"module directory does not exist: " + filepath.Join(dir, "missing"),
+				}
+			},
+		},
+		{
+			name: "module called twice",
+			files: map[string]string{
+				"main.tf": `
+module "a" {
+  source = "./child"
+}
+
+module "b" {
+  source = "./child"
+}
+`,
+				"child/main.tf": `not_a_block "x" {}`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "child", "main.tf") + `:1,1-12: Unsupported block type; ` +
+						`Blocks of type "not_a_block" are not expected here.`,
+				}
+			},
+		},
+		{
+			name: "every failure",
+			files: map[string]string{
+				"broken.tf": `resource "random_pet" "p" {`,
+				"main.tf": `
+module "bad" {
+  source = "./bad"
+}
+
+module "missing" {
+  source = "./missing"
+}
+`,
+				"bad/main.tf": `ephemeral "random_password" "db" {}`,
+				"bad/calls.tf": `
+module "grandchild" {
+  source = "./grandchild"
+}
+`,
+				"bad/grandchild/main.tf": `not_a_block "x" {}`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "broken.tf") + `:1,27-28: Unclosed configuration block; ` +
+						`There is no closing brace for this block before the end of the file. ` +
+						`This may be caused by incorrect brace nesting elsewhere in this file.`,
+					filepath.Join(dir, "bad", "main.tf") + `:1,1-10: Unsupported block type; ` +
+						`Blocks of type "ephemeral" are not expected here.`,
+					filepath.Join(dir, "bad", "grandchild", "main.tf") + `:1,1-12: Unsupported block type; ` +
+						`Blocks of type "not_a_block" are not expected here.`,
+					filepath.Join(dir, "main.tf") + `:6,1-17: Cannot load module "./missing"; ` +
+						"module directory does not exist: " + filepath.Join(dir, "missing"),
+				}
+			},
+		},
+		{
+			name: "component package",
+			files: map[string]string{
+				"PulumiPlugin.yaml": "runtime: hcl\n",
+				"main.tf":           `not_a_block "root" {}`,
+				"modules/a/main.tf": `not_a_block "a" {}`,
+				"modules/b/main.tf": `output "b" { value = 1 }`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "main.tf") + `:1,1-12: Unsupported block type; ` +
+						`Blocks of type "not_a_block" are not expected here.`,
+					filepath.Join(dir, "modules", "a", "main.tf") + `:1,1-12: Unsupported block type; ` +
+						`Blocks of type "not_a_block" are not expected here.`,
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			require.NoError(t, writeFiles(dir, tt.files))
+			engine := &logRecorder{}
+			host := &LanguageHost{engine: engine}
+			_, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+				Info: &pulumirpc.ProgramInfo{
+					ProgramDirectory: dir,
+					RootDirectory:    dir,
+					EntryPoint:       ".",
+				},
+			})
+			require.ErrorIs(t, err, errInvalidProgram)
+
+			var logs []string
+			for _, l := range engine.logs {
+				require.Equal(t, pulumirpc.LogSeverity_ERROR, l.Severity)
+				logs = append(logs, l.Message)
+			}
+			assert.Equal(t, tt.wantLogs(dir), logs)
+		})
+	}
+}
+
+// TestGetRequiredPackages_InvalidProgramWithoutEngine verifies that, with no
+// engine to log to, the diagnostics of an invalid program are the error.
+func TestGetRequiredPackages_InvalidProgramWithoutEngine(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, writeFiles(dir, map[string]string{"main.tf": `not_a_block "x" {}`}))
+	host := &LanguageHost{}
+	_, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: dir,
+			RootDirectory:    dir,
+			EntryPoint:       ".",
+		},
+	})
+	assert.EqualError(t, err, filepath.Join(dir, "main.tf")+`:1,1-12: Unsupported block type; `+
+		`Blocks of type "not_a_block" are not expected here.`)
 }
 
 func TestGetRequiredPackages_SubmoduleComponentProviders(t *testing.T) {

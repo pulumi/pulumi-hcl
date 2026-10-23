@@ -29,9 +29,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
 	regaddr "github.com/opentofu/registry-address/v2"
 	"github.com/opentofu/svchost"
 	"github.com/opentofu/svchost/disco"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/vendored/getmodules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -485,7 +487,9 @@ func TestLoadModule_ParseFailureDiagnostics(t *testing.T) {
 			})
 			loaded, diags, err := l.LoadModule(t.Context(), "./mod", "", t.TempDir())
 			require.NoError(t, err)
-			assert.Nil(t, loaded)
+			empty := ast.NewConfig()
+			empty.Files = map[string]*hcl.File{}
+			assert.Equal(t, &LoadedModule{Config: empty, SourcePath: pkg}, loaded)
 			assert.True(t, diags.HasErrors())
 		})
 	}
