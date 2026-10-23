@@ -7,62 +7,7 @@ terraform {
   }
 }
 
-data "primitive_invoke" "invoke_0" {
-  boolean      = var.plainString
-  float        = var.plainInteger
-  integer      = var.plainNumericString
-  string       = var.plainBool
-  number_array = [var.plainInteger, var.plainNumericString, var.plainNumber]
-  boolean_map = {
-    "fromBool"   = var.plainBool
-    "fromString" = var.plainString
-  }
-}
-data "primitive_invoke" "invoke_1" {
-  boolean      = var.plainString
-  float        = var.plainInteger
-  integer      = var.plainNumericString
-  string       = var.plainBool
-  number_array = [var.plainInteger, var.plainNumericString, var.plainNumber]
-  boolean_map = {
-    "fromBool"   = var.plainBool
-    "fromString" = var.plainString
-  }
-}
-data "primitive_invoke" "invoke_2" {
-  boolean      = var.plainString
-  float        = var.plainInteger
-  integer      = var.plainNumericString
-  string       = var.plainBool
-  number_array = [var.plainInteger, var.plainNumericString, var.plainNumber]
-  boolean_map = {
-    "fromBool"   = var.plainBool
-    "fromString" = var.plainString
-  }
-}
-data "primitive_invoke" "invoke_3" {
-  boolean      = var.plainString
-  float        = var.plainInteger
-  integer      = var.plainNumericString
-  string       = var.plainBool
-  number_array = [var.plainInteger, var.plainNumericString, var.plainNumber]
-  boolean_map = {
-    "fromBool"   = var.plainBool
-    "fromString" = var.plainString
-  }
-}
-data "primitive_invoke" "invoke_4" {
-  boolean      = var.plainString
-  float        = var.plainInteger
-  integer      = var.plainNumericString
-  string       = var.plainBool
-  number_array = [var.plainInteger, var.plainNumericString, var.plainNumber]
-  boolean_map = {
-    "fromBool"   = var.plainBool
-    "fromString" = var.plainString
-  }
-}
-data "primitive_invoke" "invoke_5" {
+data "primitive_invoke" "invokeResult" {
   boolean      = var.plainString
   float        = var.plainInteger
   integer      = var.plainNumericString
@@ -106,12 +51,12 @@ resource "primitive_resource" "invokeValues" {
   lifecycle {
     create_before_destroy = true
   }
-  boolean      = data.primitive_invoke.invoke_0.boolean
-  float        = data.primitive_invoke.invoke_1.float
-  integer      = data.primitive_invoke.invoke_2.integer
-  string       = data.primitive_invoke.invoke_3.string
-  number_array = data.primitive_invoke.invoke_4.number_array
-  boolean_map  = data.primitive_invoke.invoke_5.boolean_map
+  boolean      = data.primitive_invoke.invokeResult.boolean
+  float        = data.primitive_invoke.invokeResult.float
+  integer      = data.primitive_invoke.invokeResult.integer
+  string       = data.primitive_invoke.invokeResult.string
+  number_array = data.primitive_invoke.invokeResult.number_array
+  boolean_map  = data.primitive_invoke.invokeResult.boolean_map
 }
 variable "plainBool" {
   type = bool

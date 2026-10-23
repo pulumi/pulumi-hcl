@@ -7,10 +7,7 @@ terraform {
   }
 }
 
-data "nestedobject_values" "invoke_0" {
-  names = nestedobject_container.source.inputs
-}
-data "nestedobject_values" "invoke_1" {
+data "nestedobject_values" "values" {
   names = nestedobject_container.source.inputs
 }
 
@@ -26,12 +23,12 @@ resource "nestedobject_container" "source" {
 # Output-typed list by the loop counter inside the body. This is the shape from
 # https://github.com/pulumi/pulumi/issues/12507.
 resource "nestedobject_target" "routes" {
-  count = length(data.nestedobject_values.invoke_1.results)
+  count = length(data.nestedobject_values.values.results)
   pulumi {
     name ="routes-${count.index}"
   }
   lifecycle {
     create_before_destroy = true
   }
-  name = data.nestedobject_values.invoke_0.results[count.index]
+  name = data.nestedobject_values.values.results[count.index]
 }

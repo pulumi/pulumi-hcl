@@ -1,3 +1,7 @@
+values = invoke("nestedobject:index:getValues", {
+  names = source.inputs
+})
+
 # A resource whose computed output feeds the invoke, forcing the invoke into its
 # output-versioned form so that `values` is an Output.
 resource "source" "nestedobject:index:Container" {
@@ -8,13 +12,9 @@ resource "source" "nestedobject:index:Container" {
 # Output-typed list by the loop counter inside the body. This is the shape from
 # https://github.com/pulumi/pulumi/issues/12507.
 resource "routes" "nestedobject:index:Target" {
-  name = invoke("nestedobject:index:getValues", {
-    names = source.inputs
-  }).results[range.value]
+  name = values.results[range.value]
   options {
-    range = length(invoke("nestedobject:index:getValues", {
-      names = source.inputs
-    }).results)
+    range = length(values.results)
   }
 }
 

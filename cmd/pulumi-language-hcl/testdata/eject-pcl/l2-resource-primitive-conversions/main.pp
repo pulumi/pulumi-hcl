@@ -1,3 +1,15 @@
+invokeResult = invoke("primitive:index:invoke", {
+  boolean     = plainString
+  float       = plainInteger
+  integer     = plainNumericString
+  string      = plainBool
+  numberArray = [plainInteger, plainNumericString, plainNumber]
+  booleanMap = {
+    "fromBool"   = plainBool
+    "fromString" = plainString
+  }
+})
+
 resource "plainValues" "primitive:index:Resource" {
   boolean     = plainString
   float       = plainInteger
@@ -23,72 +35,12 @@ resource "secretValues" "primitive:index:Resource" {
 }
 
 resource "invokeValues" "primitive:index:Resource" {
-  boolean = invoke("primitive:index:invoke", {
-    boolean     = plainString
-    float       = plainInteger
-    integer     = plainNumericString
-    string      = plainBool
-    numberArray = [plainInteger, plainNumericString, plainNumber]
-    booleanMap = {
-      "fromBool"   = plainBool
-      "fromString" = plainString
-    }
-  }).boolean
-  float = invoke("primitive:index:invoke", {
-    boolean     = plainString
-    float       = plainInteger
-    integer     = plainNumericString
-    string      = plainBool
-    numberArray = [plainInteger, plainNumericString, plainNumber]
-    booleanMap = {
-      "fromBool"   = plainBool
-      "fromString" = plainString
-    }
-  }).float
-  integer = invoke("primitive:index:invoke", {
-    boolean     = plainString
-    float       = plainInteger
-    integer     = plainNumericString
-    string      = plainBool
-    numberArray = [plainInteger, plainNumericString, plainNumber]
-    booleanMap = {
-      "fromBool"   = plainBool
-      "fromString" = plainString
-    }
-  }).integer
-  string = invoke("primitive:index:invoke", {
-    boolean     = plainString
-    float       = plainInteger
-    integer     = plainNumericString
-    string      = plainBool
-    numberArray = [plainInteger, plainNumericString, plainNumber]
-    booleanMap = {
-      "fromBool"   = plainBool
-      "fromString" = plainString
-    }
-  }).string
-  numberArray = invoke("primitive:index:invoke", {
-    boolean     = plainString
-    float       = plainInteger
-    integer     = plainNumericString
-    string      = plainBool
-    numberArray = [plainInteger, plainNumericString, plainNumber]
-    booleanMap = {
-      "fromBool"   = plainBool
-      "fromString" = plainString
-    }
-  }).numberArray
-  booleanMap = invoke("primitive:index:invoke", {
-    boolean     = plainString
-    float       = plainInteger
-    integer     = plainNumericString
-    string      = plainBool
-    numberArray = [plainInteger, plainNumericString, plainNumber]
-    booleanMap = {
-      "fromBool"   = plainBool
-      "fromString" = plainString
-    }
-  }).booleanMap
+  boolean     = invokeResult.boolean
+  float       = invokeResult.float
+  integer     = invokeResult.integer
+  string      = invokeResult.string
+  numberArray = invokeResult.numberArray
+  booleanMap  = invokeResult.booleanMap
 }
 
 config "plainBool" "bool" {

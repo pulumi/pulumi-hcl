@@ -164,8 +164,9 @@ func (*hclConverter) ConvertProgram(
 	var allDiags hcl.Diagnostics
 	parsed := make([]parsedHCL, 0, len(sources))
 	bodies := make([]*hclsyntax.Body, 0, len(sources))
+	contents := make(map[string][]byte, len(sources))
 	for _, s := range sources {
-		f, parseDiags := hclsyntax.ParseConfig(s.content, filepath.Base(s.relPath), hcl.Pos{Line: 1, Column: 1})
+		f, parseDiags := hclsyntax.ParseConfig(s.content, s.relPath, hcl.Pos{Line: 1, Column: 1})
 		if parseDiags.HasErrors() {
 			return &plugin.ConvertProgramResponse{Diagnostics: parseDiags}, nil
 		}
@@ -175,9 +176,10 @@ func (*hclConverter) ConvertProgram(
 		}
 		parsed = append(parsed, parsedHCL{relPath: s.relPath, content: s.content, body: body})
 		bodies = append(bodies, body)
+		contents[s.relPath] = s.content
 	}
 
-	ft, scanDiags := newProjectTransformer(ctx, loader, providerInfoSource, paramInfos, bodies)
+	ft, scanDiags := newProjectTransformer(ctx, loader, providerInfoSource, paramInfos, bodies, contents)
 	allDiags = append(allDiags, scanDiags...)
 	if scanDiags.HasErrors() {
 		return &plugin.ConvertProgramResponse{Diagnostics: allDiags}, nil
@@ -190,7 +192,7 @@ func (*hclConverter) ConvertProgram(
 		if filepath.Dir(p.relPath) == "." {
 			pi = paramInfos
 		}
-		diags, emitErr := ft.emitFile(ctx, p.content, filepath.Base(p.relPath), p.body, out.Body(), pi)
+		diags, emitErr := ft.emitFile(ctx, p.content, p.relPath, p.body, out.Body(), pi)
 		if emitErr != nil {
 			return nil, emitErr
 		}
@@ -260,17 +262,12 @@ type fileTransformer struct {
 	// name that could not be resolved so it falls back to notImplemented.
 	providerFunctions map[string]*schema.Function
 	nameRewrites      map[string]string // logical name → sanitized PCL identifier (only for invalid names)
-	// comprehensionStack tracks the iteration variables of enclosing PCL
-	// for-expressions while we are emitting their body. When non-empty and we
-	// are inside an inlined invoke body, each.key / each.value references
-	// (which originated in a ranged data block) rewrite to the innermost
-	// comprehension's key / value variable names rather than range.*.
-	comprehensionStack []comprehensionCtx
-	// inlineDepth is incremented while invokeExprTokens is expanding a data
-	// block body at a reference site, so transformTraversal can distinguish
-	// "each.* in an inlined invoke" from "each.* at the top level of a
-	// ranged block's own body".
-	inlineDepth int
+	// dataPlans records, for each data block, if its invoke is inlined or
+	// hoisted to a local.
+	dataPlans map[dataReference]*dataPlan
+	// rangeSubst is the substitution for each.* and count.* while the body
+	// of a data block is emitted, or nil when they convert to range.*.
+	rangeSubst *rangeSubst
 	// comments holds leading comments lexed from the source file, keyed by
 	// the source start byte of the syntactic element that should carry them.
 	comments *comments.Map
@@ -300,27 +297,20 @@ func (ft *fileTransformer) withTrailing(valueTokens hclwrite.Tokens, startByte i
 	return ft.comments.AppendTrailing(valueTokens, startByte)
 }
 
-// comprehensionCtx records the variable names of a PCL for-expression so
-// references to its iteration variables survive inlining.
-type comprehensionCtx struct {
-	// KeyVar is empty when the PCL for-expression has no explicit key variable.
-	KeyVar string
-	ValVar string
-}
-
 // newProjectTransformer creates a fileTransformer whose symbol tables are
-// populated from every body in the project. After construction, callers must
-// set ft.src and ft.comments per-file before calling emitFile.
+// populated from every body in the project. sources maps the filename of each
+// body to its raw bytes.
 func newProjectTransformer(
 	ctx context.Context, loader schema.ReferenceLoader, providerInfoSource bridge.ProviderInfoSource,
-	pkgs map[string]workspace.PackageDescriptor, bodies []*hclsyntax.Body,
+	pkgs map[string]workspace.PackageDescriptor, bodies []*hclsyntax.Body, sources map[string][]byte,
 ) (*fileTransformer, hcl.Diagnostics) {
 	ft := &fileTransformer{
-		sources:           make(map[string][]byte),
+		sources:           sources,
 		knownHCLTypes:     make(map[string]bool),
 		stackRefNames:     make(map[string]bool),
 		callBlocks:        make(map[callReference]*hclsyntax.Body),
 		dataBlocks:        make(map[dataReference]*hclsyntax.Body),
+		dataPlans:         make(map[dataReference]*dataPlan),
 		dataTokens:        make(map[string]string),
 		loader:            loader,
 		resourceSchemas:   make(map[string]*schema.Resource),
@@ -349,6 +339,9 @@ func newProjectTransformer(
 	}
 	// Phase 3: compute name rewrites against the union of declarations.
 	ft.computeNameRewrites(bodies)
+	// Phase 4: decide which data blocks are inlined and which are hoisted to
+	// locals. This needs the name rewrites to pick unused local names.
+	ft.planDataBlocks(bodies)
 	return ft, diags
 }
 
@@ -606,7 +599,6 @@ func (ft *fileTransformer) emitFile(
 	src []byte, filename string, body *hclsyntax.Body, out *hclwrite.Body,
 	paramInfos map[string]workspace.PackageDescriptor,
 ) (hcl.Diagnostics, error) {
-	ft.sources[filename] = src
 	ft.comments = comments.Build(src, filename, body, "data", "call")
 
 	var resultDiags hcl.Diagnostics
@@ -623,7 +615,17 @@ func (ft *fileTransformer) emitFile(
 			// Call blocks are inlined into expressions as call() function calls; skip block output.
 
 		case "data":
-			// Data blocks are inlined into expressions as invoke() calls; skip block output.
+			// A data block becomes an invoke. The invoke is inlined at its
+			// reference, or hoisted to a local here.
+			if len(block.Labels) != 2 {
+				continue
+			}
+			plan := ft.dataPlans[dataReference{block.Labels[0], block.Labels[1]}]
+			if plan == nil || plan.local == "" {
+				continue
+			}
+			out.SetAttributeRaw(plan.local, ft.hoistedInvokeTokens(block.Labels[0], block.Labels[1], block.Body, plan))
+			out.AppendNewline()
 
 		case "variable":
 			if len(block.Labels) == 0 {
@@ -911,20 +913,7 @@ func (ft *fileTransformer) emitFile(
 			pkgName := block.Labels[0]
 			providerToken := "pulumi:providers:" + pkgName
 
-			resourceName := pkgName
-			var aliasAttr *hclsyntax.Attribute
-			for _, attr := range block.Body.Attributes {
-				if attr.Name == "alias" {
-					aliasAttr = attr
-					break
-				}
-			}
-			if aliasAttr != nil {
-				val, vdiags := aliasAttr.Expr.Value(nil)
-				if !vdiags.HasErrors() && val.Type() == cty.String {
-					resourceName = val.AsString()
-				}
-			}
+			resourceName := providerResourceName(block)
 
 			pkg, perr := packages.ResolvePackage(ctx, ft.loader, ft.knownProviders, "pulumi_providers_"+pkgName)
 			if perr != nil {
@@ -1030,6 +1019,18 @@ func (ft *fileTransformer) emitFile(
 	}
 
 	return resultDiags, nil
+}
+
+// providerResourceName returns the name of the PCL provider resource for a
+// `provider` block with at least one label: its literal alias, or else its
+// package name.
+func providerResourceName(block *hclsyntax.Block) string {
+	if attr, ok := block.Body.Attributes["alias"]; ok {
+		if val, diags := attr.Expr.Value(nil); !diags.HasErrors() && val.Type() == cty.String {
+			return val.AsString()
+		}
+	}
+	return block.Labels[0]
 }
 
 // sortedAttributes returns attributes sorted by source position.
@@ -1303,21 +1304,24 @@ func propertyType(p *schema.Property) schema.Type {
 }
 
 // transformIndexExpr converts an HCL index expression (collection[key]) to PCL tokens.
-// When the collection is a reference to a ranged data block (one with for_each/count)
-// and the key is the per-iteration index, we drop the index and inline the invoke —
-// the inlined invoke's arguments already close over the enclosing resource's range.
+// When the collection is a ranged data block (one with for_each/count) whose
+// invoke is inlined, the key is the iteration key of an enclosing range over
+// the same collection. So we drop the index and inline the invoke: the
+// inlined invoke's arguments already close over that range.
 func (ft *fileTransformer) transformIndexExpr(e *hclsyntax.IndexExpr) hclwrite.Tokens {
 	if coll, ok := e.Collection.(*hclsyntax.ScopeTraversalExpr); ok &&
-		coll.Traversal.RootName() == "data" && len(coll.Traversal) >= 3 {
+		coll.Traversal.RootName() == "data" && len(coll.Traversal) == 3 {
 		typeAttr, ok1 := coll.Traversal[1].(hcl.TraverseAttr)
 		nameAttr, ok2 := coll.Traversal[2].(hcl.TraverseAttr)
 		if ok1 && ok2 {
-			if body, ok := ft.dataBlocks[dataReference{typeAttr.Name, nameAttr.Name}]; ok {
-				_, hasForEach := body.Attributes["for_each"]
-				_, hasCount := body.Attributes["count"]
-				if hasForEach || hasCount {
-					return ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
+			if plan := ft.dataPlans[dataReference{typeAttr.Name, nameAttr.Name}]; plan != nil &&
+				plan.ranged && plan.local == "" {
+				if plan.subst != nil {
+					saved := ft.rangeSubst
+					ft.rangeSubst = plan.subst
+					defer func() { ft.rangeSubst = saved }()
 				}
+				return ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
 			}
 		}
 	}
@@ -1679,17 +1683,29 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 	switch root {
 	case "data":
 		// data.hclType.name[.prop...] → invoke("token", {args...})[.prop...]
+		// or <local>[.prop...] when the invoke is hoisted to a local.
 		if len(e.Traversal) >= 3 {
 			typeAttr, ok1 := e.Traversal[1].(hcl.TraverseAttr)
 			nameAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
 			if ok1 && ok2 {
-				tokens := ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
+				remaining := e.Traversal[3:]
+				var tokens hclwrite.Tokens
+				if plan := ft.dataPlans[dataReference{typeAttr.Name, nameAttr.Name}]; plan != nil && plan.local != "" {
+					tokens = hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: plan.local}})
+					// The index of a ranged data block selects an invoke
+					// result; the schema applies to the steps after it.
+					if idx, ok := firstIndex(remaining); ok && plan.ranged {
+						tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{idx})...)
+						remaining = remaining[1:]
+					}
+				} else {
+					tokens = ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
+				}
 				var returnProps []*schema.Property
 				if fn := ft.functionSchemas[typeAttr.Name]; fn != nil && fn.ReturnType != nil {
 					returnProps = propertiesOf(fn.ReturnType)
 				}
 				returnMapping := ft.functionMappings[typeAttr.Name]
-				remaining := e.Traversal[3:]
 				if len(remaining) > 0 {
 					// Build a dummy traversal with a root so schemaAwareTraversalAttrs works.
 					dummy := make(hcl.Traversal, len(remaining)+1)
@@ -1730,6 +1746,10 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 			}
 		}
 	case "count":
+		if s := ft.rangeSubst; s != nil && s.index != "" &&
+			traversalString(e.Traversal[:min(2, len(e.Traversal))]) == "count.index" {
+			return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.index))
+		}
 		// count.index → range.value
 		trav := make(hcl.Traversal, len(e.Traversal))
 		trav[0] = hcl.TraverseRoot{Name: "range"}
@@ -1742,28 +1762,12 @@ func (ft *fileTransformer) transformTraversal(e *hclsyntax.ScopeTraversalExpr) h
 		}
 		return hclwrite.TokensForTraversal(trav)
 	case "each":
-		// When inlining a ranged data block inside a PCL for-comprehension,
-		// rewrite each.key / each.value to the comprehension's own variable
-		// names — the range.* scope belongs to the data block we are erasing
-		// and is not in scope at the inlined reference site.
-		if ft.inlineDepth > 0 && len(ft.comprehensionStack) > 0 {
-			top := ft.comprehensionStack[len(ft.comprehensionStack)-1]
-			if len(e.Traversal) >= 2 {
-				if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
-					var name string
-					switch attr.Name {
-					case "value":
-						name = top.ValVar
-					case "key":
-						name = top.KeyVar
-					}
-					if name != "" {
-						trav := make(hcl.Traversal, len(e.Traversal)-1)
-						trav[0] = hcl.TraverseRoot{Name: name}
-						copy(trav[1:], e.Traversal[2:])
-						return hclwrite.TokensForTraversal(trav)
-					}
-				}
+		if s := ft.rangeSubst; s != nil {
+			switch traversalString(e.Traversal[:min(2, len(e.Traversal))]) {
+			case "each.key":
+				return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.key))
+			case "each.value":
+				return hclwrite.TokensForTraversal(substRoot(e.Traversal, s.value))
 			}
 		}
 		// each.key → range.key, each.value → range.value
@@ -1966,9 +1970,6 @@ func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclw
 // invoke("token", {args...}, {opts...}) when invoke options are present.
 // It looks up the matching data block to extract the argument and option objects.
 func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tokens {
-	ft.inlineDepth++
-	defer func() { ft.inlineDepth-- }()
-
 	tokenTokens := hclwrite.TokensForValue(cty.StringVal(ft.dataTokens[hclType]))
 
 	var inputProps []*schema.Property
@@ -2023,6 +2024,45 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 		return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens)
 	}
 	return hclwrite.TokensForFunctionCall("invoke", tokenTokens, argsTokens, hclwrite.TokensForObject(optAttrs))
+}
+
+// hoistedInvokeTokens returns the value of the PCL local that holds the
+// invoke of a hoisted data block. A ranged data block becomes a
+// comprehension: a map keyed like for_each, or a list indexed like count.
+func (ft *fileTransformer) hoistedInvokeTokens(
+	hclType, dsName string, body *hclsyntax.Body, plan *dataPlan,
+) hclwrite.Tokens {
+	rangeAttr := rangeAttribute(body, isDataMeta)
+	if rangeAttr == nil {
+		return ft.invokeExprTokens(hclType, dsName)
+	}
+	saved := ft.rangeSubst
+	defer func() { ft.rangeSubst = saved }()
+
+	if rangeAttr.Name == "count" {
+		coll := hclwrite.TokensForFunctionCall("range", ft.transformExpr(rangeAttr.Expr))
+		ft.rangeSubst = plan.subst
+		return forExprTokens("", plan.subst.index, coll, nil, ft.invokeExprTokens(hclType, dsName), nil, false)
+	}
+	coll := ft.transformForEachExpr(rangeAttr.Expr)
+	ft.rangeSubst = plan.subst
+	key := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: plan.subst.key}})
+	return forExprTokens(plan.subst.key, plan.subst.value, coll, key, ft.invokeExprTokens(hclType, dsName), nil, false)
+}
+
+// substRoot returns trav with its first two steps (e.g. each.key) replaced
+// by the variable name.
+func substRoot(trav hcl.Traversal, name string) hcl.Traversal {
+	return append(hcl.Traversal{hcl.TraverseRoot{Name: name}}, trav[2:]...)
+}
+
+// firstIndex returns the first step of trav when it is an index.
+func firstIndex(trav hcl.Traversal) (hcl.TraverseIndex, bool) {
+	if len(trav) == 0 {
+		return hcl.TraverseIndex{}, false
+	}
+	idx, ok := trav[0].(hcl.TraverseIndex)
+	return idx, ok
 }
 
 // emitPropertyBlocks writes the PCL form of blocks, the input property blocks
@@ -2260,24 +2300,22 @@ func (ft *fileTransformer) transformDynamicIteratorTraversal(trav hcl.Traversal,
 // transformForExpr converts an HCL for-expression to PCL tokens, transforming
 // sub-expressions (e.g., var.names → names).
 func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr) hclwrite.Tokens {
-	collTokens := ft.transformExpr(e.CollExpr)
+	var keyTokens, condTokens hclwrite.Tokens
+	if e.KeyExpr != nil {
+		keyTokens = ft.transformExpr(e.KeyExpr)
+	}
+	if e.CondExpr != nil {
+		condTokens = ft.transformExpr(e.CondExpr)
+	}
+	return forExprTokens(e.KeyVar, e.ValVar,
+		ft.transformExpr(e.CollExpr), keyTokens, ft.transformExpr(e.ValExpr), condTokens, e.Group)
+}
 
-	// Push this for-expression's iteration variables so nested traversals of
-	// each.* inside any inlined invoke resolve to them instead of range.*.
-	ft.comprehensionStack = append(ft.comprehensionStack, comprehensionCtx{
-		KeyVar: e.KeyVar,
-		ValVar: e.ValVar,
-	})
-	defer func() {
-		ft.comprehensionStack = ft.comprehensionStack[:len(ft.comprehensionStack)-1]
-	}()
-
-	valTokens := ft.transformExpr(e.ValExpr)
-
-	isMap := e.KeyExpr != nil
-
+// forExprTokens builds the tokens of a PCL for-expression. It is a map
+// comprehension when key is not nil. keyVar and cond can be empty.
+func forExprTokens(keyVar, valVar string, coll, key, val, cond hclwrite.Tokens, group bool) hclwrite.Tokens {
 	var open, close byte
-	if isMap {
+	if key != nil {
 		open, close = '{', '}'
 	} else {
 		open, close = '[', ']'
@@ -2288,48 +2326,46 @@ func (ft *fileTransformer) transformForExpr(e *hclsyntax.ForExpr) hclwrite.Token
 		{Type: hclsyntax.TokenIdent, Bytes: []byte("for"), SpacesBefore: 0},
 	}
 
-	if e.KeyVar != "" {
+	if keyVar != "" {
 		tokens = append(tokens,
-			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(e.KeyVar), SpacesBefore: 1},
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(keyVar), SpacesBefore: 1},
 			&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
 		)
 	}
 
 	tokens = append(tokens,
-		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(e.ValVar), SpacesBefore: 1},
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(valVar), SpacesBefore: 1},
 		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("in"), SpacesBefore: 1},
 	)
 
-	if len(collTokens) > 0 {
-		collTokens[0].SpacesBefore = 1
+	if len(coll) > 0 {
+		coll[0].SpacesBefore = 1
 	}
-	tokens = append(tokens, collTokens...)
+	tokens = append(tokens, coll...)
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1})
 
-	if isMap {
-		keyTokens := ft.transformExpr(e.KeyExpr)
-		if len(keyTokens) > 0 {
-			keyTokens[0].SpacesBefore = 1
+	if key != nil {
+		if len(key) > 0 {
+			key[0].SpacesBefore = 1
 		}
-		tokens = append(tokens, keyTokens...)
+		tokens = append(tokens, key...)
 		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenFatArrow, Bytes: []byte("=>"), SpacesBefore: 1})
 	}
 
-	if len(valTokens) > 0 {
-		valTokens[0].SpacesBefore = 1
+	if len(val) > 0 {
+		val[0].SpacesBefore = 1
 	}
-	tokens = append(tokens, valTokens...)
+	tokens = append(tokens, val...)
 
-	if e.CondExpr != nil {
-		condTokens := ft.transformExpr(e.CondExpr)
+	if cond != nil {
 		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("if"), SpacesBefore: 1})
-		if len(condTokens) > 0 {
-			condTokens[0].SpacesBefore = 1
+		if len(cond) > 0 {
+			cond[0].SpacesBefore = 1
 		}
-		tokens = append(tokens, condTokens...)
+		tokens = append(tokens, cond...)
 	}
 
-	if e.Group {
+	if group {
 		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenEllipsis, Bytes: []byte("..."), SpacesBefore: 0})
 	}
 

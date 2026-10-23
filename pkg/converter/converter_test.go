@@ -55,7 +55,8 @@ func transformSingleFile(
 	f, parseDiags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
 	require.False(t, parseDiags.HasErrors(), parseDiags.Error())
 	body := f.Body.(*hclsyntax.Body)
-	ft, scanDiags := newProjectTransformer(t.Context(), loader, nil, nil, []*hclsyntax.Body{body})
+	ft, scanDiags := newProjectTransformer(t.Context(), loader, nil, nil, []*hclsyntax.Body{body},
+		map[string][]byte{filename: src})
 	require.False(t, scanDiags.HasErrors(), scanDiags.Error())
 	emitDiags, err := ft.emitFile(t.Context(), src, filename, body, out, paramInfos)
 	require.NoError(t, err)
@@ -1035,10 +1036,12 @@ module "child" {
 	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
 	require.False(t, diags.HasErrors(), diags.Error())
 
-	expected := `resource "escaped" "test:index:Item" {
-  value = invoke("test:index:echo", {
-    provider = "escaped"
-  }).result
+	expected := `lookup = invoke("test:index:echo", {
+  provider = "escaped"
+})
+
+resource "escaped" "test:index:Item" {
+  value    = lookup.result
   count    = 3
   provider = "literal"
   options {

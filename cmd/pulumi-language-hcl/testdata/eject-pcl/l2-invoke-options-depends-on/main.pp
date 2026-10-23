@@ -1,20 +1,18 @@
+data = invoke("simple-invoke:index:myInvoke", {
+  value = "hello"
+  }, {
+  dependsOn = [first]
+})
+
 resource "first" "simple-invoke:index:StringResource" {
   text = "first hello"
 }
 
 resource "second" "simple-invoke:index:StringResource" {
-  text = invoke("simple-invoke:index:myInvoke", {
-    value = "hello"
-    }, {
-    dependsOn = [first]
-  }).result
+  text = data.result
 }
 
 output "hello" {
-  value = invoke("simple-invoke:index:myInvoke", {
-    value = "hello"
-    }, {
-    dependsOn = [first]
-  }).result
+  value = data.result
 }
 

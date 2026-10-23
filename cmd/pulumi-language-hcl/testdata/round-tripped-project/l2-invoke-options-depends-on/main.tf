@@ -7,11 +7,7 @@ terraform {
   }
 }
 
-data "simple-invoke_my_invoke" "invoke_0" {
-  value      = "hello"
-  depends_on = [simple-invoke_string_resource.first]
-}
-data "simple-invoke_my_invoke" "invoke_1" {
+data "simple-invoke_my_invoke" "data" {
   value      = "hello"
   depends_on = [simple-invoke_string_resource.first]
 }
@@ -26,8 +22,8 @@ resource "simple-invoke_string_resource" "second" {
   lifecycle {
     create_before_destroy = true
   }
-  text = data.simple-invoke_my_invoke.invoke_0.result
+  text = data.simple-invoke_my_invoke.data.result
 }
 output "hello" {
-  value = data.simple-invoke_my_invoke.invoke_1.result
+  value = data.simple-invoke_my_invoke.data.result
 }
