@@ -28,7 +28,7 @@ require (
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-go-provider v1.7.0
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.138.0
-	github.com/pulumi/pulumi/pkg/v3 v3.272.1-0.20261023125757-389f8bf64c80
+	github.com/pulumi/pulumi/pkg/v3 v3.272.1-0.20261023142655-fe2ab1c914ed
 	github.com/pulumi/pulumi/sdk/v3 v3.272.1-0.20261023125757-389f8bf64c80
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
@@ -244,7 +244,7 @@ require (
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
 	github.com/pulumi/inflector v0.2.1 // indirect
 	github.com/pulumi/pulumi-cloud-sdk/go v1.20261022.0 // indirect
-	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.115.0 // indirect
+	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.116.0 // indirect
 	github.com/pulumi/pulumi-java v1.37.7 // indirect
 	github.com/pulumi/pulumi-yaml v1.38.13 // indirect
 	github.com/pulumi/terraform-diff-reader v0.0.2 // indirect
