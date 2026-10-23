@@ -1340,17 +1340,7 @@ func (ft *fileTransformer) transformRelativeTraversal(e *hclsyntax.RelativeTrave
 	tokens := ft.transformExpr(e.Source)
 	props, mapping := ft.relativeTraversalSourceProps(e.Source)
 	converted, block := mapSteps(e.Traversal, props, mapping)
-	for _, step := range converted {
-		switch s := step.(type) {
-		case hcl.TraverseAttr:
-			tokens = append(tokens,
-				&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
-			)
-		case hcl.TraverseIndex:
-			tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
-		}
-	}
+	tokens = append(tokens, hclwrite.TokensForTraversal(converted)...)
 	if block != nil {
 		return blockListTokens(block, tokens)
 	}
@@ -1498,35 +1488,11 @@ func (ft *fileTransformer) transformSplatEach(
 	switch e := expr.(type) {
 	case *hclsyntax.RelativeTraversalExpr:
 		tokens := ft.transformSplatEach(e.Source, elementProps, elementMapping)
-
-		// Build a dummy traversal with root so schemaAwareTraversalAttrs works.
-		dummy := make(hcl.Traversal, len(e.Traversal)+1)
-		dummy[0] = hcl.TraverseRoot{Name: "_"}
-		copy(dummy[1:], e.Traversal)
 		// TODO[https://github.com/pulumi/pulumi-hcl/issues/729]: A splat whose
 		// elements end on a MaxItems=1 block reads a list of objects in PCL,
 		// where HCL reads a list of lists.
-		converted, _ := schemaAwareTraversalAttrs(dummy, elementProps, elementMapping)
-
-		for _, step := range converted[1:] {
-			switch s := step.(type) {
-			case hcl.TraverseAttr:
-				tokens = append(tokens,
-					&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-					&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
-				)
-			case hcl.TraverseIndex:
-				keyTokens := hclwrite.TokensForValue(s.Key)
-				tokens = append(tokens,
-					&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
-				)
-				tokens = append(tokens, keyTokens...)
-				tokens = append(tokens,
-					&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
-				)
-			}
-		}
-		return tokens
+		converted, _ := mapSteps(e.Traversal, elementProps, elementMapping)
+		return append(tokens, hclwrite.TokensForTraversal(converted)...)
 	case *hclsyntax.AnonSymbolExpr:
 		return nil
 	default:
@@ -1758,18 +1724,7 @@ func (ft *fileTransformer) transformTraversalRef(
 				}
 				props, mapping := ft.dataResultProps(typeAttr.Name)
 				converted, block := mapSteps(steps, props, mapping)
-				for _, step := range converted {
-					switch s := step.(type) {
-					case hcl.TraverseAttr:
-						tokens = append(tokens,
-							&hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
-							&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)},
-						)
-					case hcl.TraverseIndex:
-						tokens = append(tokens, hclwrite.TokensForTraversal(hcl.Traversal{s})...)
-					}
-				}
-				return tokens, block
+				return append(tokens, hclwrite.TokensForTraversal(converted)...), block
 			}
 		}
 	case "call":
@@ -1902,30 +1857,19 @@ func schemaAwareTraversalAttrs(
 // blockListTokens writes the value that HCL reads for the MaxItems=1 field
 // fm. ref is the one element or null that the bridge flattens the field to.
 func blockListTokens(fm *bridge.FieldMapping, ref hclwrite.Tokens) hclwrite.Tokens {
-	unset := hclwrite.Tokens{
-		{Type: hclsyntax.TokenOBrack, Bytes: []byte("["), SpacesBefore: 1},
-		{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
-	}
+	unset := hclwrite.TokensForTuple(nil)
 	if transform.UnsetSingularIsNull(fm) {
-		unset = hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("null"), SpacesBefore: 1}}
+		unset = hclwrite.TokensForIdentifier("null")
 	}
 	out := hclwrite.Tokens{{Type: hclsyntax.TokenOParen, Bytes: []byte("(")}}
 	out = append(out, ref...)
-	out = append(out,
-		&hclwrite.Token{Type: hclsyntax.TokenEqualOp, Bytes: []byte("=="), SpacesBefore: 1},
-		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("null"), SpacesBefore: 1},
-		&hclwrite.Token{Type: hclsyntax.TokenQuestion, Bytes: []byte("?"), SpacesBefore: 1},
-	)
+	out = append(out, &hclwrite.Token{Type: hclsyntax.TokenEqualOp, Bytes: []byte("==")})
+	out = append(out, hclwrite.TokensForIdentifier("null")...)
+	out = append(out, &hclwrite.Token{Type: hclsyntax.TokenQuestion, Bytes: []byte("?")})
 	out = append(out, unset...)
-	out = append(out,
-		&hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":"), SpacesBefore: 1},
-		&hclwrite.Token{Type: hclsyntax.TokenOBrack, Bytes: []byte("["), SpacesBefore: 1},
-	)
-	out = append(out, ref...)
-	return append(out,
-		&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
-		&hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")},
-	)
+	out = append(out, &hclwrite.Token{Type: hclsyntax.TokenColon, Bytes: []byte(":")})
+	out = append(out, hclwrite.TokensForTuple([]hclwrite.Tokens{ref})...)
+	return append(out, &hclwrite.Token{Type: hclsyntax.TokenCParen, Bytes: []byte(")")})
 }
 
 // isZeroIndex reports whether key is the number 0.
