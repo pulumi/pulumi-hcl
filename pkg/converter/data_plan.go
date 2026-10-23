@@ -65,6 +65,10 @@ type dataRef struct {
 	scope iterScope
 	// key is the index expression of data.<type>.<name>[key], or nil.
 	key hclsyntax.Expression
+	// repeated is true when the converted reference reads the invoke more than
+	// once. This is the case for a reference to a whole MaxItems=1 field (see
+	// [blockListTokens]).
+	repeated bool
 }
 
 // dataPlanner counts the references to each data block in a project.
@@ -109,7 +113,7 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 		ft.dataPlans[ref] = plan
 		refs := p.refs[ref]
 		switch {
-		case len(refs) != 1:
+		case len(refs) != 1 || refs[0].repeated:
 			hoist[ref] = true
 		case !plan.ranged:
 			hoist[ref] = refs[0].scope.ranged
@@ -364,7 +368,9 @@ func (w *refWalker) Enter(n hclsyntax.Node) hcl.Diagnostics {
 			hclsyntax.Node(idx.Collection) == n && len(trav.Traversal) == 3 {
 			key = idx.Key
 		}
-		w.p.refs[ref] = append(w.p.refs[ref], dataRef{scope: scope, key: key})
+		w.p.refs[ref] = append(w.p.refs[ref], dataRef{
+			scope: scope, key: key, repeated: w.wrapped(ref, trav),
+		})
 	case "call":
 		ref := callReference{typeAttr.Name, nameAttr.Name}
 		body, ok := w.p.ft.callBlocks[ref]
@@ -376,6 +382,31 @@ func (w *refWalker) Enter(n hclsyntax.Node) hcl.Diagnostics {
 		delete(w.p.activeCalls, ref)
 	}
 	return nil
+}
+
+// wrapped reports whether the converter writes the data reference trav as the
+// list that HCL reads for a MaxItems=1 field. trav is the node that Enter
+// visits now. The converter maps the steps of trav itself, and the steps of a
+// relative traversal over trav or over trav[key] (see
+// [fileTransformer.relativeTraversalSourceProps]).
+func (w *refWalker) wrapped(ref dataReference, trav *hclsyntax.ScopeTraversalExpr) bool {
+	steps := trav.Traversal[3:]
+	// The index of a ranged data block selects an invoke result.
+	if _, ok := firstIndex(steps); ok && rangeAttribute(w.p.ft.dataBlocks[ref], isDataMeta) != nil {
+		steps = steps[1:]
+	}
+	if w.p.ft.dataResultBlock(ref.hclType, steps) != nil {
+		return true
+	}
+	// The last frame is trav itself.
+	i := len(w.frames) - 2
+	var source hclsyntax.Expression = trav
+	if idx, ok := w.frames[i].node.(*hclsyntax.IndexExpr); ok && idx.Collection == source {
+		source = idx
+		i--
+	}
+	rel, ok := w.frames[i].node.(*hclsyntax.RelativeTraversalExpr)
+	return ok && rel.Source == source && w.p.ft.dataResultBlock(ref.hclType, rel.Traversal) != nil
 }
 
 func (w *refWalker) Exit(hclsyntax.Node) hcl.Diagnostics {

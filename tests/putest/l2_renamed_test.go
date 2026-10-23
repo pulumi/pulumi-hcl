@@ -208,5 +208,6 @@ func TestL2RenamedMaxItemsOneWhole(t *testing.T) {
 		"unset_len":     "0",
 		"unset_is_null": "false",
 		"data_len":      "1",
+		"each_len":      "arn:test:len-1",
 	}))
 }

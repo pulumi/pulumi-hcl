@@ -24,6 +24,19 @@ data "renamed_lookup" "d" {
   }
 }
 
+data "renamed_lookup" "each" {
+  for_each = { lambda = true }
+  query    = each.key
+  filter {
+    kind = "trigger"
+  }
+}
+
+resource "renamed_thing" "each" {
+  for_each      = { lambda = true }
+  function_name = "len-${length(data.renamed_lookup.each[each.key].filter)}"
+}
+
 output "set_len" {
   value = length(renamed_thing.set.settings)
 }
@@ -38,4 +51,8 @@ output "unset_is_null" {
 
 output "data_len" {
   value = length(data.renamed_lookup.d.filter)
+}
+
+output "each_len" {
+  value = renamed_thing.each["lambda"].arn
 }

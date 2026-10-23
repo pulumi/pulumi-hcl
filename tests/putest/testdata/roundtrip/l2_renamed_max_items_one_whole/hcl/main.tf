@@ -7,14 +7,17 @@ terraform {
   }
 }
 
-data "renamed_lookup" "invoke_0" {
+data "renamed_lookup" "d" {
   query = "lambda"
   filter {
     kind = "trigger"
   }
 }
 data "renamed_lookup" "invoke_1" {
-  query = "lambda"
+  for_each = {
+    "lambda" = true
+  }
+  query = each.key
   filter {
     kind = "trigger"
   }
@@ -31,6 +34,20 @@ resource "renamed_thing" "set" {
 resource "renamed_thing" "unset" {
   function_name = "unset"
 }
+resource "renamed_thing" "each" {
+  for_each = {
+    "lambda" = true
+  }
+  pulumi {
+    name ="each-${each.key}"
+  }
+  function_name ="len-${length(one(local.each_[each.key].filter)==null?[]:[one(local.each_[each.key].filter)])}"
+}
+locals {
+  each_ = {for key, value in {
+    "lambda" = true
+  } : key => data.renamed_lookup.invoke_1[key]}
+}
 output "set_len" {
   value = length(one(renamed_thing.set.settings) == null ? [] : [one(renamed_thing.set.settings)])
 }
@@ -41,5 +58,8 @@ output "unset_is_null" {
   value = (one(renamed_thing.unset.settings) == null ? [] : [one(renamed_thing.unset.settings)]) == null
 }
 output "data_len" {
-  value = length(one(data.renamed_lookup.invoke_0.filter) == null ? [] : [one(data.renamed_lookup.invoke_1.filter)])
+  value = length(one(data.renamed_lookup.d.filter) == null ? [] : [one(data.renamed_lookup.d.filter)])
+}
+output "each_len" {
+  value = renamed_thing.each["lambda"].arn
 }

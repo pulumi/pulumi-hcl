@@ -17,6 +17,32 @@ resource "unset" "renamed:index/thing:Thing" {
   }
 }
 
+d = invoke("renamed:index/getLookup:getLookup", {
+  query = "lambda"
+  lookupFilter = {
+    kindLabel = "trigger"
+  }
+})
+
+each_ = {for key, value in {
+  lambda = true
+  } : key => invoke("renamed:index/getLookup:getLookup", {
+    query = key
+    lookupFilter = {
+      kindLabel = "trigger"
+    }
+})}
+
+resource "each" "renamed:index/thing:Thing" {
+  name = "len-${length((each_[range.key].lookupFilter == null ? [] : [each_[range.key].lookupFilter]))}"
+  options {
+    range = {
+      lambda = true
+    }
+    deleteBeforeReplace = true
+  }
+}
+
 output "set_len" {
   value = length((set.config == null ? [] : [set.config]))
 }
@@ -30,16 +56,10 @@ output "unset_is_null" {
 }
 
 output "data_len" {
-  value = length((invoke("renamed:index/getLookup:getLookup", {
-      query = "lambda"
-      lookupFilter = {
-        kindLabel = "trigger"
-      }
-  }).lookupFilter == null ? [] : [invoke("renamed:index/getLookup:getLookup", {
-      query = "lambda"
-      lookupFilter = {
-        kindLabel = "trigger"
-      }
-  }).lookupFilter]))
+  value = length((d.lookupFilter == null ? [] : [d.lookupFilter]))
+}
+
+output "each_len" {
+  value = each["lambda"].arn
 }
 

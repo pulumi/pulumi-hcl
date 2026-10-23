@@ -1384,6 +1384,21 @@ func (ft *fileTransformer) relativeTraversalSourceProps(
 	return propertiesOf(fn.ReturnType), ft.functionMappings[typeAttr.Name]
 }
 
+// dataResultBlock returns the mapping of the MaxItems=1 field that steps end
+// on in the result of the data source hclType, or nil.
+func (ft *fileTransformer) dataResultBlock(hclType string, steps hcl.Traversal) *bridge.FieldMapping {
+	if len(steps) == 0 {
+		return nil
+	}
+	var props []*schema.Property
+	if fn := ft.functionSchemas[hclType]; fn != nil && fn.ReturnType != nil {
+		props = propertiesOf(fn.ReturnType)
+	}
+	dummy := append(hcl.Traversal{hcl.TraverseRoot{Name: "_"}}, steps...)
+	_, block := schemaAwareTraversalAttrs(dummy, props, ft.functionMappings[hclType])
+	return block
+}
+
 // transformSplatExpr converts a splat expression (source[*].attr) to PCL tokens.
 // The HCL and PCL syntax are identical, so we just need to transform the
 // sub-expressions while preserving the [*] structure.
