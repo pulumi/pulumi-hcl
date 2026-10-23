@@ -157,6 +157,8 @@ var expectedFailures = map[string]string{
 		" to a dependent resource as a missing value, instead of skipping the dependent resource:" +
 		" expected stack output 'componentValue' to be registered, got map[] (added in pulumi/pulumi#25291," +
 		" https://github.com/pulumi/pulumi-hcl/issues/735)",
+	"l2-resource-exists": "the runtime has no resourceExists function: Call to unknown function;" +
+		" There is no function named \"resourceExists\" (added in pulumi/pulumi#25321)",
 	"l2-resource-self-reference": "the runtime sends a resource assigned to a union-typed input" +
 		" (oneOf [resource reference, string]) as a plain object, not as a resource reference:" +
 		" expected 'parentOrName' to be a reference to 'root', got {id: \"root\"} (added in v3.265.0)",
