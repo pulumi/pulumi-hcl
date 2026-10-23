@@ -153,6 +153,10 @@ var expectedFailures = map[string]string{
 	"l2-failed-create-downstream-continue-on-error": "the runtime halts the program when a resource" +
 		" registration fails, instead of resolving the failed resource's outputs as unknown:" +
 		" expected stack output 'failingValue' to be registered, got map[] (added in pulumi/pulumi#25168)",
+	"l2-failed-create-component-continue-on-error": "the runtime sends an unknown remote component output" +
+		" to a dependent resource as a missing value, instead of skipping the dependent resource:" +
+		" expected stack output 'componentValue' to be registered, got map[] (added in pulumi/pulumi#25291," +
+		" https://github.com/pulumi/pulumi-hcl/issues/735)",
 	"l2-resource-self-reference": "the runtime sends a resource assigned to a union-typed input" +
 		" (oneOf [resource reference, string]) as a plain object, not as a resource reference:" +
 		" expected 'parentOrName' to be a reference to 'root', got {id: \"root\"} (added in v3.265.0)",
