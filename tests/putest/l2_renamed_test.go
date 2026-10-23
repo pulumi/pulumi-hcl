@@ -179,7 +179,9 @@ func TestL2RenamedMaxItemsOneSplat(t *testing.T) {
 // block, which the bridge flattens to null.
 func TestL2RenamedMaxItemsOneSplatUnset(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_max_items_one_splat_unset", renamedCase(map[string]string{
+	c := renamedCase(map[string]string{
 		"splat": "[]",
-	}))
+	})
+	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi/issues/25328]: A PCL splat over null fails."
+	putest.RunCase(t, "l2_renamed_max_items_one_splat_unset", c)
 }
