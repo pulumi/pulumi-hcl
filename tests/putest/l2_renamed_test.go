@@ -185,3 +185,14 @@ func TestL2RenamedMaxItemsOneSplatUnset(t *testing.T) {
 	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi/issues/25328]: A PCL splat over null fails."
 	putest.RunCase(t, "l2_renamed_max_items_one_splat_unset", c)
 }
+
+// TestL2RenamedRangedDataSource covers renamed references into a ranged data
+// block whose invoke is hoisted to a local, by the range key and by a literal
+// key.
+func TestL2RenamedRangedDataSource(t *testing.T) {
+	t.Parallel()
+	putest.RunCase(t, "l2_renamed_ranged_data_source", renamedCase(map[string]string{
+		"kind": "trigger",
+		"arn":  "arn:test:trigger",
+	}))
+}

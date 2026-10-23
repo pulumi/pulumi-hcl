@@ -3062,6 +3062,13 @@ func (g *generator) scopeTraversalTokens(expr *model.ScopeTraversalExpression) (
 		rewritten := make(hcl.Traversal, 0, len(traversal)+1)
 		rewritten = append(rewritten, hcl.TraverseRoot{Name: "local"})
 		rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
+		if call := g.rangedInvokeLocal(part); call != nil && len(traversal) > 1 {
+			if idx, ok := traversal[1].(hcl.TraverseIndex); ok {
+				rewritten = append(rewritten, idx)
+				return hclwrite.TokensForTraversal(append(rewritten,
+					g.rewriteSpilledInvokeTraversal(call, traversal[2:])...)), nil
+			}
+		}
 		return hclwrite.TokensForTraversal(append(rewritten, traversal[1:]...)), nil
 	case *pcl.Resource:
 		// Rewrite "myResource.property" → "resource_type.myResource.property"
@@ -3260,13 +3267,53 @@ func (g *generator) relativeTraversalTokens(expr *model.RelativeTraversalExpress
 	if diags.HasErrors() {
 		return nil, diags
 	}
-	if call, ok := expr.Source.(*model.FunctionCallExpression); ok && g.isSpilledInvoke(call) {
-		token, _ := extractStringLiteral(call.Args[0])
-		invokeSchema, _, _ := g.lookupInvokeSchema(token)
-		traversal := rewriteInvokeOutputTraversal(invokeSchema, g.invokeMappings[call], expr.Traversal)
-		return append(sourceTokens, traversalStepsToTokens(traversal)...), diags
+	if call := g.invokeResultCall(expr.Source); call != nil {
+		return append(sourceTokens, traversalStepsToTokens(g.rewriteSpilledInvokeTraversal(call, expr.Traversal))...), diags
 	}
 	return append(sourceTokens, traversalStepsToTokens(naiveRewriteTraversal(expr.Traversal))...), diags
+}
+
+// invokeResultCall returns the spilled invoke whose result expr is, or nil.
+// expr is the invoke itself, or an index into a local that holds one result
+// of the invoke for each element of a range (see [generator.rangedInvokeLocal]).
+func (g *generator) invokeResultCall(expr model.Expression) *model.FunctionCallExpression {
+	switch e := expr.(type) {
+	case *model.FunctionCallExpression:
+		if g.isSpilledInvoke(e) {
+			return e
+		}
+	case *model.IndexExpression:
+		if st, ok := e.Collection.(*model.ScopeTraversalExpression); ok && len(st.Traversal) == 1 && len(st.Parts) > 0 {
+			if lv, ok := st.Parts[0].(*pcl.LocalVariable); ok {
+				return g.rangedInvokeLocal(lv)
+			}
+		}
+	}
+	return nil
+}
+
+// rangedInvokeLocal returns the spilled invoke of lv when lv holds one result
+// of the invoke for each element of a range, as the converter writes a ranged
+// data block: `{for k, v in coll : k => invoke(...)}` or
+// `[for i in range(n) : invoke(...)]`. Otherwise it returns nil.
+func (g *generator) rangedInvokeLocal(lv *pcl.LocalVariable) *model.FunctionCallExpression {
+	fe, ok := lv.Definition.Value.(*model.ForExpression)
+	if !ok || fe.Condition != nil {
+		return nil
+	}
+	call, ok := fe.Value.(*model.FunctionCallExpression)
+	if !ok || !g.isSpilledInvoke(call) {
+		return nil
+	}
+	return call
+}
+
+// rewriteSpilledInvokeTraversal rewrites traversal, which reads the result of
+// the spilled invoke call, to the TF names of the data source.
+func (g *generator) rewriteSpilledInvokeTraversal(call *model.FunctionCallExpression, traversal hcl.Traversal) hcl.Traversal {
+	token, _ := extractStringLiteral(call.Args[0])
+	invokeSchema, _, _ := g.lookupInvokeSchema(token)
+	return rewriteInvokeOutputTraversal(invokeSchema, g.invokeMappings[call], traversal)
 }
 
 // traversalStartsWithResult reports whether the first step of a relative traversal
