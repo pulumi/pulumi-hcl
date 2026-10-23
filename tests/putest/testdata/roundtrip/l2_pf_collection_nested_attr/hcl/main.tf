@@ -7,14 +7,7 @@ terraform {
   }
 }
 
-data "pfx_set_lookup" "invoke_0" {
-  items = [{
-    name = "beta"
-    }, {
-    name = "alpha"
-  }]
-}
-data "pfx_set_lookup" "invoke_1" {
+data "pfx_set_lookup" "this_" {
   items = [{
     name = "beta"
     }, {
@@ -40,8 +33,8 @@ output "settings" {
   value = pfx_flat.this.settings
 }
 output "names" {
-  value = data.pfx_set_lookup.invoke_0.names
+  value = data.pfx_set_lookup.this_.names
 }
 output "registries" {
-  value = data.pfx_set_lookup.invoke_1.registries
+  value = data.pfx_set_lookup.this_.registries
 }

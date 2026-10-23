@@ -7,8 +7,11 @@ terraform {
   }
 }
 
-data "odd_dot_ted_v1_thing" "invoke_0" {
+data "odd_dot_ted_v1_thing" "e" {
   value = odd_mod_dot_member.c.value
+}
+data "odd_dot_ted_v1_thing" "f" {
+  value = data.odd_dot_ted_v1_thing.e.value
 }
 
 resource "odd_dot_ted_v1_thing" "a" {
@@ -26,5 +29,5 @@ resource "odd_mod_dot_member" "d" {
   value      = odd_mod_dot_member.c.value
 }
 output "value" {
-  value = data.odd_dot_ted_v1_thing.invoke_0.value
+  value = data.odd_dot_ted_v1_thing.e.value
 }

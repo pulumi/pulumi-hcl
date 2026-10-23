@@ -17,27 +17,23 @@ resource "this" "pfx:index/flat:Flat" {
   }
 }
 
+this_ = invoke("pfx:index/getSetLookup:getSetLookup", {
+  items = [{
+    name = "beta"
+    }, {
+    name = "alpha"
+  }]
+})
+
 output "settings" {
   value = this.settings
 }
 
 output "names" {
-  value = invoke("pfx:index/getSetLookup:getSetLookup", {
-    items = [{
-      name = "beta"
-      }, {
-      name = "alpha"
-    }]
-  }).names
+  value = this_.names
 }
 
 output "registries" {
-  value = invoke("pfx:index/getSetLookup:getSetLookup", {
-    items = [{
-      name = "beta"
-      }, {
-      name = "alpha"
-    }]
-  }).registries
+  value = this_.registries
 }
 

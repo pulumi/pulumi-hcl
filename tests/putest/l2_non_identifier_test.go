@@ -99,9 +99,7 @@ func (o *oddProvider) build() gp.Provider {
 }
 
 // assertInvokes checks that at least one invoke happened since the provider
-// was last built, and that each one got args. The count is not checked: the
-// round trip drops a data source that nothing references, because PCL writes
-// a data source as an invoke expression.
+// was last built, and that each one got args.
 func (o *oddProvider) assertInvokes(t *testing.T, args map[string]any) {
 	want := property.NewMap(map[string]property.Value{})
 	for k, v := range args {

@@ -28,9 +28,15 @@ resource "d" "odd:mod:Dot.Member" {
   }
 }
 
+e = invoke("odd:dot.ted/v1:getThing", {
+  value = c.value
+})
+
+f = invoke("odd:dot.ted/v1:getThing", {
+  value = e.value
+})
+
 output "value" {
-  value = invoke("odd:dot.ted/v1:getThing", {
-    value = c.value
-  }).value
+  value = e.value
 }
 
