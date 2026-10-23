@@ -8,7 +8,7 @@ resource "this" "pfx:index/flat:Flat" {
 }
 
 output "settings" {
-  value = this.settings
+  value = (this.settings == null ? null : [this.settings])
 }
 
 output "enabled" {
@@ -16,6 +16,6 @@ output "enabled" {
 }
 
 output "count" {
-  value = length(this.settings)
+  value = length((this.settings == null ? null : [this.settings]))
 }
 
