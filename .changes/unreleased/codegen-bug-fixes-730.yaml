@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: "Convert splats over `MaxItems: 1` blocks between HCL and PCL"
-time: 2026-10-22T15:32:14.000000+02:00
-custom:
-    Component: codegen
-    PR: "730"

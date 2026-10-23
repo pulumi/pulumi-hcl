@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: "Write `MaxItems: 1` values as objects when converting HCL to PCL"
-time: 2026-10-22T13:45:58.000000+02:00
-custom:
-    Component: converter
-    PR: "719"
