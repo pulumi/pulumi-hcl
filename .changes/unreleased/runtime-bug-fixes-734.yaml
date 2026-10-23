@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Sign Windows release binaries with Azure Trusted Signing
+time: 2026-10-23T09:20:14Z
+custom:
+    Component: runtime
+    PR: "734"
