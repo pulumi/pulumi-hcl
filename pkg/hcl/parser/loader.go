@@ -36,7 +36,8 @@ func NewLoader() *Loader {
 }
 
 // LoadDirectory loads all Terraform HCL files from the specified directory.
-// It looks for files with .tf extension.
+// It looks for files with .tf extension. A file that fails to load is left out
+// of the returned files, and its diagnostics are returned.
 func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostics) {
 	files := make(map[string]*hcl.File)
 	var diags hcl.Diagnostics
@@ -64,7 +65,7 @@ func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostic
 		file, fileDiags := l.LoadFile(path)
 		diags = append(diags, fileDiags...)
 
-		if file != nil {
+		if file != nil && !fileDiags.HasErrors() {
 			files[path] = file
 		}
 	}

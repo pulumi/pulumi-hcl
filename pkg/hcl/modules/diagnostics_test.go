@@ -49,11 +49,7 @@ func TestCachedLoadsReturnDiagnostics(t *testing.T) {
 			first, firstDiags, err := loader.LoadModule(t.Context(), "./child", "", ".")
 			require.NoError(t, err)
 			require.Equal(t, expected, firstDiags)
-			if tt.severity == hcl.DiagError {
-				require.Nil(t, first)
-			} else {
-				require.NotNil(t, first)
-			}
+			require.NotNil(t, first)
 			// Removing the source proves subsequent loads use the cached parse result.
 			require.NoError(t, os.Remove(filename))
 			for range 2 {

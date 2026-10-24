@@ -256,7 +256,9 @@ func (d *Driver) Dir() string { return d.dir }
 func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result, error) {
 	t.Helper()
 
-	d.writeFiles(t, programFiles)
+	if err := d.writeFiles(t, programFiles); err != nil {
+		return Result{}, err
+	}
 
 	var upResult auto.UpResult
 	cap := newCaptureT(t)
@@ -304,7 +306,9 @@ func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result,
 func (d *Driver) Preview(t *testing.T, programFiles map[string]string) (map[apitype.OpType]int, error) {
 	t.Helper()
 
-	d.writeFiles(t, programFiles)
+	if err := d.writeFiles(t, programFiles); err != nil {
+		return nil, err
+	}
 
 	var res auto.PreviewResult
 	cap := newCaptureT(t)
@@ -325,7 +329,9 @@ func (d *Driver) Preview(t *testing.T, programFiles map[string]string) (map[apit
 func (d *Driver) Destroy(t *testing.T, programFiles map[string]string) error {
 	t.Helper()
 
-	d.writeFiles(t, programFiles)
+	if err := d.writeFiles(t, programFiles); err != nil {
+		return err
+	}
 
 	cap := newCaptureT(t)
 	done := make(chan struct{})
@@ -340,7 +346,11 @@ func (d *Driver) Destroy(t *testing.T, programFiles map[string]string) error {
 	return nil
 }
 
-func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
+// writeFiles replaces the program files with programFiles and runs `pulumi
+// install`. It returns the install failure as the error of the operation, as
+// tfexec returns a `tofu init` failure: both runtimes reject an invalid
+// program before they run it.
+func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) error {
 	t.Helper()
 	for _, path := range d.lastProgramFiles {
 		require.NoError(t, os.RemoveAll(filepath.Join(d.dir, path)))
@@ -365,8 +375,10 @@ func (d *Driver) writeFiles(t *testing.T, programFiles map[string]string) {
 	// appending overrides the test process env.
 	cmd.Env = append(os.Environ(), d.extraEnv...)
 	cmd.Env = append(cmd.Env, d.attachedProvidersEnv(t))
-	out, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "pulumi install failed: %s", out)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("pulumi install: %w: %s", err, out)
+	}
+	return nil
 }
 
 // attachedProvidersEnv returns the PULUMI_DEBUG_PROVIDERS env pair that points
@@ -468,7 +480,9 @@ func (d *Driver) workspaceEnv(t *testing.T) []string {
 // it on stdout. Its stderr goes to the test log.
 func (d *Driver) PackageSchema(t *testing.T, programFiles map[string]string, dir string) ([]byte, error) {
 	t.Helper()
-	d.writeFiles(t, programFiles)
+	if err := d.writeFiles(t, programFiles); err != nil {
+		return nil, err
+	}
 
 	cmd := exec.Command("pulumi", "package", "get-schema", "./"+dir)
 	cmd.Dir = d.dir
@@ -494,7 +508,9 @@ func (d *Driver) PackageSchema(t *testing.T, programFiles map[string]string, dir
 // CLI then hands to the converter as arguments.
 func (d *Driver) Import(t *testing.T, programFiles map[string]string, converterArgs ...string) (string, error) {
 	t.Helper()
-	d.writeFiles(t, programFiles)
+	if err := d.writeFiles(t, programFiles); err != nil {
+		return "", err
+	}
 	stack := d.pt.CurrentStack()
 	require.NotNil(t, stack, "driver has no stack")
 
