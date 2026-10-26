@@ -319,13 +319,23 @@ func (host *LanguageHost) programRequirements(
 	for _, dir := range dirs {
 		// A directory with no .tf files requires nothing: the root of a
 		// package with only submodule components, or a program not yet written.
-		hasFiles, err := parser.DirHasTerraformFiles(dir)
+		hasFiles, err := parser.DirHasLoadableFiles(dir)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !hasFiles {
 			continue
 		}
+		// The keys of visited are absolute, as the loader resolves them. A
+		// component that an earlier directory calls as a module was walked then.
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, seen := visited[abs]; seen {
+			continue
+		}
+		visited[abs] = struct{}{}
 		// A directory with errors still parses the files without them, and the
 		// modules those files call can report their own errors.
 		config, dirDiags := p.ParseDirectory(dir)
@@ -749,35 +759,19 @@ func collectRequirementsRec(
 		if mod.Source == "" {
 			continue
 		}
-		dir, _, err := loader.ResolveDir(mod.Source, mod.Version, workDir)
-		if err != nil {
-			diags = diags.Append(cannotLoadModule(mod, err))
-			continue
-		}
-		if _, seen := visited[dir]; seen {
-			continue
-		}
-		visited[dir] = struct{}{}
 		loaded, loadDiags, err := loader.LoadModule(ctx, mod.Source, mod.Version, workDir)
 		if err != nil {
-			diags = diags.Append(cannotLoadModule(mod, err))
+			diags = diags.Append(modules.CannotLoad(mod, err))
 			continue
 		}
+		if _, seen := visited[loaded.SourcePath]; seen {
+			continue
+		}
+		visited[loaded.SourcePath] = struct{}{}
 		diags = diags.Extend(loadDiags)
 		diags = diags.Extend(collectRequirementsRec(ctx, loaded.Config, loaded.SourcePath, tf, pulumi, aliases, loader, visited))
 	}
 	return diags
-}
-
-// cannotLoadModule is the diagnostic for a module call whose source fails to
-// load, in the form that the run engine reports it.
-func cannotLoadModule(mod *ast.Module, err error) *hcl.Diagnostic {
-	return &hcl.Diagnostic{
-		Severity: hcl.DiagError,
-		Summary:  fmt.Sprintf("Cannot load module %q", mod.Source),
-		Detail:   err.Error(),
-		Subject:  mod.DeclRange.Ptr(),
-	}
 }
 
 func sortedKeys[K cmp.Ordered, V any](m map[K]V) []K { return slices.Sorted(maps.Keys(m)) }

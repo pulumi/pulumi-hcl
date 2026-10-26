@@ -17,6 +17,7 @@ package parser
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -36,8 +37,7 @@ func NewLoader() *Loader {
 }
 
 // LoadDirectory loads all Terraform HCL files from the specified directory.
-// It looks for files with .tf extension. A file that fails to load is left out
-// of the returned files, and its diagnostics are returned.
+// It looks for files with .tf extension.
 func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostics) {
 	files := make(map[string]*hcl.File)
 	var diags hcl.Diagnostics
@@ -52,20 +52,15 @@ func (l *Loader) LoadDirectory(dir string) (map[string]*hcl.File, hcl.Diagnostic
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if !isConfigFile(entry) {
 			continue
 		}
 
-		name := entry.Name()
-		if isIgnoredFile(name) || !isTerraformFile(name) {
-			continue
-		}
-
-		path := filepath.Join(dir, name)
+		path := filepath.Join(dir, entry.Name())
 		file, fileDiags := l.LoadFile(path)
 		diags = append(diags, fileDiags...)
 
-		if file != nil && !fileDiags.HasErrors() {
+		if file != nil {
 			files[path] = file
 		}
 	}
@@ -115,19 +110,29 @@ func (l *Loader) Files() map[string]*hcl.File {
 // parameterization archive preserves only regular files, and discovery must
 // agree with what the archive replays.
 func DirHasTerraformFiles(dir string) (bool, error) {
+	return dirHasFile(dir, func(entry os.DirEntry) bool {
+		return entry.Type().IsRegular() && isConfigFile(entry)
+	})
+}
+
+// DirHasLoadableFiles reports whether dir contains at least one file that
+// LoadDirectory would parse, symlinks included.
+func DirHasLoadableFiles(dir string) (bool, error) {
+	return dirHasFile(dir, isConfigFile)
+}
+
+func dirHasFile(dir string, match func(os.DirEntry) bool) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false, err
 	}
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
-			continue
-		}
-		if name := entry.Name(); !isIgnoredFile(name) && isTerraformFile(name) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.ContainsFunc(entries, match), nil
+}
+
+// isConfigFile reports whether LoadDirectory parses the directory entry.
+func isConfigFile(entry os.DirEntry) bool {
+	name := entry.Name()
+	return !entry.IsDir() && !isIgnoredFile(name) && isTerraformFile(name)
 }
 
 // isTerraformFile returns true if the filename indicates a Terraform configuration file.

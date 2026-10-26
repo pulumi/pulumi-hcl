@@ -1262,6 +1262,7 @@ module "child" {
 			wantLogs: func(dir string) []string {
 				return []string{
 					filepath.Join(dir, "main.tf") + `:2,1-15: Cannot load module "./missing"; ` +
+						`resolving module source "./missing": ` +
 						"module directory does not exist: " + filepath.Join(dir, "missing"),
 				}
 			},
@@ -1283,6 +1284,47 @@ module "b" {
 			wantLogs: func(dir string) []string {
 				return []string{
 					filepath.Join(dir, "child", "main.tf") + `:1,1-12: Unsupported block type; ` +
+						`Blocks of type "not_a_block" are not expected here.`,
+				}
+			},
+		},
+		{
+			name: "module called from a file with a syntax error",
+			files: map[string]string{
+				"main.tf": `
+module "child" {
+  source = "./child"
+}
+
+output "x" {
+  value =
+}
+`,
+				"child/main.tf": `not_a_block "x" {}`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "main.tf") + `:7,10-8,1: Invalid expression; ` +
+						`Expected the start of an expression, but found an invalid expression token.`,
+					filepath.Join(dir, "child", "main.tf") + `:1,1-12: Unsupported block type; ` +
+						`Blocks of type "not_a_block" are not expected here.`,
+				}
+			},
+		},
+		{
+			name: "component called as a module",
+			files: map[string]string{
+				"PulumiPlugin.yaml": "runtime: hcl\n",
+				"main.tf": `
+module "a" {
+  source = "./modules/a"
+}
+`,
+				"modules/a/main.tf": `not_a_block "a" {}`,
+			},
+			wantLogs: func(dir string) []string {
+				return []string{
+					filepath.Join(dir, "modules", "a", "main.tf") + `:1,1-12: Unsupported block type; ` +
 						`Blocks of type "not_a_block" are not expected here.`,
 				}
 			},
@@ -1318,6 +1360,7 @@ module "grandchild" {
 					filepath.Join(dir, "bad", "grandchild", "main.tf") + `:1,1-12: Unsupported block type; ` +
 						`Blocks of type "not_a_block" are not expected here.`,
 					filepath.Join(dir, "main.tf") + `:6,1-17: Cannot load module "./missing"; ` +
+						`resolving module source "./missing": ` +
 						"module directory does not exist: " + filepath.Join(dir, "missing"),
 				}
 			},
@@ -1416,6 +1459,37 @@ func TestGetRequiredPackages_ProgramSkipsUnreferencedModules(t *testing.T) {
 	resp := getRequiredPackages(t, writeSubmodulePackage(t, false, true))
 	assert.Empty(t, resp.Packages)
 	assert.Empty(t, resp.Specs)
+}
+
+// TestGetRequiredPackages_SymlinkedRootFile verifies that a symlinked .tf file
+// in the program directory counts, as it does when the program runs.
+func TestGetRequiredPackages_SymlinkedRootFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, writeFiles(dir, map[string]string{
+		"shared/providers.tf": `
+terraform {
+  required_providers {
+    rollbar = {
+      source  = "rollbar/rollbar"
+      version = ">= 1.0"
+    }
+  }
+}
+`,
+	}))
+	program := filepath.Join(dir, "program")
+	require.NoError(t, os.Mkdir(program, 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "shared", "providers.tf"), filepath.Join(program, "providers.tf")))
+
+	resp := getRequiredPackages(t, program)
+	assert.Empty(t, resp.Packages)
+	assert.Equal(t, []*pulumirpc.PackageSpec{{
+		Source:     "terraform-provider",
+		Version:    bridgePackageVersion,
+		Parameters: []string{"rollbar/rollbar", ">= 1.0"},
+	}}, resp.Specs)
 }
 
 // TestPackageDescriptorFromSchemaExtension verifies that an extension

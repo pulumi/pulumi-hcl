@@ -4200,12 +4200,7 @@ func (a *moduleLoaderAdapter) LoadModule(module *ast.Module, workDir string) (*g
 	// graph.ModuleLoader carries no context, so there is none to thread here.
 	loaded, diags, err := a.loader.LoadModule(context.TODO(), module.Source, module.Version, workDir)
 	if err != nil {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Cannot load module %q", module.Source),
-			Detail:   err.Error(),
-			Subject:  module.DeclRange.Ptr(),
-		})
+		diags = append(diags, modules.CannotLoad(module, err))
 	}
 	if diags.HasErrors() {
 		return nil, diags

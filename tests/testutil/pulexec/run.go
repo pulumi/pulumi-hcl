@@ -251,8 +251,9 @@ backend:
 // in (e.g. path.cwd) before cross-driver comparison.
 func (d *Driver) Dir() string { return d.dir }
 
-// TryApply runs `pulumi up` and returns the error instead of fataling. State
-// is exported regardless of error so callers can inspect post-failure state.
+// TryApply runs `pulumi up` and returns the error instead of fataling. If
+// `pulumi up` fails, the state is exported still, so that callers can inspect
+// the state after the failure. If `pulumi install` fails, there is no state.
 func (d *Driver) TryApply(t *testing.T, programFiles map[string]string) (Result, error) {
 	t.Helper()
 
