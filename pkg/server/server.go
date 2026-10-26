@@ -659,9 +659,21 @@ func collectRequirements(
 	// invalid, so they must not be used.
 	diags := collectRequirementsRec(ctx, config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
 	if diags.HasErrors() {
-		return nil, nil, nil, diags
+		return nil, nil, nil, errorDiags(diags)
 	}
 	return tf, pulumi, aliases, nil
+}
+
+// errorDiags returns the error diagnostics in diags. As an error, hcl.Diagnostics
+// shows only its first diagnostic, which must not be a warning.
+func errorDiags(diags hcl.Diagnostics) hcl.Diagnostics {
+	var errs hcl.Diagnostics
+	for _, d := range diags {
+		if d.Severity == hcl.DiagError {
+			errs = append(errs, d)
+		}
+	}
+	return errs
 }
 
 // collectRequirementsRec is collectRequirements, plus the diagnostics of each
@@ -856,6 +868,10 @@ func (host *LanguageHost) Run(
 	paramDescriptors, tfReqs, err := programPackages(
 		ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, req.Info.ProgramDirectory, sdkInfos)
 	if err != nil {
+		var diags hcl.Diagnostics
+		if errors.As(err, &diags) {
+			err = host.logInvalidProgram(ctx, diags)
+		}
 		return &pulumirpc.RunResponse{Error: err.Error()}, nil
 	}
 	if missing := missingSDKs(tfReqs, sdkInfos); len(missing) > 0 {
