@@ -1,5 +1,5 @@
 kind: Improvements
-body: Report a registry refusal of a request without credentials as `FailedPrecondition`
+body: Distinguish a registry refusal of a request without credentials with the `NO_CREDENTIALS` `ErrorInfo` reason
 time: 2026-10-26T11:59:50.482898+01:00
 custom:
     Component: runtime

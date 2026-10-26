@@ -20,10 +20,14 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	p "github.com/pulumi/pulumi-go-provider"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
@@ -36,6 +40,8 @@ func TestClassify(t *testing.T) {
 		err      error
 		fallback codes.Code
 		want     codes.Code
+		// reason is the expected ErrorInfo reason; empty means no details.
+		reason string
 	}{
 		{
 			name:     "module not found",
@@ -48,6 +54,7 @@ func TestClassify(t *testing.T) {
 			err:      fmt.Errorf("loading module: %w", modules.ErrUnauthenticated),
 			fallback: codes.Unknown,
 			want:     codes.Unauthenticated,
+			reason:   ReasonCredentialsRejected,
 		},
 		{
 			name:     "registry permission denied",
@@ -59,7 +66,8 @@ func TestClassify(t *testing.T) {
 			name:     "no credentials for registry",
 			err:      fmt.Errorf("loading module: %w", modules.ErrNoCredentials),
 			fallback: codes.Unknown,
-			want:     codes.FailedPrecondition,
+			want:     codes.Unauthenticated,
+			reason:   ReasonNoCredentials,
 		},
 		{
 			name:     "transient registry failure",
@@ -116,6 +124,8 @@ func TestClassify(t *testing.T) {
 			err := Classify(tc.err, tc.fallback)
 			require.Equal(t, tc.want, status.Code(err))
 			require.Equal(t, tc.err.Error(), err.Error(), "classification must not alter the message")
+			require.Empty(t, cmp.Diff(errorInfo(tc.reason), status.Convert(err).Details(),
+				protocmp.Transform(), cmpopts.EquateEmpty()))
 		})
 	}
 
@@ -132,6 +142,19 @@ func TestStatusSurvivesWrapping(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, codes.Unimplemented, s.Code())
 	require.Equal(t, "generating schema: cannot type local", s.Message())
+
+	err = fmt.Errorf("resolving module source: %w", Classify(modules.ErrNoCredentials, codes.Unknown))
+	s, ok = status.FromError(err)
+	require.True(t, ok)
+	require.Empty(t, cmp.Diff(errorInfo(ReasonNoCredentials), s.Details(), protocmp.Transform()))
+}
+
+// errorInfo returns the status details that a reason produces.
+func errorInfo(reason string) []any {
+	if reason == "" {
+		return nil
+	}
+	return []any{&errdetails.ErrorInfo{Reason: reason, Domain: Domain}}
 }
 
 func TestWrap(t *testing.T) {

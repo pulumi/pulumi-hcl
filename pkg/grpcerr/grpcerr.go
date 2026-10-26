@@ -17,7 +17,9 @@
 // code instead of parsing message text.
 //
 // The codes are the machine-readable contract: Unavailable and
-// DeadlineExceeded are retriable, everything else is not.
+// DeadlineExceeded are retriable, everything else is not. Where one code
+// covers failures that a caller must handle differently, the status also
+// carries a google.rpc.ErrorInfo detail with a Reason in [Domain].
 package grpcerr
 
 import (
@@ -26,6 +28,8 @@ import (
 	"fmt"
 
 	p "github.com/pulumi/pulumi-go-provider"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -38,12 +42,37 @@ import (
 // code survives further fmt.Errorf("%w") wrapping on the way to the wire.
 type statusError struct {
 	code codes.Code
-	err  error
+	// reason, when set, is attached as the Reason of an ErrorInfo detail.
+	reason string
+	err    error
 }
 
-func (e statusError) Error() string              { return e.err.Error() }
-func (e statusError) Unwrap() error              { return e.err }
-func (e statusError) GRPCStatus() *status.Status { return status.New(e.code, e.err.Error()) }
+// Domain is the ErrorInfo domain of every reason that pulumi-hcl reports.
+const Domain = "hcl.pulumi.com"
+
+// ErrorInfo reasons. Each one refines the gRPC code it is reported with.
+const (
+	// ReasonNoCredentials refines Unauthenticated: a module registry refused
+	// a request that carried no credentials, because none are configured for
+	// its host.
+	ReasonNoCredentials = "NO_CREDENTIALS"
+	// ReasonCredentialsRejected refines Unauthenticated: a module registry
+	// rejected the credentials that the request carried.
+	ReasonCredentialsRejected = "CREDENTIALS_REJECTED"
+)
+
+func (e statusError) Error() string { return e.err.Error() }
+func (e statusError) Unwrap() error { return e.err }
+
+func (e statusError) GRPCStatus() *status.Status {
+	s := status.New(e.code, e.err.Error())
+	if e.reason == "" {
+		return s
+	}
+	s, err := s.WithDetails(&errdetails.ErrorInfo{Reason: e.reason, Domain: Domain})
+	contract.AssertNoErrorf(err, "attaching ErrorInfo to a %v status", e.code)
+	return s
+}
 
 // Errorf builds an error carrying the given gRPC status code.
 func Errorf(code codes.Code, format string, args ...any) error {
@@ -61,29 +90,27 @@ func Classify(err error, fallback codes.Code) error {
 	case errors.As(err, &grpcStatus):
 		return err
 	case errors.Is(err, context.Canceled):
-		return statusError{codes.Canceled, err}
+		return statusError{code: codes.Canceled, err: err}
 	case errors.Is(err, context.DeadlineExceeded):
-		return statusError{codes.DeadlineExceeded, err}
+		return statusError{code: codes.DeadlineExceeded, err: err}
 	case errors.Is(err, modules.ErrNotFound):
-		return statusError{codes.NotFound, err}
+		return statusError{code: codes.NotFound, err: err}
 	case errors.Is(err, modules.ErrUnauthenticated):
-		return statusError{codes.Unauthenticated, err}
+		return statusError{code: codes.Unauthenticated, reason: ReasonCredentialsRejected, err: err}
 	case errors.Is(err, modules.ErrPermissionDenied):
-		return statusError{codes.PermissionDenied, err}
+		return statusError{code: codes.PermissionDenied, err: err}
 	case errors.Is(err, modules.ErrNoCredentials):
-		// The module names a registry that the caller has no credentials for:
-		// the module must change, not the caller's credentials.
-		return statusError{codes.FailedPrecondition, err}
+		return statusError{code: codes.Unauthenticated, reason: ReasonNoCredentials, err: err}
 	case errors.Is(err, modules.ErrTransient):
-		return statusError{codes.Unavailable, err}
+		return statusError{code: codes.Unavailable, err: err}
 	case errors.Is(err, modules.ErrInvalid):
-		return statusError{codes.InvalidArgument, err}
+		return statusError{code: codes.InvalidArgument, err: err}
 	case errors.Is(err, packages.ErrNotFound):
 		// The module references a type the resolved provider schema does not
 		// carry: converting this module is unsupported, not retriable.
-		return statusError{codes.Unimplemented, err}
+		return statusError{code: codes.Unimplemented, err: err}
 	default:
-		return statusError{fallback, err}
+		return statusError{code: fallback, err: err}
 	}
 }
 
