@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Drop the list index after a MaxItems=1 block in `ignoreChanges` paths
+time: 2026-10-26T15:51:05.000000+01:00
+custom:
+    Component: converter
+    PR: "759"
