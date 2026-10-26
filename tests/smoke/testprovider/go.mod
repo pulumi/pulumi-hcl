@@ -3,7 +3,7 @@ module github.com/pulumi/pulumi-hcl/tests/smoke/testprovider
 go 1.26.6
 
 require (
-	github.com/pulumi/pulumi-go-provider v1.7.0
+	github.com/pulumi/pulumi-go-provider v1.8.0
 	github.com/pulumi/pulumi/sdk/v3 v3.272.0
 )
 
