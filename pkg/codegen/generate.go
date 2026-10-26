@@ -1376,7 +1376,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	if opts == nil {
 		pinName(instanceNamingNone)
 		emitReplaceOnChanges()
-		g.genLifecycleBlock(body, nil, &diags)
+		g.genLifecycleBlock(body, r, nil, &diags)
 		return diags
 	}
 
@@ -1502,7 +1502,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	// Block-form meta-arguments come after attributes, at the top level.
-	g.genLifecycleBlock(body, opts, &diags)
+	g.genLifecycleBlock(body, r, opts, &diags)
 
 	if opts.CustomTimeouts != nil {
 		timeoutsBlock := body.AppendNewBlock("timeouts", nil)
@@ -1859,7 +1859,9 @@ func makeTraversalListTokens(paths []string) hclwrite.Tokens {
 // `create_before_destroy = !<expr>`.
 //
 // If the block ends up empty, it's not emitted.
-func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOptions, diags *hcl.Diagnostics) {
+func (g *generator) genLifecycleBlock(
+	body *hclwrite.Body, r *pcl.Resource, opts *pcl.ResourceOptions, diags *hcl.Diagnostics,
+) {
 	type attr struct {
 		name   string
 		tokens hclwrite.Tokens
@@ -1868,7 +1870,7 @@ func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOpt
 
 	if opts != nil {
 		if opts.IgnoreChanges != nil {
-			tokens, d := g.exprTokens(opts.IgnoreChanges, schema.AnyType)
+			tokens, d := g.ignoreChangesTokens(r, opts.IgnoreChanges)
 			*diags = append(*diags, d...)
 			if !d.HasErrors() {
 				attrs = append(attrs, attr{"ignore_changes", tokens})
@@ -1900,6 +1902,37 @@ func (g *generator) genLifecycleBlock(body *hclwrite.Body, opts *pcl.ResourceOpt
 	for _, a := range attrs {
 		block.SetAttributeRaw(a.name, a.tokens)
 	}
+}
+
+// ignoreChangesTokens writes the `ignore_changes` list of r. Each property path
+// is rewritten against the schema of r to its TF form, so a path into a
+// MaxItems=1 block gets the [0] that HCL needs.
+func (g *generator) ignoreChangesTokens(r *pcl.Resource, expr model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+	tuple, ok := expr.(*model.TupleConsExpression)
+	if !ok || r.Schema == nil {
+		return g.exprTokens(expr, schema.AnyType)
+	}
+	elems := make([]hclwrite.Tokens, 0, len(tuple.Expressions))
+	var diags hcl.Diagnostics
+	for _, elem := range tuple.Expressions {
+		st, ok := elem.(*model.ScopeTraversalExpression)
+		var root hcl.TraverseRoot
+		if ok && len(st.Traversal) > 0 {
+			root, ok = st.Traversal[0].(hcl.TraverseRoot)
+		}
+		if !ok {
+			tokens, d := g.exprTokens(elem, schema.AnyType)
+			diags = append(diags, d...)
+			elems = append(elems, tokens)
+			continue
+		}
+		rel := append(hcl.Traversal{hcl.TraverseAttr{Name: root.Name, SrcRange: root.SrcRange}}, st.Traversal[1:]...)
+		rel, _ = schemaAwareRewriteTraversal(r.Schema.InputProperties, g.resourceMappings[r], rel)
+		first := rel[0].(hcl.TraverseAttr)
+		path := append(hcl.Traversal{hcl.TraverseRoot{Name: first.Name, SrcRange: first.SrcRange}}, rel[1:]...)
+		elems = append(elems, hclwrite.TokensForTraversal(path))
+	}
+	return hclwrite.TokensForTuple(elems), diags
 }
 
 // createBeforeDestroyTokens computes the value of `create_before_destroy` from

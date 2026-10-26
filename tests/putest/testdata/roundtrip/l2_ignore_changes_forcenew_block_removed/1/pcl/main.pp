@@ -6,7 +6,7 @@
 resource "r" "fnblock:index/resource:Resource" {
   note = "y"
   options {
-    ignoreChanges       = [settings[0].mode]
+    ignoreChanges       = [settings.mode]
     deleteBeforeReplace = true
   }
 }

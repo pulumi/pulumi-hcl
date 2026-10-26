@@ -2455,23 +2455,38 @@ func (ft *fileTransformer) transformPropertyPath(
 // traversal from TF snake_case to its Pulumi property name, starting at the
 // first segment. Unlike schemaAwareTraversalAttrs, whose root is a resource
 // logical name, here the root is itself a property. Index segments are dynamic
-// keys and are left unchanged; matching a property unwraps any surrounding
-// list/map so the next attribute resolves against the element object. m is
-// the bridge mapping of props, or nil.
+// keys and are left unchanged, except the [0] after a MaxItems=1 block, which
+// is removed because the bridge flattens the block to its one element.
+// Matching a property unwraps any surrounding list/map so the next attribute
+// resolves against the element object. m is the bridge mapping of props, or
+// nil.
 func schemaAwarePropertyPath(trav hcl.Traversal, props []*schema.Property, m *bridge.BodyMapping) hcl.Traversal {
-	result := make(hcl.Traversal, len(trav))
-	copy(result, trav)
+	result := make(hcl.Traversal, 0, len(trav))
 	nextProps := props
-	for i := range result {
-		switch step := result[i].(type) {
+	var maxItemsOne bool
+	for _, step := range trav {
+		switch step := step.(type) {
 		case hcl.TraverseRoot:
+			fm := m.Lookup(step.Name)
+			maxItemsOne = fm != nil && fm.MaxItemsOne
 			name, matched, nested := lookupProperty(step.Name, nextProps, m)
-			result[i] = hcl.TraverseRoot{Name: name, SrcRange: step.SrcRange}
+			result = append(result, hcl.TraverseRoot{Name: name, SrcRange: step.SrcRange})
 			nextProps, m = elementObjectProperties(matched), nested
 		case hcl.TraverseAttr:
+			fm := m.Lookup(step.Name)
+			maxItemsOne = fm != nil && fm.MaxItemsOne
 			name, matched, nested := lookupProperty(step.Name, nextProps, m)
-			result[i] = hcl.TraverseAttr{Name: name, SrcRange: step.SrcRange}
+			result = append(result, hcl.TraverseAttr{Name: name, SrcRange: step.SrcRange})
 			nextProps, m = elementObjectProperties(matched), nested
+		case hcl.TraverseIndex:
+			skip := maxItemsOne && isZeroIndex(step.Key)
+			maxItemsOne = false
+			if !skip {
+				result = append(result, step)
+			}
+		default:
+			maxItemsOne = false
+			result = append(result, step)
 		}
 	}
 	return result

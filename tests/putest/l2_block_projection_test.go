@@ -84,7 +84,7 @@ func TestL2SetBlockEquality(t *testing.T) {
 func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 	t.Parallel()
 	putest.RunCase(t, "l2_ignore_changes_forcenew_block_removed", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/712]: HCL -> PCL keeps the list index in `ignoreChanges`.",
+		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/758]: PCL `ignoreChanges` still applies after the block is removed.",
 		Providers: []putest.Provider{
 			{Name: "fnblock", Factory: providers.FNBlockProvider},
 		},
