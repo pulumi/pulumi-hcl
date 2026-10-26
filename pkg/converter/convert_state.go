@@ -135,7 +135,10 @@ func packageDescriptors(
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial package resolver at %s: %w", resolverTarget, err)
 	}
-	specs := server.RequirementSpecs(ctx, loader, config, dir)
+	specs, err := server.RequirementSpecs(ctx, loader, config, dir)
+	if err != nil {
+		return nil, nil, err
+	}
 	resolved, err := resolve.Packages(ctx, resolver, specs)
 	if err != nil {
 		// Resolution only adds to what `pulumi install` wrote, so a provider

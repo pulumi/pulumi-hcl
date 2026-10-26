@@ -569,11 +569,14 @@ func sdkDescriptors(infos map[string]sdkInfo) map[string]workspace.PackageDescri
 // requirements for the missing-SDK check.
 func programPackages(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, dir string, sdkInfos map[string]sdkInfo,
-) (map[string]workspace.PackageDescriptor, map[string]*tfRequirement) {
+) (map[string]workspace.PackageDescriptor, map[string]*tfRequirement, error) {
+	tfReqs, pulumiPkgs, _, err := collectRequirements(ctx, loader, config, dir)
+	if err != nil {
+		return nil, nil, err
+	}
 	descs := sdkDescriptors(sdkInfos)
-	tfReqs, pulumiPkgs, _ := collectRequirements(ctx, loader, config, dir)
 	addPinnedPulumiPackages(pulumiPkgs, descs)
-	return descs, tfReqs
+	return descs, tfReqs, nil
 }
 
 // addPinnedPulumiPackages adds a name-and-version descriptor to descs for
@@ -599,9 +602,12 @@ func addPinnedPulumiPackages(pulumiPkgs map[string]string, descs map[string]work
 // satisfies. Empty workDir skips module recursion.
 func missingNonPulumiSDKs(
 	ctx context.Context, config *ast.Config, sdks map[string]sdkInfo, workDir string,
-) []string {
-	tfReqs, _, _ := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
-	return missingSDKs(tfReqs, sdks)
+) ([]string, error) {
+	tfReqs, _, _, err := collectRequirements(ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, workDir)
+	if err != nil {
+		return nil, err
+	}
+	return missingSDKs(tfReqs, sdks), nil
 }
 
 func missingSDKs(tfReqs map[string]*tfRequirement, sdks map[string]sdkInfo) []string {
@@ -645,14 +651,17 @@ func (r *tfRequirement) constraint() string { return strings.Join(sortedKeys(r.c
 // declared only in a child module still resolves from its declared source.
 func collectRequirements(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
-) (tf map[string]*tfRequirement, pulumi map[string]string, aliases map[string]*ast.RequiredProvider) {
+) (tf map[string]*tfRequirement, pulumi map[string]string, aliases map[string]*ast.RequiredProvider, err error) {
 	tf = map[string]*tfRequirement{}
 	pulumi = map[string]string{}
 	aliases = map[string]*ast.RequiredProvider{}
-	// The callers run the program, which reports a module that fails to load
-	// when it loads that module.
-	_ = collectRequirementsRec(ctx, config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
-	return tf, pulumi, aliases
+	// The requirements of a module that fails to load are incomplete and can be
+	// invalid, so they must not be used.
+	diags := collectRequirementsRec(ctx, config, workDir, tf, pulumi, aliases, loader, map[string]struct{}{})
+	if diags.HasErrors() {
+		return nil, nil, nil, diags
+	}
+	return tf, pulumi, aliases, nil
 }
 
 // collectRequirementsRec is collectRequirements, plus the diagnostics of each
@@ -844,8 +853,11 @@ func (host *LanguageHost) Run(
 	if err != nil {
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
-	paramDescriptors, tfReqs := programPackages(
+	paramDescriptors, tfReqs, err := programPackages(
 		ctx, modules.NewLoader(modules.LiveResolver(ctx)), config, req.Info.ProgramDirectory, sdkInfos)
+	if err != nil {
+		return &pulumirpc.RunResponse{Error: err.Error()}, nil
+	}
 	if missing := missingSDKs(tfReqs, sdkInfos); len(missing) > 0 {
 		return &pulumirpc.RunResponse{
 			Error: fmt.Sprintf(

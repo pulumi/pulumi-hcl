@@ -105,7 +105,10 @@ func localComponents(
 		return nil, "", fmt.Errorf("loading module: %w", err)
 	}
 	for i := range comps {
-		comps[i].packages, _ = programPackages(ctx, loader, comps[i].loaded.Config, comps[i].loaded.SourcePath, sdkInfos)
+		comps[i].packages, _, err = programPackages(ctx, loader, comps[i].loaded.Config, comps[i].loaded.SourcePath, sdkInfos)
+		if err != nil {
+			return nil, "", fmt.Errorf("loading module: %w", err)
+		}
 	}
 	return comps, resolvedVersion, nil
 }

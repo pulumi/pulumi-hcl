@@ -459,10 +459,13 @@ func replacementTriggerToProto(v property.Value) *structpb.Value {
 // are not resolved.
 func RequirementSpecs(
 	ctx context.Context, loader *modules.Loader, config *ast.Config, workDir string,
-) []resolve.Request {
+) ([]resolve.Request, error) {
 	ctx, span := potel.Start(ctx, "requirementSpecs")
 	defer span.End()
-	tf, pulumi, aliases := collectRequirements(ctx, loader, config, workDir)
+	tf, pulumi, aliases, err := collectRequirements(ctx, loader, config, workDir)
+	if err != nil {
+		return nil, err
+	}
 	var reqs []resolve.Request
 	for _, alias := range sortedKeys(aliases) {
 		if isBuiltinProvider(alias) {
@@ -491,7 +494,7 @@ func RequirementSpecs(
 			},
 		})
 	}
-	return reqs
+	return reqs, nil
 }
 
 // validateModuleInputs rejects any input that does not name a variable the

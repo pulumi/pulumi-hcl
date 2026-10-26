@@ -167,7 +167,8 @@ resource "aws_s3_bucket" "b" {}
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	got := RequirementSpecs(t.Context(), nil, cfg, "")
+	got, err := RequirementSpecs(t.Context(), nil, cfg, "")
+	require.NoError(t, err)
 
 	assert.Equal(t, []resolve.Request{
 		{Alias: "aws", Spec: &pulumirpc.PackageSpec{

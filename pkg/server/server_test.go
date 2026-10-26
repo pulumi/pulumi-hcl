@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -536,6 +537,15 @@ resource "simple_resource" "r" {
 	assert.Empty(t, resp.Specs)
 }
 
+func requireMissingNonPulumiSDKs(
+	t *testing.T, config *ast.Config, sdks map[string]sdkInfo, workDir string,
+) []string {
+	t.Helper()
+	missing, err := missingNonPulumiSDKs(t.Context(), config, sdks, workDir)
+	require.NoError(t, err)
+	return missing
+}
+
 // missingNonPulumiSDKs must find the SDK directory under the resolved package
 // name when the required_providers local name renames the provider.
 func TestMissingNonPulumiSDKs_RenamedLocalName(t *testing.T) {
@@ -564,9 +574,9 @@ resource "simple_resource" "r" {
 	sdks := map[string]sdkInfo{
 		"simple": {desc: bridgedSDK("simple")},
 	}
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), config, sdks, dir))
+	assert.Empty(t, requireMissingNonPulumiSDKs(t, config, sdks, dir))
 	assert.Equal(t, []string{"hashicorp/simple"},
-		missingNonPulumiSDKs(t.Context(), config, nil, dir))
+		requireMissingNonPulumiSDKs(t, config, nil, dir))
 }
 
 // TestGetRequiredPackages_SameSourceVersionIntersection mirrors tofu: two
@@ -909,14 +919,14 @@ data "archive_file" "lambda" {}
 	// archive) must be reported missing.
 	assert.Equal(t,
 		[]string{"hashicorp/archive", "hashicorp/aws"},
-		missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
+		requireMissingNonPulumiSDKs(t, cfg, nil, ""))
 
 	// Once both have SDKs, nothing is missing.
 	sdks := map[string]sdkInfo{
 		"aws":     {desc: bridgedSDK("aws")},
 		"archive": {desc: bridgedSDK("archive")},
 	}
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, sdks, ""))
+	assert.Empty(t, requireMissingNonPulumiSDKs(t, cfg, sdks, ""))
 
 	// A pulumi-source provider needs no SDK even when it's only referenced
 	// by a resource type prefix.
@@ -932,7 +942,7 @@ resource "aws_s3_bucket" "b" {}
 `
 	cfgPulumi, diags := parser.NewParser().ParseSource("main.tf", []byte(pulumiSrc))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfgPulumi, nil, ""))
+	assert.Empty(t, requireMissingNonPulumiSDKs(t, cfgPulumi, nil, ""))
 }
 
 func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
@@ -945,7 +955,7 @@ func TestMissingNonPulumiSDKs_BuiltinProvider(t *testing.T) {
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
+	assert.Empty(t, requireMissingNonPulumiSDKs(t, cfg, nil, ""))
 }
 
 // A pulumi-sourced provider declared only in a child module must not be
@@ -980,7 +990,7 @@ resource "example_resource" "hello" {}
 	cfg, diags := parser.NewParser().ParseDirectory(dir)
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+	assert.Empty(t, requireMissingNonPulumiSDKs(t, cfg, nil, dir))
 }
 
 // A provider local name that contains underscores (e.g. "snake_names") must
@@ -1005,7 +1015,7 @@ resource "snake_names_cool_module_some_resource" "first" {
 	cfg, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), "diags: %v", diags)
 
-	assert.Empty(t, missingNonPulumiSDKs(t.Context(), cfg, nil, ""))
+	assert.Empty(t, requireMissingNonPulumiSDKs(t, cfg, nil, ""))
 }
 
 // Implicit provider inside a child module must surface at the top — without
@@ -1032,7 +1042,7 @@ resource "aws_s3_bucket" "b" {}
 
 	assert.Equal(t,
 		[]string{"hashicorp/aws"},
-		missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+		requireMissingNonPulumiSDKs(t, cfg, nil, dir))
 }
 
 // Same recursion via the module's `required_providers` block (no resources).
@@ -1064,7 +1074,7 @@ terraform {
 
 	assert.Equal(t,
 		[]string{"hashicorp/awscc"},
-		missingNonPulumiSDKs(t.Context(), cfg, nil, dir))
+		requireMissingNonPulumiSDKs(t, cfg, nil, dir))
 }
 
 // terraform_remote_state is served by the external pulumi-terraform package, so
@@ -1626,7 +1636,8 @@ terraform {
 `
 	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), diags.Error())
-	_, pulumiPkgs, _ := collectRequirements(t.Context(), nil, config, "")
+	_, pulumiPkgs, _, err := collectRequirements(t.Context(), nil, config, "")
+	require.NoError(t, err)
 
 	t.Run("pin", func(t *testing.T) {
 		t.Parallel()

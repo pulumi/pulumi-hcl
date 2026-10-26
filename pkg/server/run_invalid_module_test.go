@@ -47,9 +47,77 @@ resource "random_uuid" "child" {}
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(dir, "child", "bad.tf")+`:1,1-12: Unsupported block type; `+
 		`Blocks of type "not_a_block" are not expected here.`, errMsg)
-	var types []string
-	for _, req := range w.monitor.registered {
-		types = append(types, req.Type)
+	assert.Empty(t, w.monitor.registered)
+}
+
+// TestRun_BrokenModuleRequirements verifies that Run reports the errors of a
+// broken module, and does not use the requirements that the module declares.
+func TestRun_BrokenModuleRequirements(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		files   map[string]string
+		wantErr func(dir string) string
+	}{
+		{
+			// The parser keeps the version that it rejects, and a pin of it
+			// panics.
+			name: "invalid Pulumi provider version",
+			files: map[string]string{
+				"child/main.tf": `
+terraform {
+  required_providers {
+    random = {
+      source  = "pulumi/random"
+      version = "not-semver"
+    }
+  }
+}
+`,
+			},
+			wantErr: func(dir string) string {
+				return filepath.Join(dir, "child", "main.tf") + `:4,14-7,6: Invalid provider version; ` +
+					`"not-semver" is not a valid semver version for Pulumi provider "random": ` +
+					`Short version cannot contain PreRelease/Build meta data`
+			},
+		},
+		{
+			// The provider has no SDK, so its requirement makes Run fail with
+			// a missing SDK error instead of the error of the module.
+			name: "provider without an SDK",
+			files: map[string]string{
+				"child/good.tf": `
+terraform {
+  required_providers {
+    rollbar = {
+      source = "rollbar/rollbar"
+    }
+  }
+}
+`,
+				"child/bad.tf": `not_a_block "x" {}`,
+			},
+			wantErr: func(dir string) string {
+				return filepath.Join(dir, "child", "bad.tf") + `:1,1-12: Unsupported block type; ` +
+					`Blocks of type "not_a_block" are not expected here.`
+			},
+		},
 	}
-	assert.Equal(t, []string{"pulumi:pulumi:Stack"}, types)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newPinnedWorkspace(t, schemaloader.New(t, randomSpec("4.18.5", "uuid")))
+			dir := t.TempDir()
+			tt.files["main.tf"] = `
+module "child" {
+  source = "./child"
+}
+`
+			errMsg, err := w.run(t.Context(), dir, tt.files)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantErr(dir), errMsg)
+		})
+	}
 }

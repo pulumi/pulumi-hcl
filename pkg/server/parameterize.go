@@ -353,7 +353,11 @@ func (m *moduleProvider) resolvePackages(
 ) (map[string]workspace.PackageDescriptor, error) {
 	ctx, span := potel.Start(ctx, "resolvePackages")
 	defer span.End()
-	resolved, err := resolve.Packages(ctx, m.resolver, RequirementSpecs(ctx, loader, config, workDir))
+	specs, err := RequirementSpecs(ctx, loader, config, workDir)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := resolve.Packages(ctx, m.resolver, specs)
 	if err != nil {
 		return nil, fmt.Errorf("resolving module providers: %w", err)
 	}
