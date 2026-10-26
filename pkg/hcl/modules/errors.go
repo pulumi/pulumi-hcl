@@ -24,12 +24,16 @@ import (
 var (
 	// ErrNotFound marks a module, version, or subdirectory that does not exist.
 	ErrNotFound = errors.New("not found")
-	// ErrUnauthenticated marks a registry request rejected for missing or
-	// invalid credentials (HTTP 401).
+	// ErrUnauthenticated marks a registry request whose credentials the
+	// registry rejected (HTTP 401).
 	ErrUnauthenticated = errors.New("unauthenticated")
 	// ErrPermissionDenied marks a registry request rejected despite valid
 	// credentials (HTTP 403).
 	ErrPermissionDenied = errors.New("permission denied")
+	// ErrNoCredentials marks a registry request that the registry refused
+	// (HTTP 401 or 403) and that carried no credentials, because none are
+	// configured for its host.
+	ErrNoCredentials = errors.New("no credentials for registry")
 	// ErrTransient marks a failure worth retrying: a network error or a
 	// retriable HTTP status from the registry.
 	ErrTransient = errors.New("transient failure")
@@ -50,9 +54,12 @@ func (e classifiedError) Unwrap() []error { return []error{e.kind, e.err} }
 func classified(kind, err error) error { return classifiedError{kind: kind, err: err} }
 
 // classifiedHTTP classifies err by the HTTP status of the failed registry
-// request, returning err unchanged for statuses with no useful classification.
-func classifiedHTTP(status int, err error) error {
+// request and by whether the request carried credentials, returning err
+// unchanged for statuses with no useful classification.
+func classifiedHTTP(status int, credentialed bool, err error) error {
 	switch {
+	case !credentialed && (status == http.StatusUnauthorized || status == http.StatusForbidden):
+		return classified(ErrNoCredentials, err)
 	case status == http.StatusNotFound:
 		return classified(ErrNotFound, err)
 	case status == http.StatusUnauthorized:

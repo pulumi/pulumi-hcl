@@ -56,6 +56,12 @@ func TestClassify(t *testing.T) {
 			want:     codes.PermissionDenied,
 		},
 		{
+			name:     "no credentials for registry",
+			err:      fmt.Errorf("loading module: %w", modules.ErrNoCredentials),
+			fallback: codes.Unknown,
+			want:     codes.FailedPrecondition,
+		},
+		{
 			name:     "transient registry failure",
 			err:      fmt.Errorf("loading module: %w", modules.ErrTransient),
 			fallback: codes.Unknown,

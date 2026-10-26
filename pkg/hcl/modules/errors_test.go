@@ -26,20 +26,25 @@ import (
 )
 
 // TestRegistryHTTPErrorClassification verifies that a failed modules.v1
-// request wraps the classification sentinel implied by its HTTP status.
+// request wraps the classification sentinel implied by its HTTP status and by
+// whether the request carried credentials.
 func TestRegistryHTTPErrorClassification(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name   string
-		status int
-		want   error
+		name         string
+		status       int
+		credentialed bool
+		want         error
 	}{
-		{"not found", http.StatusNotFound, ErrNotFound},
-		{"unauthorized", http.StatusUnauthorized, ErrUnauthenticated},
-		{"forbidden", http.StatusForbidden, ErrPermissionDenied},
-		{"rate limited", http.StatusTooManyRequests, ErrTransient},
-		{"server error", http.StatusInternalServerError, ErrTransient},
-		{"bad gateway", http.StatusBadGateway, ErrTransient},
+		{"not found", http.StatusNotFound, true, ErrNotFound},
+		{"unauthorized", http.StatusUnauthorized, true, ErrUnauthenticated},
+		{"forbidden", http.StatusForbidden, true, ErrPermissionDenied},
+		{"unauthorized without credentials", http.StatusUnauthorized, false, ErrNoCredentials},
+		{"forbidden without credentials", http.StatusForbidden, false, ErrNoCredentials},
+		{"not found without credentials", http.StatusNotFound, false, ErrNotFound},
+		{"rate limited", http.StatusTooManyRequests, true, ErrTransient},
+		{"server error", http.StatusInternalServerError, true, ErrTransient},
+		{"bad gateway", http.StatusBadGateway, true, ErrTransient},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,6 +54,10 @@ func TestRegistryHTTPErrorClassification(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 			n := newTestNetworkResolver(t, srv.URL)
+			if tc.credentialed {
+				n.disco.SetCredentialsSource(credentialsForRegistry(
+					&cloudRegistry{host: regaddr.DefaultModuleRegistryHost, token: "secret-token"}))
+			}
 
 			_, _, err := n.resolveRegistrySource("acme/thing/aws", "")
 			require.ErrorIs(t, err, tc.want)

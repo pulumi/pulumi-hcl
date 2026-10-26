@@ -70,6 +70,10 @@ func Classify(err error, fallback codes.Code) error {
 		return statusError{codes.Unauthenticated, err}
 	case errors.Is(err, modules.ErrPermissionDenied):
 		return statusError{codes.PermissionDenied, err}
+	case errors.Is(err, modules.ErrNoCredentials):
+		// The module names a registry that the caller has no credentials for:
+		// the module must change, not the caller's credentials.
+		return statusError{codes.FailedPrecondition, err}
 	case errors.Is(err, modules.ErrTransient):
 		return statusError{codes.Unavailable, err}
 	case errors.Is(err, modules.ErrInvalid):

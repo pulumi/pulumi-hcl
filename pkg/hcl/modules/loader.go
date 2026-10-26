@@ -403,16 +403,19 @@ func (l *networkResolver) registryBaseURLForHost(host svchost.Hostname) (string,
 
 // registryGet performs a GET against a modules.v1 endpoint on host. When host is the discovered
 // Pulumi Cloud module registry, the request carries the engine-provided access token; for any other
-// host it is anonymous, exactly like the service-discovery requests.
-func (l *networkResolver) registryGet(host svchost.Hostname, rawURL string) (*http.Response, error) {
+// host it is anonymous, exactly like the service-discovery requests. credentialed reports whether
+// the request carried credentials.
+func (l *networkResolver) registryGet(host svchost.Hostname, rawURL string) (resp *http.Response, credentialed bool, err error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if creds, err := l.disco.CredentialsForHost(context.Background(), host); err == nil && creds != nil {
 		creds.PrepareRequest(req)
+		credentialed = true
 	}
-	return http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(req)
+	return resp, credentialed, err
 }
 
 type registryModuleVersion struct {
@@ -436,7 +439,7 @@ func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL,
 	}
 
 	downloadURL := fmt.Sprintf("%s/%s/%s/%s/%s/download", baseURL, namespace, name, provider, chosen)
-	resp, err := l.registryGet(host, downloadURL)
+	resp, credentialed, err := l.registryGet(host, downloadURL)
 	if err != nil {
 		return "", "", classified(ErrTransient, fmt.Errorf("getting download URL: %w", err))
 	}
@@ -454,7 +457,7 @@ func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", classifiedHTTP(resp.StatusCode, fmt.Errorf("getting download URL: HTTP %d", resp.StatusCode))
+		return "", "", classifiedHTTP(resp.StatusCode, credentialed, fmt.Errorf("getting download URL: HTTP %d", resp.StatusCode))
 	}
 
 	if hdr := resp.Header.Get("X-Terraform-Get"); hdr != "" {
@@ -485,7 +488,7 @@ func (l *networkResolver) getRegistryDownloadURL(host svchost.Hostname, baseURL,
 // versionConstraint, or the highest overall when it's empty.
 func (l *networkResolver) selectRegistryVersion(host svchost.Hostname, baseURL, namespace, name, provider, versionConstraint string) (string, error) {
 	versionsURL := fmt.Sprintf("%s/%s/%s/%s/versions", baseURL, namespace, name, provider)
-	resp, err := l.registryGet(host, versionsURL)
+	resp, credentialed, err := l.registryGet(host, versionsURL)
 	if err != nil {
 		return "", classified(ErrTransient, fmt.Errorf("querying registry versions: %w", err))
 	}
@@ -496,7 +499,7 @@ func (l *networkResolver) selectRegistryVersion(host svchost.Hostname, baseURL, 
 			fmt.Errorf("module %s/%s/%s not found in registry", namespace, name, provider))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", classifiedHTTP(resp.StatusCode, fmt.Errorf("querying registry versions: HTTP %d", resp.StatusCode))
+		return "", classifiedHTTP(resp.StatusCode, credentialed, fmt.Errorf("querying registry versions: HTTP %d", resp.StatusCode))
 	}
 
 	var versions registryModuleVersions
