@@ -804,6 +804,62 @@ output "try_id" {
 	}, moduleSchema.OutputProperties)
 }
 
+// TestTryUnionOutputsAreTyped shows that a try call types as a union of the
+// arguments that can win at runtime: an argument that errors is skipped, and
+// no argument after a wholly known one can win. A try call inside an
+// expression HCL evaluates types as any when its arguments disagree.
+func TestTryUnionOutputsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+variable "rules" {
+  type = list(object({
+    tags = list(string)
+  }))
+}
+
+variable "name" {
+  type = string
+}
+
+output "list_or_string" {
+  value = try(var.rules[0].tags, "")
+}
+
+output "same_type" {
+  value = try(var.name, "")
+}
+
+output "skips_error" {
+  value = try(var.name.missing, 1)
+}
+
+output "stops_at_known" {
+  value = try(var.name, "", var.rules)
+}
+
+output "evaluated" {
+  value = [try(var.rules[0].tags, "")]
+}
+`
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, &Binder{}, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	stringList := &PropertySpec{Type: TypeArray, Items: &PropertySpec{Type: TypeString}}
+	assert.Equal(t, map[string]*PropertySpec{
+		"list_or_string": {OneOf: []*PropertySpec{stringList, {Type: TypeString}}},
+		"same_type":      {Type: TypeString},
+		"skips_error":    {Type: TypeNumber},
+		"stops_at_known": {Type: TypeString},
+		"evaluated":      {Type: TypeArray, Items: &PropertySpec{Type: TypeAny}},
+	}, moduleSchema.OutputProperties)
+	assert.Equal(t, []string{"evaluated", "skips_error"}, moduleSchema.RequiredOutputs)
+}
+
 // TestOutputRequiredness shows that an output is required exactly when its value
 // can never be null: non-null literals, non-null inputs, and required resource
 // attributes are required, while nullable inputs, optional attributes,

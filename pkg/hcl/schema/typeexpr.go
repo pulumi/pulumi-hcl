@@ -38,8 +38,9 @@ func markRangedRef(val cty.Value, ranged bool) cty.Value {
 	return val
 }
 
-// union marks the unknown value of DynamicPseudoType that a conditional
-// yields when its branch types do not unify. Its members are the branch values.
+// union marks the unknown value of DynamicPseudoType that a conditional or a
+// try call yields when its candidate types do not unify. Its members are the
+// candidate values.
 // A traversal step applies to every member that supports it and unifies the
 // results, so an attribute the members share types as that attribute. A union
 // that reaches an output types as any. A union that reaches an expression HCL evaluates (a
@@ -172,9 +173,10 @@ func outputRequired(val cty.Value) bool {
 
 // typeExpr evaluates expr against ctx for its type, the way HCL would, except
 // that traversals are applied one step at a time so an object indexed out of
-// a ranged reference regains the null refinements of its type, and that a
+// a ranged reference regains the null refinements of its type, that a
 // conditional whose branch types do not unify yields a union instead of an
-// error. Every other expression is delegated to HCL, which degrades a union
+// error, and that a try call yields a union of the arguments that can win.
+// Every other expression is delegated to HCL, which degrades a union
 // among its inputs to a plain DynamicVal.
 func typeExpr(expr hcl.Expression, ctx *hcl.EvalContext) (cty.Value, hcl.Diagnostics) {
 	switch e := expr.(type) {
@@ -208,6 +210,13 @@ func typeExpr(expr hcl.Expression, ctx *hcl.EvalContext) (cty.Value, hcl.Diagnos
 
 	case *hclsyntax.ConditionalExpr:
 		return typeConditional(e, ctx)
+
+	case *hclsyntax.FunctionCallExpr:
+		// Provider functions are namespaced, so an unqualified try is always
+		// the builtin.
+		if e.Name == "try" && !e.ExpandFinal && len(e.Args) > 0 {
+			return typeTry(e, ctx)
+		}
 	}
 
 	val, diags := expr.Value(ctx)
@@ -242,6 +251,30 @@ func typeConditional(e *hclsyntax.ConditionalExpr, ctx *hcl.EvalContext) (cty.Va
 		return falseVal, diags
 	}
 	return unify([]cty.Value{trueVal, falseVal}, true), nil
+}
+
+// typeTry types a try call as a union of the arguments that can win at
+// runtime. An argument that errors now errors at runtime too, so it is
+// skipped. A wholly known argument always succeeds, so no later argument can
+// win. try returns the winning value unconverted, so the members do not
+// unify by conversion. When no argument succeeds, HCL reports the diagnostic.
+func typeTry(e *hclsyntax.FunctionCallExpr, ctx *hcl.EvalContext) (cty.Value, hcl.Diagnostics) {
+	var members []cty.Value
+	for _, arg := range e.Args {
+		val, diags := typeExpr(arg, ctx)
+		if diags.HasErrors() {
+			continue
+		}
+		members = append(members, val)
+		if unmarked, _ := val.UnmarkDeep(); unmarked.IsWhollyKnown() {
+			break
+		}
+	}
+	if len(members) == 0 {
+		val, diags := e.Value(ctx)
+		return dropUnions(val), diags
+	}
+	return unify(members, false), nil
 }
 
 // traverse applies traversal to val one step at a time.

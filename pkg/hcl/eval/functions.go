@@ -378,9 +378,9 @@ func unknownOnError(fn function.Function) function.Function {
 // wholly known, because once the unknowns resolve a different argument might win
 // and the result type could change. Schema generation evaluates references as
 // unknowns of their static type, so that conservative rule would type every
-// try()-wrapped output as the "any" type. This variant returns the type of the
-// first argument that evaluates without error — e.g. try(aws_vpc.this[0].id,
-// null) is a string.
+// try()-wrapped output as the "any" type. This variant returns the type that
+// every argument able to win shares — e.g. try(aws_vpc.this[0].id, null) is a
+// string.
 var typeInferenceTryFunc = function.New(&function.Spec{
 	VarParam: &function.Parameter{
 		Name: "expressions",
@@ -398,16 +398,18 @@ var typeInferenceTryFunc = function.New(&function.Spec{
 	},
 })
 
-// typeInferenceTry returns an unknown of the first argument that evaluates
-// without error, preserving its static type rather than falling back to a
-// dynamic value like tryfunc's try. Since try() may fall through to a later
-// argument at runtime (such as the null in try(x, null)), the result is refined
-// not-null only when every candidate is.
+// typeInferenceTry returns an unknown of the type that every argument able to
+// win at runtime shares. An argument that errors now errors at runtime too, and
+// a wholly known argument always succeeds, so no later argument can win. A
+// null of unknown type fits any type. When the arguments disagree, the result
+// is dynamic, since try() returns the winning value unconverted. Since try()
+// may fall through to a later argument at runtime (such as the null in
+// try(x, null)), the result is refined not-null only when every candidate is.
 func typeInferenceTry(args []cty.Value) (cty.Value, error) {
 	if len(args) == 0 {
 		return cty.NilVal, errors.New("at least one argument is required")
 	}
-	var result cty.Value
+	ty := cty.NilType
 	found, couldBeNull := false, false
 	for _, arg := range args {
 		closure := customdecode.ExpressionClosureFromVal(arg)
@@ -416,21 +418,31 @@ func typeInferenceTry(args []cty.Value) (cty.Value, error) {
 			continue
 		}
 		v, _ = v.UnmarkDeep()
-		if !found {
-			result = v
-			found = true
-		}
+		found = true
 		if v.Range().CouldBeNull() {
 			couldBeNull = true
+		}
+		switch {
+		case v.IsNull() && v.Type() == cty.DynamicPseudoType:
+		case ty == cty.NilType:
+			ty = v.Type()
+		case !ty.Equals(v.Type()):
+			return cty.DynamicVal, nil
+		}
+		if v.IsWhollyKnown() {
+			break
 		}
 	}
 	if !found {
 		return cty.NilVal, errors.New("no expression succeeded")
 	}
-	if couldBeNull {
-		return cty.UnknownVal(result.Type()), nil
+	if ty == cty.NilType {
+		return cty.DynamicVal, nil
 	}
-	return cty.UnknownVal(result.Type()).RefineNotNull(), nil
+	if couldBeNull {
+		return cty.UnknownVal(ty), nil
+	}
+	return cty.UnknownVal(ty).RefineNotNull(), nil
 }
 
 // String functions
