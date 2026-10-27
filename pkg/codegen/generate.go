@@ -1439,7 +1439,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.HideDiffs != nil {
-		g.genPropertyPathList(pulumiBody(), "hide_diffs", r, inputProperties(r), opts.HideDiffs, &diags)
+		g.genPropertyPathList(pulumiBody(), "hide_diffs", r, outputProperties(r), opts.HideDiffs, &diags)
 	}
 
 	if opts.ReplaceOnChanges != nil {

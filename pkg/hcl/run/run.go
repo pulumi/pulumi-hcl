@@ -2197,8 +2197,9 @@ func (e *Engine) buildResourceOptions(
 	// their attribute path. Like ignore_changes, the path may be written in TF
 	// (snake_case) convention and must be translated to the Pulumi property
 	// name the engine expects; a path already in Pulumi form passes through.
+	// The engine hides diffs of the outputs, so hide_diffs names outputs.
 	for _, p := range res.HideDiff {
-		glob, err := translateAttrPathTraversal(p, resourceMapping, inputProps)
+		glob, err := translateAttrPathTraversal(p, resourceMapping, outputProps)
 		if err != nil {
 			return nil, fmt.Errorf("invalid hide_diffs property path: %w", err)
 		}

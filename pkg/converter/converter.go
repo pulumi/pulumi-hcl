@@ -832,7 +832,9 @@ func (ft *fileTransformer) emitFile(
 						switch attr.Name {
 						case "additional_secret_outputs":
 							tokens = ft.transformPropertyPathList(attr.Expr, res.Properties, mapping)
-						case "hide_diffs", "replace_on_changes":
+						case "hide_diffs":
+							tokens = ft.transformPropertyPathList(attr.Expr, res.Properties, mapping)
+						case "replace_on_changes":
 							tokens = ft.transformPropertyPathList(attr.Expr, res.InputProperties, mapping)
 						default:
 							tokens = ft.transformExpr(attr.Expr)
