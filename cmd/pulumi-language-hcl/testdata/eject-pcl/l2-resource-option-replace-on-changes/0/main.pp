@@ -3,9 +3,6 @@
 resource "schemaReplace" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
-  options {
-    replaceOnChanges = [replaceProp]
-  }
 }
 
 // Scenario 2: Option-based replaceOnChanges on value
@@ -21,7 +18,7 @@ resource "bothReplaceValue" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
   options {
-    replaceOnChanges = [replaceProp, value]
+    replaceOnChanges = [value]
   }
 }
 
@@ -30,7 +27,7 @@ resource "bothReplaceProp" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
   options {
-    replaceOnChanges = [replaceProp, value]
+    replaceOnChanges = [value]
   }
 }
 
@@ -52,7 +49,7 @@ resource "wrongPropChange" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
   options {
-    replaceOnChanges = [replaceProp, value]
+    replaceOnChanges = [value]
   }
 }
 
@@ -61,7 +58,7 @@ resource "multiplePropReplace" "replaceonchanges:index:ResourceA" {
   value       = true
   replaceProp = true
   options {
-    replaceOnChanges = [replaceProp, value]
+    replaceOnChanges = [value, replaceProp]
   }
 }
 

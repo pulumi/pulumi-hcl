@@ -20,5 +20,5 @@ resource "test_sink" "tagSink" {
   lifecycle {
     create_before_destroy = true
   }
-  value = data.test_info.info[0].tags_map.UserKey
+  value = data.test_info.info[0].tags_map["UserKey"]
 }

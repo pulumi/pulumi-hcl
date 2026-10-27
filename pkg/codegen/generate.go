@@ -1315,7 +1315,7 @@ func (g *generator) genProvider(ctx context.Context, body *hclwrite.Body, r *pcl
 			}
 		}
 		if opts.AdditionalSecretOutputs != nil {
-			g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, g.resourceMappings[r])
+			g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", r, outputProperties(r), opts.AdditionalSecretOutputs, &diags)
 		}
 		if opts.EnvVarMappings != nil {
 			tokens, d := g.exprTokens(opts.EnvVarMappings, schema.AnyType)
@@ -1335,15 +1335,6 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	var diags hcl.Diagnostics
 	opts := r.Options
 
-	// Collect schema-based replaceOnChanges property paths in camelCase (Pulumi convention).
-	var schemaReplaceOnChanges []string
-	if r.Schema != nil {
-		schemaReplaceProps, _ := r.Schema.ReplaceOnChanges()
-		// Keep property names in camelCase so the engine can match them against the diff.
-		schemaReplaceOnChanges = schema.PropertyListJoinToString(schemaReplaceProps,
-			func(s string) string { return s })
-	}
-
 	// pulumiBody lazily appends the `pulumi { }` block on first use so it is
 	// omitted entirely when there are no Pulumi-specific options.
 	var pulumiBlockBody *hclwrite.Body
@@ -1352,16 +1343,6 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 			pulumiBlockBody = body.AppendNewBlock("pulumi", nil).Body()
 		}
 		return pulumiBlockBody
-	}
-
-	var optReplaceOnChanges model.Expression
-	if opts != nil {
-		optReplaceOnChanges = opts.ReplaceOnChanges
-	}
-	emitReplaceOnChanges := func() {
-		if len(schemaReplaceOnChanges) > 0 || len(extractPropertyNames(optReplaceOnChanges)) > 0 {
-			g.genReplaceOnChanges(pulumiBody(), schemaReplaceOnChanges, optReplaceOnChanges, g.resourceMappings[r], &diags)
-		}
 	}
 
 	// Pin per-instance names to the "<parent>-<name>-<key>" scheme the other
@@ -1375,7 +1356,6 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 
 	if opts == nil {
 		pinName(instanceNamingNone)
-		emitReplaceOnChanges()
 		g.genLifecycleBlock(body, r, nil, &diags)
 		return diags
 	}
@@ -1423,7 +1403,7 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.AdditionalSecretOutputs != nil {
-		g.genPropertyPathTraversalList(pulumiBody(), "additional_secret_outputs", opts.AdditionalSecretOutputs, g.resourceMappings[r])
+		g.genPropertyPathList(pulumiBody(), "additional_secret_outputs", r, outputProperties(r), opts.AdditionalSecretOutputs, &diags)
 	}
 
 	if opts.Protect != nil {
@@ -1459,10 +1439,12 @@ func (g *generator) genResourceOptions(body *hclwrite.Body, r *pcl.Resource) hcl
 	}
 
 	if opts.HideDiffs != nil {
-		g.genPropertyPathTraversalList(pulumiBody(), "hide_diffs", opts.HideDiffs, g.resourceMappings[r])
+		g.genPropertyPathList(pulumiBody(), "hide_diffs", r, inputProperties(r), opts.HideDiffs, &diags)
 	}
 
-	emitReplaceOnChanges()
+	if opts.ReplaceOnChanges != nil {
+		g.genPropertyPathList(pulumiBody(), "replace_on_changes", r, inputProperties(r), opts.ReplaceOnChanges, &diags)
+	}
 
 	if opts.ImportID != nil {
 		tokens, d := g.exprTokens(opts.ImportID, schema.StringType)
@@ -1775,78 +1757,35 @@ func (g *generator) aliasElemTokens(elem model.Expression) (hclwrite.Tokens, hcl
 	return tokens, diags
 }
 
-// extractPropertyNames extracts camelCase property names from a PCL expression like [value, otherProp].
-func extractPropertyNames(expr model.Expression) []string {
-	var names []string
-	if expr == nil {
-		return names
-	}
-	tuple, ok := expr.(*model.TupleConsExpression)
-	if !ok {
-		return names
-	}
-	for _, elem := range tuple.Expressions {
-		if s, ok := extractStringLiteral(elem); ok {
-			names = append(names, s)
-		} else if traversal, ok := elem.(*model.ScopeTraversalExpression); ok {
-			// PCL property traversals are already in camelCase (e.g., value, replaceProp)
-			names = append(names, traversal.Traversal.RootName())
-		}
-	}
-	return names
-}
-
-// genPropertyPathTraversalList generates an HCL list attribute for property
-// paths emitted as bare traversals in TF snake_case (e.g.,
-// hide_diffs = [replace_prop]), matching the form of ignore_changes. Used for
-// hide_diffs, replace_on_changes, and additional_secret_outputs. mapping is
-// the bridge mapping of the resource, or nil.
-func (g *generator) genPropertyPathTraversalList(
-	body *hclwrite.Body, attrName string, optsExpr model.Expression, mapping *bridge.BodyMapping,
+// genPropertyPathList writes the property-path option attrName of r, such
+// as hide_diffs. props are the properties of r that the paths name.
+func (g *generator) genPropertyPathList(
+	body *hclwrite.Body, attrName string, r *pcl.Resource, props []*schema.Property,
+	expr model.Expression, diags *hcl.Diagnostics,
 ) {
-	names := extractPropertyNames(optsExpr)
-	if len(names) == 0 {
-		return
+	tokens, d := g.propertyPathListTokens(r, props, expr)
+	*diags = append(*diags, d...)
+	if !d.HasErrors() {
+		body.SetAttributeRaw(attrName, tokens)
 	}
-	body.SetAttributeRaw(attrName, makeTraversalListTokens(hclPropertyPaths(names, mapping)))
 }
 
-// hclPropertyPaths converts Pulumi property paths to their TF form, segment by
-// segment, so emitted property-path options name properties the same way as
-// the resource's attributes. mapping is the bridge mapping of the resource, or
-// nil.
-func hclPropertyPaths(paths []string, mapping *bridge.BodyMapping) []string {
-	out := make([]string, len(paths))
-	for i, p := range paths {
-		segs := strings.Split(p, ".")
-		m := mapping
-		for j, s := range segs {
-			var fm *bridge.FieldMapping
-			segs[j], fm = hclField(s, m)
-			m = nestedMapping(fm)
-		}
-		out[i] = strings.Join(segs, ".")
+// inputProperties returns the input properties of r, or nil when r has no
+// schema.
+func inputProperties(r *pcl.Resource) []*schema.Property {
+	if r.Schema == nil {
+		return nil
 	}
-	return out
+	return r.Schema.InputProperties
 }
 
-// makeTraversalListTokens generates HCL tokens for a list of property-path
-// traversals: [a, b.c]. hide_diffs and replace_on_changes name properties by
-// their attribute path, matching the bare-traversal form of ignore_changes.
-func makeTraversalListTokens(paths []string) hclwrite.Tokens {
-	tokens := hclwrite.Tokens{
-		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+// outputProperties returns the output properties of r, or nil when r has no
+// schema.
+func outputProperties(r *pcl.Resource) []*schema.Property {
+	if r.Schema == nil {
+		return nil
 	}
-	for i, p := range paths {
-		if i > 0 {
-			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")})
-		}
-		tokens = append(tokens, &hclwrite.Token{
-			Type: hclsyntax.TokenIdent, Bytes: []byte(p), SpacesBefore: 1,
-		})
-	}
-	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
-	return tokens
+	return r.Schema.Properties
 }
 
 // genLifecycleBlock writes the resource's `lifecycle { ... }` block.
@@ -1870,7 +1809,7 @@ func (g *generator) genLifecycleBlock(
 
 	if opts != nil {
 		if opts.IgnoreChanges != nil {
-			tokens, d := g.ignoreChangesTokens(r, opts.IgnoreChanges)
+			tokens, d := g.propertyPathListTokens(r, inputProperties(r), opts.IgnoreChanges)
 			*diags = append(*diags, d...)
 			if !d.HasErrors() {
 				attrs = append(attrs, attr{"ignore_changes", tokens})
@@ -1904,35 +1843,56 @@ func (g *generator) genLifecycleBlock(
 	}
 }
 
-// ignoreChangesTokens writes the `ignore_changes` list of r. Each property path
-// is rewritten against the schema of r to its TF form, so a path into a
-// MaxItems=1 block gets the [0] that HCL needs.
-func (g *generator) ignoreChangesTokens(r *pcl.Resource, expr model.Expression) (hclwrite.Tokens, hcl.Diagnostics) {
+// propertyPathListTokens writes a list of property paths of r, as in
+// `ignore_changes` or `hide_diffs`. Each path is rewritten against props to
+// its TF form: names become TF names, a path into a MaxItems=1 block gets the
+// [0] that HCL needs, and a map key becomes an index. A path may be a
+// traversal or a string that holds one.
+func (g *generator) propertyPathListTokens(
+	r *pcl.Resource, props []*schema.Property, expr model.Expression,
+) (hclwrite.Tokens, hcl.Diagnostics) {
 	tuple, ok := expr.(*model.TupleConsExpression)
-	if !ok || r.Schema == nil {
+	if !ok {
 		return g.exprTokens(expr, schema.AnyType)
 	}
 	elems := make([]hclwrite.Tokens, 0, len(tuple.Expressions))
 	var diags hcl.Diagnostics
 	for _, elem := range tuple.Expressions {
-		st, ok := elem.(*model.ScopeTraversalExpression)
-		var root hcl.TraverseRoot
-		if ok && len(st.Traversal) > 0 {
-			root, ok = st.Traversal[0].(hcl.TraverseRoot)
-		}
+		path, ok := propertyPathTraversal(elem)
 		if !ok {
 			tokens, d := g.exprTokens(elem, schema.AnyType)
 			diags = append(diags, d...)
 			elems = append(elems, tokens)
 			continue
 		}
-		rel := append(hcl.Traversal{hcl.TraverseAttr{Name: root.Name, SrcRange: root.SrcRange}}, st.Traversal[1:]...)
-		rel, _ = schemaAwareRewriteTraversal(r.Schema.InputProperties, g.resourceMappings[r], rel)
+		root := path[0].(hcl.TraverseRoot)
+		rel := append(hcl.Traversal{hcl.TraverseAttr{Name: root.Name, SrcRange: root.SrcRange}}, path[1:]...)
+		rel, _ = schemaAwareRewriteTraversal(props, g.resourceMappings[r], rel)
 		first := rel[0].(hcl.TraverseAttr)
-		path := append(hcl.Traversal{hcl.TraverseRoot{Name: first.Name, SrcRange: first.SrcRange}}, rel[1:]...)
+		path = append(hcl.Traversal{hcl.TraverseRoot{Name: first.Name, SrcRange: first.SrcRange}}, rel[1:]...)
 		elems = append(elems, hclwrite.TokensForTraversal(path))
 	}
 	return hclwrite.TokensForTuple(elems), diags
+}
+
+// propertyPathTraversal returns the property path that elem holds: a
+// traversal, or a string literal that parses as one.
+func propertyPathTraversal(elem model.Expression) (hcl.Traversal, bool) {
+	var path hcl.Traversal
+	if st, ok := elem.(*model.ScopeTraversalExpression); ok {
+		path = st.Traversal
+	} else if str, ok := extractStringLiteral(elem); ok {
+		var diags hcl.Diagnostics
+		path, diags = hclsyntax.ParseTraversalAbs([]byte(str), "", hcl.Pos{})
+		if diags.HasErrors() {
+			return nil, false
+		}
+	}
+	if len(path) == 0 {
+		return nil, false
+	}
+	_, ok := path[0].(hcl.TraverseRoot)
+	return path, ok
 }
 
 // createBeforeDestroyTokens computes the value of `create_before_destroy` from
@@ -1956,36 +1916,6 @@ func createBeforeDestroyTokens(g *generator, opts *pcl.ResourceOptions, diags *h
 	return append(hclwrite.Tokens{
 		{Type: hclsyntax.TokenBang, Bytes: []byte("!")},
 	}, tokens...)
-}
-
-// genReplaceOnChanges generates the replace_on_changes attribute, merging
-// schema-based and option-based paths. Paths are emitted as bare traversals in
-// TF snake_case, matching the resource's snake_case attribute names.
-func (g *generator) genReplaceOnChanges(
-	body *hclwrite.Body, schemaPaths []string, optsExpr model.Expression, mapping *bridge.BodyMapping, diags *hcl.Diagnostics,
-) {
-	optPaths := extractPropertyNames(optsExpr)
-	if len(schemaPaths) == 0 && len(optPaths) == 0 {
-		return
-	}
-
-	// Merge and deduplicate paths.
-	seen := make(map[string]bool)
-	var allPaths []string
-	for _, p := range schemaPaths {
-		if !seen[p] {
-			seen[p] = true
-			allPaths = append(allPaths, p)
-		}
-	}
-	for _, p := range optPaths {
-		if !seen[p] {
-			seen[p] = true
-			allPaths = append(allPaths, p)
-		}
-	}
-
-	body.SetAttributeRaw("replace_on_changes", makeTraversalListTokens(hclPropertyPaths(allPaths, mapping)))
 }
 
 func (g *generator) genConfigVariable(body *hclwrite.Body, cv *pcl.ConfigVariable) hcl.Diagnostics {
@@ -2922,6 +2852,12 @@ func schemaAwareRewriteTyped(
 			return schemaAwareRewriteTraversal(s.Resource.Properties, nil, traversal)
 		case *schema.ObjectType:
 			return schemaAwareRewriteTraversal(s.Properties, mapping, traversal)
+		case *schema.MapType:
+			// PCL may write a map key as an attribute. The key is data, so it
+			// becomes an index, which keeps it unchanged and valid in HCL.
+			key := hcl.TraverseIndex{Key: cty.StringVal(t.Name), SrcRange: t.SrcRange}
+			rest, block := schemaAwareRewriteTyped(s.ElementType, mapping, traversal[1:])
+			return append(hcl.Traversal{key}, rest...), block
 		default:
 			return traversal, nil
 		}

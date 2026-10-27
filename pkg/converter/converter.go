@@ -1834,6 +1834,13 @@ func schemaAwareTraversalAttrs(
 		switch step := step.(type) {
 		case hcl.TraverseAttr:
 			block = nil
+			if mt, ok := codegen.UnwrapType(currentType).(*schema.MapType); ok {
+				// A map key written as an attribute is data, not a property
+				// name, so it keeps its name as an index.
+				result = append(result, hcl.TraverseIndex{Key: cty.StringVal(step.Name), SrcRange: step.SrcRange})
+				currentType = mt.ElementType
+				continue
+			}
 			if fm := m.Lookup(step.Name); fm != nil && fm.MaxItemsOne {
 				block = fm
 			}
@@ -2451,45 +2458,19 @@ func (ft *fileTransformer) transformPropertyPath(
 	return ft.transformExpr(elem)
 }
 
-// schemaAwarePropertyPath converts every attribute segment of a property-path
-// traversal from TF snake_case to its Pulumi property name, starting at the
-// first segment. Unlike schemaAwareTraversalAttrs, whose root is a resource
-// logical name, here the root is itself a property. Index segments are dynamic
-// keys and are left unchanged, except the [0] after a MaxItems=1 block, which
-// is removed because the bridge flattens the block to its one element.
-// Matching a property unwraps any surrounding list/map so the next attribute
-// resolves against the element object. m is the bridge mapping of props, or
-// nil.
+// schemaAwarePropertyPath converts a property-path traversal from TF to PCL
+// form, as [schemaAwareTraversalAttrs] does for a reference. Unlike a
+// reference, whose root is a resource logical name, here the root is itself a
+// property. m is the bridge mapping of props, or nil.
 func schemaAwarePropertyPath(trav hcl.Traversal, props []*schema.Property, m *bridge.BodyMapping) hcl.Traversal {
-	result := make(hcl.Traversal, 0, len(trav))
-	nextProps := props
-	var maxItemsOne bool
-	for _, step := range trav {
-		switch step := step.(type) {
-		case hcl.TraverseRoot:
-			fm := m.Lookup(step.Name)
-			maxItemsOne = fm != nil && fm.MaxItemsOne
-			name, matched, nested := lookupProperty(step.Name, nextProps, m)
-			result = append(result, hcl.TraverseRoot{Name: name, SrcRange: step.SrcRange})
-			nextProps, m = elementObjectProperties(matched), nested
-		case hcl.TraverseAttr:
-			fm := m.Lookup(step.Name)
-			maxItemsOne = fm != nil && fm.MaxItemsOne
-			name, matched, nested := lookupProperty(step.Name, nextProps, m)
-			result = append(result, hcl.TraverseAttr{Name: name, SrcRange: step.SrcRange})
-			nextProps, m = elementObjectProperties(matched), nested
-		case hcl.TraverseIndex:
-			skip := maxItemsOne && isZeroIndex(step.Key)
-			maxItemsOne = false
-			if !skip {
-				result = append(result, step)
-			}
-		default:
-			maxItemsOne = false
-			result = append(result, step)
-		}
+	root, ok := trav[0].(hcl.TraverseRoot)
+	if !ok {
+		return trav
 	}
-	return result
+	ref := append(hcl.Traversal{root, hcl.TraverseAttr{Name: root.Name, SrcRange: root.SrcRange}}, trav[1:]...)
+	ref, _ = schemaAwareTraversalAttrs(ref, props, m)
+	first := ref[1].(hcl.TraverseAttr)
+	return append(hcl.Traversal{hcl.TraverseRoot{Name: first.Name, SrcRange: first.SrcRange}}, ref[2:]...)
 }
 
 // elementObjectProperties returns the object properties reachable from a matched

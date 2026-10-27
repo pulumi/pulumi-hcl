@@ -1703,7 +1703,7 @@ func (e *Engine) registerResourceInstanceInContext(
 		resourceInputs = resourceInputs.Set(prop, pv)
 	}
 
-	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema.InputProperties, resSchema.Properties, resourceInputs, timeouts)
+	opts, err := e.buildResourceOptions(ctx, node, res, instance, evalCtx, parentURN, modInst, resourceMapping, resSchema, resourceInputs, timeouts)
 	if err != nil {
 		return err
 	}
@@ -1985,8 +1985,9 @@ func (e *Engine) buildResourceOptions(
 	ctx context.Context, node *graph.Node, res *ast.Resource, instance *graph.ExpandedResource,
 	evalCtx *eval.Context, parentURN urn.URN,
 	modInst *moduleInstance, resourceMapping *bridge.BodyMapping,
-	inputProps, outputProps []*schema.Property, inputs property.Map, timeouts cty.Value,
+	resSchema *schema.Resource, inputs property.Map, timeouts cty.Value,
 ) (*ResourceOptions, error) {
+	inputProps, outputProps := resSchema.InputProperties, resSchema.Properties
 	modInfo := node.ModuleInfo
 	opts := &ResourceOptions{}
 	opts.Parent = parentURN
@@ -2209,6 +2210,15 @@ func (e *Engine) buildResourceOptions(
 			return nil, fmt.Errorf("invalid replace_on_changes property path: %w", err)
 		}
 		opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, glob)
+	}
+	// The schema marks properties as replaceOnChanges too. A Pulumi SDK
+	// applies those paths to every registration, so the runtime does as well.
+	schemaReplaceOnChanges, _ := resSchema.ReplaceOnChanges()
+	for _, path := range schemaReplaceOnChanges {
+		glob := schemaPropertyPathGlob(path)
+		if !slices.Contains(opts.ReplaceOnChanges, glob) {
+			opts.ReplaceOnChanges = append(opts.ReplaceOnChanges, glob)
+		}
 	}
 
 	// `lifecycle { replace_triggered_by = [a, b, ...] }` evaluates each
@@ -3242,6 +3252,22 @@ func translateAttrPathTraversal(
 	}
 
 	return property.GlobFromSegments(segments...), nil
+}
+
+// schemaPropertyPathGlob formats a schema property path, as
+// [schema.Resource.ReplaceOnChanges] returns it, as a glob. Like
+// [schema.PropertyListJoinToString], it matches every element of an array or
+// map property on the path.
+func schemaPropertyPathGlob(path []*schema.Property) property.Glob {
+	segments := make([]property.GlobSegment, 0, len(path))
+	for _, p := range path {
+		segments = append(segments, property.NewSegment(p.Name))
+		switch codegen.UnwrapType(p.Type).(type) {
+		case *schema.ArrayType, *schema.MapType:
+			segments = append(segments, property.Splat)
+		}
+	}
+	return property.GlobFromSegments(segments...)
 }
 
 // ignoreChangesApplies reports whether an ignore_changes path resolves inside
