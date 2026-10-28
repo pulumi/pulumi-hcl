@@ -23,9 +23,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
+	"github.com/pulumi/pulumi/sdk/v3/go/propertyrpc"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -108,16 +107,6 @@ func (s *callbackServer) Invoke(
 		return nil, fmt.Errorf("marshaling response: %w", err)
 	}
 	return &pulumirpc.CallbackInvokeResponse{Response: bytes}, nil
-}
-
-// hookMarshalOptions is the marshal config used to decode the engine-supplied
-// hook arguments. Unknowns are kept so the callback can detect them.
-var hookMarshalOptions = plugin.MarshalOptions{
-	KeepUnknowns:     true,
-	KeepSecrets:      true,
-	KeepResources:    true,
-	KeepOutputValues: true,
-	KeepByteString:   true,
 }
 
 // lazyCallbackServer is a callback server created on first use and shared for
@@ -205,32 +194,32 @@ func resourceHookCallback(fn run.ResourceHookFunction) callbackFunction {
 			Type: req.Type,
 		}
 		if req.NewInputs != nil {
-			m, err := plugin.UnmarshalProperties(req.NewInputs, hookMarshalOptions)
+			m, err := propertyrpc.Unmarshal(req.NewInputs)
 			if err != nil {
 				return nil, fmt.Errorf("unmarshaling new inputs: %w", err)
 			}
-			args.NewInputs = resource.FromResourcePropertyMap(m)
+			args.NewInputs = m
 		}
 		if req.OldInputs != nil {
-			m, err := plugin.UnmarshalProperties(req.OldInputs, hookMarshalOptions)
+			m, err := propertyrpc.Unmarshal(req.OldInputs)
 			if err != nil {
 				return nil, fmt.Errorf("unmarshaling old inputs: %w", err)
 			}
-			args.OldInputs = resource.FromResourcePropertyMap(m)
+			args.OldInputs = m
 		}
 		if req.NewOutputs != nil {
-			m, err := plugin.UnmarshalProperties(req.NewOutputs, hookMarshalOptions)
+			m, err := propertyrpc.Unmarshal(req.NewOutputs)
 			if err != nil {
 				return nil, fmt.Errorf("unmarshaling new outputs: %w", err)
 			}
-			args.NewOutputs = resource.FromResourcePropertyMap(m)
+			args.NewOutputs = m
 		}
 		if req.OldOutputs != nil {
-			m, err := plugin.UnmarshalProperties(req.OldOutputs, hookMarshalOptions)
+			m, err := propertyrpc.Unmarshal(req.OldOutputs)
 			if err != nil {
 				return nil, fmt.Errorf("unmarshaling old outputs: %w", err)
 			}
-			args.OldOutputs = resource.FromResourcePropertyMap(m)
+			args.OldOutputs = m
 		}
 		if err := fn(ctx, args); err != nil {
 			return &pulumirpc.ResourceHookResponse{Error: err.Error()}, nil
