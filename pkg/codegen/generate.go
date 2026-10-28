@@ -3107,6 +3107,12 @@ func (g *generator) scopeTraversalRefTokens(
 				pkgName = token[i+1:]
 			}
 			rewritten = append(rewritten, hcl.TraverseRoot{Name: pkgName})
+			// genProvider writes no `alias` for a provider named after its
+			// package, so a reference to the whole provider is the bare
+			// package name, as in `provider = <pkg>`.
+			if part.LogicalName() == pkgName && len(traversal) == 1 {
+				return hclwrite.TokensForTraversal(rewritten), nil, nil
+			}
 			rewritten = append(rewritten, traverseNameStep(part.LogicalName()))
 			var props []*schema.Property
 			if part.Schema != nil {

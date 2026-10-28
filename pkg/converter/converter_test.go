@@ -1341,6 +1341,8 @@ resource "item" "test:index:Item" {
       leaf_object = {
         leaf_value = "invoke"
       }
+      }, {
+      provider = test
     }).result
   }
   dynamic_branch = [for __key, __value in ["a"] : {
@@ -1354,6 +1356,7 @@ resource "item" "test:index:Item" {
     }
   }]
   options {
+    provider            = test
     deleteBeforeReplace = true
   }
 }

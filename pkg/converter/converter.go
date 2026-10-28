@@ -228,6 +228,26 @@ type callReference struct {
 	methodName   string
 }
 
+type defaultProvider struct {
+	dir string
+	pkg string
+}
+
+// defaultProviderRef returns the PCL reference to the un-aliased provider
+// block that a resource or data source of hclType in body uses when it does
+// not set `provider`, or nil when there is no such block. Like the runtime,
+// it takes the package name from the type prefix.
+func (ft *fileTransformer) defaultProviderRef(hclType string, body *hclsyntax.Body) hclwrite.Tokens {
+	if _, ok := body.Attributes["provider"]; ok {
+		return nil
+	}
+	pkg := strings.SplitN(hclType, "_", 2)[0]
+	if !ft.defaultProviders[defaultProvider{filepath.Dir(body.SrcRange.Filename), pkg}] {
+		return nil
+	}
+	return hclwrite.TokensForIdentifier(pkg)
+}
+
 // dataReference identifies a data block by HCL type and logical name.
 type dataReference struct {
 	hclType string
@@ -246,13 +266,17 @@ type fileTransformer struct {
 	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
 	// `provider` blocks; used to detect provider references in traversals.
 	providerAliases map[string]bool
-	callBlocks      map[callReference]*hclsyntax.Body
-	dataBlocks      map[dataReference]*hclsyntax.Body
-	dataTokens      map[string]string // key: hclType, value: resolved PCL token
-	loader          schema.ReferenceLoader
-	resolver        *packages.Resolver
-	resourceSchemas map[string]*schema.Resource // cache: HCL type label → resolved schema resource
-	functionSchemas map[string]*schema.Function // cache: HCL type label → resolved schema function
+	// defaultProviders is the set of un-aliased `provider` blocks. The
+	// resources and data sources of the package in the same directory use
+	// the block unless they set `provider`.
+	defaultProviders map[defaultProvider]bool
+	callBlocks       map[callReference]*hclsyntax.Body
+	dataBlocks       map[dataReference]*hclsyntax.Body
+	dataTokens       map[string]string // key: hclType, value: resolved PCL token
+	loader           schema.ReferenceLoader
+	resolver         *packages.Resolver
+	resourceSchemas  map[string]*schema.Resource // cache: HCL type label → resolved schema resource
+	functionSchemas  map[string]*schema.Function // cache: HCL type label → resolved schema function
 	// resourceMappings and functionMappings hold the bridge mapping of each
 	// entry of resourceSchemas and functionSchemas, or nil when it has none.
 	resourceMappings map[string]*bridge.BodyMapping
@@ -320,6 +344,7 @@ func newProjectTransformer(
 		functionSchemas:   make(map[string]*schema.Function),
 		providerFunctions: make(map[string]*schema.Function),
 		providerAliases:   make(map[string]bool),
+		defaultProviders:  make(map[defaultProvider]bool),
 	}
 	// Phase 1: collect pulumi.required_providers across every body so that
 	// later resolution sees the full set regardless of which file declared it.
@@ -386,6 +411,9 @@ func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body
 				}
 			}
 			ft.providerAliases[block.Labels[0]+"."+alias] = true
+			if _, aliased := block.Body.Attributes["alias"]; !aliased {
+				ft.defaultProviders[defaultProvider{filepath.Dir(block.Range().Filename), block.Labels[0]}] = true
+			}
 		}
 		if block.Type == "call" && len(block.Labels) == 2 {
 			ft.callBlocks[callReference{block.Labels[0], block.Labels[1]}] = block.Body
@@ -807,6 +835,9 @@ func (ft *fileTransformer) emitFile(
 					}
 					opts = append(opts, optEntry{pclName, tokens})
 				}
+			}
+			if ref := ft.defaultProviderRef(hclType, block.Body); ref != nil {
+				opts = append(opts, optEntry{"provider", ref})
 			}
 			// Separate special sub-blocks (lifecycle, timeouts, dynamic) from
 			// property sub-blocks (e.g. details { ... }) that represent
@@ -2049,6 +2080,12 @@ func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tok
 			}
 		}
 		argAttrs = append(argAttrs, ft.blocksToObjectAttrs(inputBlocks, inputProps, mapping)...)
+		if ref := ft.defaultProviderRef(hclType, body); ref != nil {
+			optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
+				Name:  hclwrite.TokensForIdentifier("provider"),
+				Value: ref,
+			})
+		}
 	}
 
 	argsTokens := hclwrite.TokensForObject(argAttrs)

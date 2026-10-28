@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Refer to a provider named after its package as `provider = <pkg>`
+time: 2026-10-28T17:00:00.000000+01:00
+custom:
+    Component: codegen
+    PR: "710"

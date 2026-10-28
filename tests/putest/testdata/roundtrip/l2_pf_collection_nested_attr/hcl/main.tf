@@ -13,6 +13,7 @@ data "pfx_set_lookup" "this_" {
     }, {
     name = "alpha"
   }]
+  provider = pfx
 }
 
 provider "pfx" {
@@ -23,6 +24,7 @@ provider "pfx" {
   }]
 }
 resource "pfx_flat" "this" {
+  provider = pfx
   settings = [{
     enabled = true
     }, {

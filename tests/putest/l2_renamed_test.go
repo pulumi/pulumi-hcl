@@ -128,7 +128,6 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 		"endpoint_seen": "https://example.test/api",
 		"retries_seen":  "3",
 	})
-	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi-hcl/issues/710]: The PCL resource does not use the configured `renamed` provider."
 	putest.RunCase(t, "l2_renamed_provider_config", c)
 }
 

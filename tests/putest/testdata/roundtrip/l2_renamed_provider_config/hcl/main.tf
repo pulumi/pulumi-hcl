@@ -14,6 +14,7 @@ provider "renamed" {
   }
 }
 resource "renamed_thing" "r" {
+  provider      = renamed
   function_name = "alpha"
 }
 output "endpoint_seen" {

@@ -8,6 +8,7 @@ resource "renamed" "pulumi:providers:renamed" {
 resource "r" "renamed:index/thing:Thing" {
   name = "alpha"
   options {
+    provider            = renamed
     deleteBeforeReplace = true
   }
 }

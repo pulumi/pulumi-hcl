@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Use an un-aliased `provider` block for the resources and invokes of its package
+time: 2026-10-28T17:00:00.000000+01:00
+custom:
+    Component: converter
+    PR: "710"

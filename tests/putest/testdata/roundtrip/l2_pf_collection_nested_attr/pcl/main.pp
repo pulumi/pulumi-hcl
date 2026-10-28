@@ -13,6 +13,7 @@ resource "this" "pfx:index/flat:Flat" {
     enabled = false
   }]
   options {
+    provider            = pfx
     deleteBeforeReplace = true
   }
 }
@@ -23,6 +24,8 @@ this_ = invoke("pfx:index/getSetLookup:getSetLookup", {
     }, {
     name = "alpha"
   }]
+  }, {
+  provider = pfx
 })
 
 output "settings" {
