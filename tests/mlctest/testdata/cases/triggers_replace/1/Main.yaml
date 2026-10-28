@@ -1,0 +1,5 @@
+resources:
+  m:
+    type: trigger:index:Module
+    properties:
+      x: b

@@ -42,8 +42,16 @@ import (
 // assert on exactly what the construct-mode monitor forwards to the engine.
 type routingCaptureMonitorServer struct {
 	pulumirpc.UnimplementedResourceMonitorServer
-	invokeReq *pulumirpc.ResourceInvokeRequest
-	callReq   *pulumirpc.ResourceCallRequest
+	invokeReq   *pulumirpc.ResourceInvokeRequest
+	callReq     *pulumirpc.ResourceCallRequest
+	registerReq *pulumirpc.RegisterResourceRequest
+}
+
+func (s *routingCaptureMonitorServer) RegisterResource(
+	_ context.Context, req *pulumirpc.RegisterResourceRequest,
+) (*pulumirpc.RegisterResourceResponse, error) {
+	s.registerReq = req
+	return &pulumirpc.RegisterResourceResponse{Urn: "urn:child", Id: "id"}, nil
 }
 
 func (s *routingCaptureMonitorServer) Invoke(
@@ -122,6 +130,80 @@ func TestConstructMonitorForwardsCallRouting(t *testing.T) {
 		PackageRef:        "package-ref-uuid",
 		AcceptsByteString: true,
 	}, capture.callReq, protocmp.Transform()))
+}
+
+// TestConstructMonitorForwardsResourceOptions guards against the construct-mode
+// monitor dropping resource options when it registers a module's resources. A
+// dropped replacement trigger, for example, makes a changed `triggers_replace`
+// inside an `hcl_module` update the resource in place instead of replacing it.
+// The resource's name, parent and aliases are moved under the component.
+func TestConstructMonitorForwardsResourceOptions(t *testing.T) {
+	t.Parallel()
+
+	const componentURN = "urn:pulumi:test::proj::hcl:index:Module::m"
+	capture := &routingCaptureMonitorServer{}
+	m := newTestConstructMonitor(t, capture)
+	m.componentName = "m"
+	m.componentURN = componentURN
+	retain := true
+
+	_, err := m.RegisterResource(t.Context(), run.RegisterResourceRequest{
+		Type:   "pulumi:index:Stash",
+		Name:   "t",
+		Custom: true,
+		Aliases: []run.Alias{
+			{URN: "urn:pulumi:test::proj::pulumi:index:Stash::old"},
+			{Spec: &run.AliasSpec{Name: "old", NoParent: true}},
+		},
+		DeleteBeforeReplace:     true,
+		DeleteBeforeReplaceDef:  true,
+		CustomTimeouts:          &run.CustomTimeouts{Create: 60},
+		ImportId:                "import-id",
+		AdditionalSecretOutputs: []string{"output"},
+		RetainOnDelete:          &retain,
+		DeletedWith:             "urn:deleted-with",
+		ReplaceWith:             []string{"urn:replace-with"},
+		HideDiffs:               []property.Glob{property.GlobFromSegments(property.NewSegment("input"))},
+		ReplaceOnChanges:        []property.Glob{property.GlobFromSegments(property.NewSegment("input"))},
+		ReplacementTrigger:      property.New("b"),
+		EnvVarMappings:          map[string]string{"A": "B"},
+	})
+	require.NoError(t, err)
+
+	protect := false
+	assert.Empty(t, cmp.Diff(&pulumirpc.RegisterResourceRequest{
+		Type:   "pulumi:index:Stash",
+		Name:   "m-t",
+		Custom: true,
+		Object: &structpb.Struct{},
+		Parent: componentURN,
+		Aliases: []*pulumirpc.Alias{
+			{Alias: &pulumirpc.Alias_Urn{Urn: "urn:pulumi:test::proj::pulumi:index:Stash::old"}},
+			{Alias: &pulumirpc.Alias_Spec_{Spec: &pulumirpc.Alias_Spec{
+				Name:   "m-old",
+				Parent: &pulumirpc.Alias_Spec_ParentUrn{ParentUrn: componentURN},
+			}}},
+		},
+		Protect:                    &protect,
+		Dependencies:               []string{},
+		PropertyDependencies:       map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies{},
+		AcceptSecrets:              true,
+		AcceptResources:            true,
+		AcceptsByteString:          true,
+		SupportsPartialValues:      true,
+		DeleteBeforeReplace:        true,
+		DeleteBeforeReplaceDefined: true,
+		CustomTimeouts:             &pulumirpc.RegisterResourceRequest_CustomTimeouts{Create: "1m0s"},
+		ImportId:                   "import-id",
+		AdditionalSecretOutputs:    []string{"output"},
+		RetainOnDelete:             &retain,
+		DeletedWith:                "urn:deleted-with",
+		ReplaceWith:                []string{"urn:replace-with"},
+		HideDiffs:                  []string{"input"},
+		ReplaceOnChanges:           []string{"input"},
+		ReplacementTrigger:         structpb.NewStringValue("b"),
+		EnvVarMappings:             map[string]string{"A": "B"},
+	}, capture.registerReq, protocmp.Transform()))
 }
 
 // serveResourceMonitor serves the given monitor implementation over gRPC for

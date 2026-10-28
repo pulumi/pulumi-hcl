@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -72,42 +73,50 @@ type Case struct {
 // file and runs it. The case directory holds Main.yaml, the golden
 // schema.json, and exactly one subdirectory: the HCL component, whose name is
 // the package name the YAML program refers to.
+//
+// A case directory containing only numbered stage subdirs (0/, 1/, ...)
+// applies one file set per subdir in order, each of that shape. Each stage's
+// component schema is checked against that stage's schema.json. Assertions
+// run after the last apply.
 func RunCase(t *testing.T, caseName string, c Case) {
 	t.Helper()
 
 	_, callerFile, _, _ := runtime.Caller(1)
 	caseDir := filepath.Join(filepath.Dir(callerFile), "testdata", "cases", caseName)
-	files, err := testutil.LoadCaseDir(caseDir)
+	stages, staged, err := testutil.LoadStages(caseDir)
 	require.NoError(t, err)
-	delete(files, "schema.json")
+	last := len(stages) - 1
 
-	pkgs := map[string]struct{}{}
-	for path := range files {
-		if dir, _, nested := strings.Cut(path, string(filepath.Separator)); nested {
-			pkgs[dir] = struct{}{}
-		}
-	}
-	require.Lenf(t, pkgs, 1, "case %s must hold exactly one component directory", caseName)
 	var pkg string
-	for dir := range pkgs {
-		pkg = dir
+	for i, files := range stages {
+		delete(files, "schema.json")
+		stagePkg := componentDir(t, caseName, i, files)
+		if i > 0 {
+			require.Equalf(t, pkg, stagePkg, "case %s stage %d changes the component directory", caseName, i)
+		}
+		pkg = stagePkg
 	}
-	_, hasMain := files["Main.yaml"]
-	require.Truef(t, hasMain, "case %s has no Main.yaml", caseName)
 
 	rec := &tfexec.Recorder{}
 	driver := pulexec.NewYAMLDriver(t, pkg, providers(t, rec, c.Providers), c.Config)
 
-	schema, err := driver.PackageSchema(t, files, pkg)
-	require.NoError(t, err, "pulumi package get-schema failed")
-	assertGolden(t, filepath.Join(caseDir, "schema.json"), schema)
+	var res pulexec.Result
+	for i, files := range stages {
+		stageDir := caseDir
+		if staged {
+			stageDir = filepath.Join(caseDir, strconv.Itoa(i))
+		}
+		schema, err := driver.PackageSchema(t, files, pkg)
+		require.NoErrorf(t, err, "stage %d: pulumi package get-schema failed", i)
+		assertGolden(t, filepath.Join(stageDir, "schema.json"), schema)
 
-	_, err = driver.Preview(t, files)
-	require.NoError(t, err, "pulumi preview failed")
-	res, err := driver.TryApply(t, files)
-	require.NoError(t, err, "pulumi up failed")
+		_, err = driver.Preview(t, files)
+		require.NoErrorf(t, err, "stage %d: pulumi preview failed", i)
+		res, err = driver.TryApply(t, files)
+		require.NoErrorf(t, err, "stage %d: pulumi up failed", i)
+	}
 
-	changes, err := driver.Preview(t, files)
+	changes, err := driver.Preview(t, stages[last])
 	require.NoError(t, err, "second pulumi preview failed")
 	for op := range changes {
 		require.Equalf(t, apitype.OpSame, op, "second preview is not a no-op: %v", changes)
@@ -122,6 +131,26 @@ func RunCase(t *testing.T, caseName string, c Case) {
 	if c.AssertOps != nil {
 		c.AssertOps(t, rec.Ops())
 	}
+}
+
+// componentDir returns the one component directory of a stage's files, and
+// requires that the stage has a Main.yaml.
+func componentDir(t *testing.T, caseName string, stage int, files map[string]string) string {
+	t.Helper()
+	pkgs := map[string]struct{}{}
+	for path := range files {
+		if dir, _, nested := strings.Cut(path, string(filepath.Separator)); nested {
+			pkgs[dir] = struct{}{}
+		}
+	}
+	require.Lenf(t, pkgs, 1, "case %s stage %d must hold exactly one component directory", caseName, stage)
+	_, hasMain := files["Main.yaml"]
+	require.Truef(t, hasMain, "case %s stage %d has no Main.yaml", caseName, stage)
+	var pkg string
+	for dir := range pkgs {
+		pkg = dir
+	}
+	return pkg
 }
 
 // providers builds the in-process pulexec form of each Provider, with every

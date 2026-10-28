@@ -287,65 +287,42 @@ func (m *constructResourceMonitor) RegisterResource(
 		}, nil
 	}
 
-	// Convert PropertyMap to protobuf
-	inputs, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), constructMarshalOptions())
-	if err != nil {
-		return nil, fmt.Errorf("marshaling inputs: %w", err)
-	}
-
-	// Use parent from request or fall back to component URN
-	parent := req.Parent
-	if parent == "" {
-		parent = m.componentURN
-	}
-
 	// Prefix child resource names with the component name to ensure URN uniqueness
 	// across multiple instances of the same component type. This mirrors what other
 	// Pulumi SDKs do (e.g. NodeJS uses `${name}-child`).
-	name := m.componentName + "-" + req.Name
-
-	ignoreChanges, err := globsToPropertyPaths(req.IgnoreChanges)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling ignoreChanges: %w", err)
+	req.Name = m.componentName + "-" + req.Name
+	if req.Parent == "" {
+		req.Parent = m.componentURN
 	}
+	req.Aliases = m.childAliases(req.Aliases)
+	return registerResource(ctx, m.client, req, constructMarshalOptions())
+}
 
-	resp, err := m.client.RegisterResource(ctx, &pulumirpc.RegisterResourceRequest{
-		Type:                 req.Type,
-		Name:                 name,
-		Custom:               req.Custom,
-		Object:               inputs,
-		Parent:               string(parent),
-		Dependencies:         sliceToString(req.Dependencies),
-		PropertyDependencies: propertyDependenciesToProto(req.Inputs),
-		Provider:             req.Provider,
-		Providers:            req.Providers,
-		Protect:              &req.Protect,
-		DeleteBeforeReplace:  req.DeleteBeforeReplace,
-		IgnoreChanges:        ignoreChanges,
-		PackageRef:           string(req.PackageRef),
-		Version:              req.Version,
-		PluginDownloadURL:    req.PluginDownloadURL,
-		Hooks:                hooksToProto(req.Hooks),
-		AcceptSecrets:        true,
-		AcceptResources:      true,
-		AcceptsByteString:    true,
-	})
-	if err != nil {
-		return nil, err
+// childAliases rewrites a child's alias specs into the component's namespace,
+// as RegisterResource does for the child itself: a prior name carries the
+// component prefix, and a prior parent of the module root is the component,
+// not the stack. A full URN alias is kept as it is.
+func (m *constructResourceMonitor) childAliases(aliases []run.Alias) []run.Alias {
+	if len(aliases) == 0 {
+		return nil
 	}
-
-	// Convert outputs back to PropertyMap
-	outputs, err := plugin.UnmarshalProperties(resp.Object, constructMarshalOptions())
-	if err != nil {
-		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
+	out := make([]run.Alias, len(aliases))
+	for i, a := range aliases {
+		if a.Spec == nil {
+			out[i] = a
+			continue
+		}
+		spec := *a.Spec
+		if spec.Name != "" {
+			spec.Name = m.componentName + "-" + spec.Name
+		}
+		if spec.NoParent {
+			spec.NoParent = false
+			spec.ParentURN = string(m.componentURN)
+		}
+		out[i] = run.Alias{Spec: &spec}
 	}
-
-	return &run.RegisterResourceResponse{
-		URN:     urn.URN(resp.Urn),
-		ID:      resp.Id,
-		Outputs: resource.FromResourcePropertyMap(outputs),
-		Unknown: resp.Unknown,
-	}, nil
+	return out
 }
 
 // ReadResource reads the state of an existing resource.

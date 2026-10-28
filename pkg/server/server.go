@@ -1617,8 +1617,17 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	ctx context.Context,
 	req run.RegisterResourceRequest,
 ) (*run.RegisterResourceResponse, error) {
+	return registerResource(ctx, r.monitorClient, req, r.pluginOptions())
+}
+
+func registerResource(
+	ctx context.Context,
+	client pulumirpc.ResourceMonitorClient,
+	req run.RegisterResourceRequest,
+	opts plugin.MarshalOptions,
+) (*run.RegisterResourceResponse, error) {
 	// Convert inputs to protobuf struct
-	inputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), r.pluginOptions())
+	inputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), opts)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
 	}
@@ -1712,7 +1721,7 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	if !req.ReplacementTrigger.IsNull() {
 		trigger, err := plugin.MarshalPropertyValue("replacement_trigger",
 			resource.ToResourcePropertyValue(req.ReplacementTrigger),
-			r.pluginOptions())
+			opts)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling replacement trigger: %w", err)
 		}
@@ -1720,13 +1729,13 @@ func (r *resourceMonitorAdapter) RegisterResource(
 	}
 
 	// Call the resource monitor
-	resp, err := r.monitorClient.RegisterResource(ctx, registerReq)
+	resp, err := client.RegisterResource(ctx, registerReq)
 	if err != nil {
 		return nil, fmt.Errorf("registering resource: %w", err)
 	}
 
 	// Unmarshal outputs
-	outputs, err := plugin.UnmarshalProperties(resp.Object, r.pluginOptions())
+	outputs, err := plugin.UnmarshalProperties(resp.Object, opts)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
 	}

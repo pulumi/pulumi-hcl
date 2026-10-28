@@ -1,0 +1,21 @@
+{
+  "name": "trigger",
+  "version": "0.0.0-dev",
+  "config": {},
+  "resources": {
+    "trigger:index:Module": {
+      "properties": {
+        "x": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "inputProperties": {
+        "x": {
+          "type": "string"
+        }
+      },
+      "isComponent": true
+    }
+  }
+}
