@@ -20,10 +20,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
+	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/sig"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	"github.com/pulumi/pulumi/sdk/v3/go/propertyrpc"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -244,21 +245,19 @@ func (s *callDepsMonitorServer) Call(
 	_ context.Context, req *pulumirpc.ResourceCallRequest,
 ) (*pulumirpc.CallResponse, error) {
 	s.callReq = req
-	ret, err := plugin.MarshalProperties(resource.PropertyMap{
-		"wrapper": resource.NewProperty(resource.PropertyMap{
-			"a": resource.NewProperty(resource.Output{
-				Element: resource.NewProperty("pa"), Known: true, Dependencies: []resource.URN{"urn:pa"},
-			}),
-			"b": resource.NewProperty(resource.Output{
-				Element: resource.NewProperty("pb"), Known: true, Dependencies: []resource.URN{"urn:pb"},
-			}),
-		}),
-	}, plugin.MarshalOptions{KeepOutputValues: req.AcceptOutputValues})
-	if err != nil {
-		return nil, err
+	leaf := func(v string, dep urn.URN) property.Value {
+		if !req.AcceptOutputValues {
+			return property.New(v)
+		}
+		return property.New(v).WithDependencies([]urn.URN{dep})
 	}
 	return &pulumirpc.CallResponse{
-		Return: ret,
+		Return: propertyrpc.Marshal(property.NewMap(map[string]property.Value{
+			"wrapper": property.New(map[string]property.Value{
+				"a": leaf("pa", "urn:pa"),
+				"b": leaf("pb", "urn:pb"),
+			}),
+		})),
 		ReturnDependencies: map[string]*pulumirpc.CallResponse_ReturnDependencies{
 			"wrapper": {Urns: []string{"urn:pa", "urn:pb"}},
 		},
@@ -285,17 +284,13 @@ func TestCallMethodDependencies(t *testing.T) {
 		srv := &callDepsMonitorServer{}
 		m := newTestConstructMonitor(t, srv)
 
-		ret, _, err := callMethod(t.Context(), m.client, req, true, plugin.MarshalOptions{})
+		ret, _, err := callMethod(t.Context(), m.client, req, true, plugin.FilterOptions{})
 		require.NoError(t, err)
 
-		args, err := plugin.MarshalProperties(resource.PropertyMap{
-			"a": resource.NewProperty(resource.Output{
-				Element: resource.NewProperty("pa"), Known: true, Dependencies: []resource.URN{"urn:pa"},
-			}),
-			"b": resource.NewProperty(resource.Output{
-				Element: resource.NewProperty("pb"), Known: true, Dependencies: []resource.URN{"urn:pb"},
-			}),
-		}, plugin.MarshalOptions{KeepOutputValues: true})
+		args, err := structpb.NewStruct(map[string]any{
+			"a": map[string]any{sig.Key: sig.OutputValue, "value": "pa", "dependencies": []any{"urn:pa"}},
+			"b": map[string]any{sig.Key: sig.OutputValue, "value": "pb", "dependencies": []any{"urn:pb"}},
+		})
 		require.NoError(t, err)
 		assert.Empty(t, cmp.Diff(&pulumirpc.ResourceCallRequest{
 			Tok:                "pick-call:index:Picker/getBoth",
@@ -318,7 +313,7 @@ func TestCallMethodDependencies(t *testing.T) {
 		srv := &callDepsMonitorServer{}
 		m := newTestConstructMonitor(t, srv)
 
-		ret, _, err := callMethod(t.Context(), m.client, req, false, plugin.MarshalOptions{})
+		ret, _, err := callMethod(t.Context(), m.client, req, false, plugin.FilterOptions{})
 		require.NoError(t, err)
 
 		args, err := structpb.NewStruct(map[string]any{"a": "pa", "b": "pb"})
@@ -402,4 +397,56 @@ func TestCallOutputValuesProbe(t *testing.T) {
 		assert.False(t, got)
 		assert.Equal(t, 1, srv.calls)
 	})
+}
+
+// TestRegisterResourceDependencies checks how each monitor sends the
+// dependencies of input values. The engine monitor sends them only in
+// PropertyDependencies, and the construct monitor also sends them inside each
+// value as an output value.
+func TestRegisterResourceDependencies(t *testing.T) {
+	t.Parallel()
+
+	req := run.RegisterResourceRequest{
+		Type: "test:index:Resource",
+		Name: "r",
+		Inputs: property.NewMap(map[string]property.Value{
+			"a": property.New("pa").WithDependencies([]urn.URN{"urn:pa"}),
+		}),
+	}
+
+	tests := []struct {
+		name     string
+		opts     plugin.FilterOptions
+		expected map[string]any
+	}{
+		{
+			name:     "engine monitor",
+			opts:     (*resourceMonitorAdapter)(nil).pluginOptions(),
+			expected: map[string]any{"a": "pa"},
+		},
+		{
+			name: "construct monitor",
+			opts: constructMarshalOptions(),
+			expected: map[string]any{
+				"a": map[string]any{sig.Key: sig.OutputValue, "value": "pa", "dependencies": []any{"urn:pa"}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := &routingCaptureMonitorServer{}
+			m := newTestConstructMonitor(t, srv)
+
+			_, err := registerResource(t.Context(), m.client, req, tt.opts)
+			require.NoError(t, err)
+
+			expected, err := structpb.NewStruct(tt.expected)
+			require.NoError(t, err)
+			assert.Empty(t, cmp.Diff(expected, srv.registerReq.GetObject(), protocmp.Transform()))
+			assert.Empty(t, cmp.Diff(map[string]*pulumirpc.RegisterResourceRequest_PropertyDependencies{
+				"a": {Urns: []string{"urn:pa"}},
+			}, srv.registerReq.GetPropertyDependencies(), protocmp.Transform()))
+		})
+	}
 }

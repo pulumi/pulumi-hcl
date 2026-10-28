@@ -26,7 +26,6 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
@@ -255,10 +254,7 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 	}
 	defer contract.IgnoreClose(monitorConn)
 
-	componentInputs, err := plugin.MarshalProperties(
-		resource.ToResourcePropertyMap(req.Inputs),
-		constructMarshalOptions(),
-	)
+	componentInputs, err := marshalProperties(req.Inputs, constructMarshalOptions())
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("marshaling inputs: %w", err)
 	}
@@ -336,8 +332,7 @@ func (m *moduleProvider) constructParameterized(ctx context.Context, req p.Const
 	}
 	defer contract.IgnoreClose(monitorConn)
 
-	componentInputs, err := plugin.MarshalProperties(
-		resource.ToResourcePropertyMap(req.Inputs), constructMarshalOptions())
+	componentInputs, err := marshalProperties(req.Inputs, constructMarshalOptions())
 	if err != nil {
 		return p.ConstructResponse{}, fmt.Errorf("marshaling inputs: %w", err)
 	}
@@ -445,8 +440,7 @@ func replacementTriggerToProto(v property.Value) *structpb.Value {
 	if v.IsNull() {
 		return nil
 	}
-	trigger, err := plugin.MarshalPropertyValue("replacementTrigger",
-		resource.ToResourcePropertyValue(v), constructMarshalOptions())
+	trigger, err := marshalPropertyValue(v, constructMarshalOptions())
 	contract.AssertNoErrorf(err, "marshaling a fully-kept property value cannot fail")
 	return trigger
 }

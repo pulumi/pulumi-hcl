@@ -46,10 +46,10 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	pulumiencoding "github.com/pulumi/pulumi/sdk/v3/go/common/encoding"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
@@ -1624,10 +1624,10 @@ func registerResource(
 	ctx context.Context,
 	client pulumirpc.ResourceMonitorClient,
 	req run.RegisterResourceRequest,
-	opts plugin.MarshalOptions,
+	opts plugin.FilterOptions,
 ) (*run.RegisterResourceResponse, error) {
 	// Convert inputs to protobuf struct
-	inputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), opts)
+	inputsStruct, err := marshalProperties(req.Inputs, opts)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
 	}
@@ -1719,9 +1719,7 @@ func registerResource(
 
 	// Add replacement trigger if specified
 	if !req.ReplacementTrigger.IsNull() {
-		trigger, err := plugin.MarshalPropertyValue("replacement_trigger",
-			resource.ToResourcePropertyValue(req.ReplacementTrigger),
-			opts)
+		trigger, err := marshalPropertyValue(req.ReplacementTrigger, opts)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling replacement trigger: %w", err)
 		}
@@ -1735,7 +1733,7 @@ func registerResource(
 	}
 
 	// Unmarshal outputs
-	outputs, err := plugin.UnmarshalProperties(resp.Object, opts)
+	outputs, err := unmarshalProperties(resp.Object, opts)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
 	}
@@ -1743,7 +1741,7 @@ func registerResource(
 	return &run.RegisterResourceResponse{
 		URN:     urn.URN(resp.Urn),
 		ID:      resp.Id,
-		Outputs: resource.FromResourcePropertyMap(outputs),
+		Outputs: outputs,
 		Unknown: resp.Unknown,
 	}, nil
 }
@@ -1753,7 +1751,7 @@ func (r *resourceMonitorAdapter) ReadResource(
 	ctx context.Context,
 	req run.ReadResourceRequest,
 ) (*run.ReadResourceResponse, error) {
-	inputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), r.pluginOptions())
+	inputsStruct, err := marshalProperties(req.Inputs, r.pluginOptions())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
 	}
@@ -1778,7 +1776,7 @@ func (r *resourceMonitorAdapter) ReadResource(
 		return nil, fmt.Errorf("reading resource: %w", err)
 	}
 
-	outputs, err := plugin.UnmarshalProperties(resp.Properties, r.pluginOptions())
+	outputs, err := unmarshalProperties(resp.Properties, r.pluginOptions())
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
 	}
@@ -1786,7 +1784,7 @@ func (r *resourceMonitorAdapter) ReadResource(
 	return &run.ReadResourceResponse{
 		URN:     urn.URN(resp.Urn),
 		ID:      req.ID,
-		Outputs: resource.FromResourcePropertyMap(outputs),
+		Outputs: outputs,
 	}, nil
 }
 
@@ -1796,7 +1794,7 @@ func (r *resourceMonitorAdapter) Invoke(
 	req run.InvokeRequest,
 ) (*run.InvokeResponse, error) {
 	// Convert args to protobuf struct
-	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), r.pluginOptions())
+	argsStruct, err := marshalProperties(req.Args, r.pluginOptions())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
@@ -1821,7 +1819,7 @@ func (r *resourceMonitorAdapter) Invoke(
 	}
 
 	// Unmarshal return value
-	returnVal, err := plugin.UnmarshalProperties(resp.Return, r.pluginOptions())
+	returnVal, err := unmarshalProperties(resp.Return, r.pluginOptions())
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling return value: %w", err)
 	}
@@ -1833,7 +1831,7 @@ func (r *resourceMonitorAdapter) Invoke(
 	}
 
 	return &run.InvokeResponse{
-		Return:   resource.FromResourcePropertyMap(returnVal),
+		Return:   returnVal,
 		Failures: failures,
 		Unknown:  resp.Unknown,
 	}, nil
@@ -1846,7 +1844,7 @@ func (r *resourceMonitorAdapter) RegisterResourceOutputs(
 	outputs property.Map,
 ) error {
 	// Convert outputs to protobuf struct
-	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(outputs), r.pluginOptions())
+	outputsStruct, err := marshalProperties(outputs, r.pluginOptions())
 	if err != nil {
 		return fmt.Errorf("marshaling outputs: %w", err)
 	}
@@ -1951,7 +1949,7 @@ func keyDependencies(m property.Map) map[string][]string {
 // the per-key ArgDependencies and ReturnDependencies maps.
 func callMethod(
 	ctx context.Context, client pulumirpc.ResourceMonitorClient, req run.CallRequest,
-	outputValues bool, opts plugin.MarshalOptions,
+	outputValues bool, opts plugin.FilterOptions,
 ) (property.Map, []*pulumirpc.CheckFailure, error) {
 	deps := keyDependencies(req.Args)
 	argDeps := make(map[string]*pulumirpc.ResourceCallRequest_ArgumentDependencies, len(deps))
@@ -1959,8 +1957,8 @@ func callMethod(
 		argDeps[k] = &pulumirpc.ResourceCallRequest_ArgumentDependencies{Urns: urns}
 	}
 
-	opts.KeepOutputValues = outputValues
-	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), opts)
+	opts.KeepDependencies = outputValues
+	argsStruct, err := marshalProperties(req.Args, opts)
 	if err != nil {
 		return property.Map{}, nil, fmt.Errorf("marshaling args: %w", err)
 	}
@@ -1977,11 +1975,10 @@ func callMethod(
 		return property.Map{}, nil, fmt.Errorf("calling method: %w", err)
 	}
 
-	returnVal, err := plugin.UnmarshalProperties(resp.Return, opts)
+	ret, err := unmarshalProperties(resp.Return, opts)
 	if err != nil {
 		return property.Map{}, nil, fmt.Errorf("unmarshaling return value: %w", err)
 	}
-	ret := resource.FromResourcePropertyMap(returnVal)
 
 	// With output values, the engine already puts the ReturnDependencies on
 	// the returned values, at a finer grain.
@@ -2059,12 +2056,11 @@ func (r *resourceMonitorAdapter) RegisterResourceHook(
 	return nil
 }
 
-func (*resourceMonitorAdapter) pluginOptions() plugin.MarshalOptions {
-	return plugin.MarshalOptions{
-		KeepUnknowns:   true,
-		KeepSecrets:    true,
-		KeepResources:  true,
-		KeepByteString: true,
+func (*resourceMonitorAdapter) pluginOptions() plugin.FilterOptions {
+	return plugin.FilterOptions{
+		KeepUnknowns:  true,
+		KeepSecrets:   true,
+		KeepResources: true,
 	}
 }
 

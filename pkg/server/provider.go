@@ -28,12 +28,13 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
+	"github.com/pulumi/pulumi/sdk/v3/go/propertyrpc"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -223,14 +224,42 @@ type constructResourceMonitor struct {
 
 // constructMarshalOptions are the property (un)marshal options used on every
 // hop across the Construct boundary.
-func constructMarshalOptions() plugin.MarshalOptions {
-	return plugin.MarshalOptions{
+func constructMarshalOptions() plugin.FilterOptions {
+	return plugin.FilterOptions{
 		KeepUnknowns:     true,
 		KeepSecrets:      true,
 		KeepResources:    true,
-		KeepOutputValues: true,
-		KeepByteString:   true,
+		KeepDependencies: true,
 	}
+}
+
+// marshalProperties filters m with opts and marshals the result for the wire.
+func marshalProperties(m property.Map, opts plugin.FilterOptions) (*structpb.Struct, error) {
+	filtered, err := plugin.FilterProperties(m, opts)
+	if err != nil {
+		return nil, err
+	}
+	return propertyrpc.Marshal(filtered), nil
+}
+
+// marshalPropertyValue filters v with opts and marshals the result for the
+// wire. It returns nil if the filter drops v.
+func marshalPropertyValue(v property.Value, opts plugin.FilterOptions) (*structpb.Value, error) {
+	filtered, keep, err := plugin.FilterPropertyValue(v, opts)
+	if err != nil || !keep {
+		return nil, err
+	}
+	return propertyrpc.MarshalValue(filtered), nil
+}
+
+// unmarshalProperties unmarshals s from the wire and filters the result with
+// opts.
+func unmarshalProperties(s *structpb.Struct, opts plugin.FilterOptions) (property.Map, error) {
+	m, err := propertyrpc.Unmarshal(s)
+	if err != nil {
+		return property.Map{}, err
+	}
+	return plugin.FilterProperties(m, opts)
 }
 
 // RegisterResource registers a resource.
@@ -330,10 +359,9 @@ func (m *constructResourceMonitor) ReadResource(
 	ctx context.Context,
 	req run.ReadResourceRequest,
 ) (*run.ReadResourceResponse, error) {
-	properties, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Inputs), plugin.MarshalOptions{
-		KeepSecrets:    true,
-		KeepResources:  true,
-		KeepByteString: true,
+	properties, err := marshalProperties(req.Inputs, plugin.FilterOptions{
+		KeepSecrets:   true,
+		KeepResources: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inputs: %w", err)
@@ -364,10 +392,9 @@ func (m *constructResourceMonitor) ReadResource(
 		return nil, err
 	}
 
-	outputs, err := plugin.UnmarshalProperties(resp.Properties, plugin.MarshalOptions{
-		KeepSecrets:    true,
-		KeepResources:  true,
-		KeepByteString: true,
+	outputs, err := unmarshalProperties(resp.Properties, plugin.FilterOptions{
+		KeepSecrets:   true,
+		KeepResources: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling outputs: %w", err)
@@ -376,7 +403,7 @@ func (m *constructResourceMonitor) ReadResource(
 	return &run.ReadResourceResponse{
 		URN:     urn.URN(resp.Urn),
 		ID:      req.ID,
-		Outputs: resource.FromResourcePropertyMap(outputs),
+		Outputs: outputs,
 	}, nil
 }
 
@@ -395,7 +422,7 @@ func (m *constructResourceMonitor) RegisterResourceOutputs(
 		m.outputs = outputs
 	}
 
-	outputsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(outputs), constructMarshalOptions())
+	outputsStruct, err := marshalProperties(outputs, constructMarshalOptions())
 	if err != nil {
 		return fmt.Errorf("marshaling outputs: %w", err)
 	}
@@ -412,7 +439,7 @@ func (m *constructResourceMonitor) Invoke(
 	ctx context.Context,
 	req run.InvokeRequest,
 ) (*run.InvokeResponse, error) {
-	argsStruct, err := plugin.MarshalProperties(resource.ToResourcePropertyMap(req.Args), constructMarshalOptions())
+	argsStruct, err := marshalProperties(req.Args, constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("marshaling args: %w", err)
 	}
@@ -437,13 +464,13 @@ func (m *constructResourceMonitor) Invoke(
 		failures = append(failures, f.Reason)
 	}
 
-	ret, err := plugin.UnmarshalProperties(resp.Return, constructMarshalOptions())
+	ret, err := unmarshalProperties(resp.Return, constructMarshalOptions())
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling return: %w", err)
 	}
 
 	return &run.InvokeResponse{
-		Return:   resource.FromResourcePropertyMap(ret),
+		Return:   ret,
 		Failures: failures,
 		Unknown:  resp.Unknown,
 	}, nil
