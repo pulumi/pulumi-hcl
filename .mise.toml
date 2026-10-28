@@ -1,6 +1,6 @@
 [tools]
 go = "1.26.10"
-golangci-lint = "2.9.0"
+golangci-lint = "2.11.4"
 jq = "latest"
 changie = "latest"
 opentofu = "1.12.0"

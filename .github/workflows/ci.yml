@@ -31,7 +31,7 @@ jobs:
           restore-keys: go-lint-
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.9.0
+          version: v2.11.4
       - uses: actions/cache/save@v6
         if: always() && github.ref == 'refs/heads/master'
         with:
