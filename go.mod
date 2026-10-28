@@ -1,6 +1,6 @@
 module github.com/pulumi/pulumi-hcl
 
-go 1.26.6
+go 1.26.10
 
 require (
 	github.com/apparentlymart/go-cidr v1.1.0

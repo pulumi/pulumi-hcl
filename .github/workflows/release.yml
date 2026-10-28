@@ -29,7 +29,8 @@ jobs:
       - uses: jdx/mise-action@v4
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - name: Add env vars
         id: version
         run: |
@@ -171,14 +172,10 @@ jobs:
         with:
           ref: sdk-releases
           token: ${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}
-      - name: Read the Go toolchain from the released source
-        run: |
-          git fetch --depth 1 origin "refs/tags/${VERSION}"
-          mkdir -p "${RUNNER_TEMP}/go-toolchain"
-          git show "FETCH_HEAD:go.mod" > "${RUNNER_TEMP}/go-toolchain/go.mod"
       - uses: actions/setup-go@v6
         with:
-          go-version-file: ${{ runner.temp }}/go-toolchain/go.mod
+          go-version: stable
+          check-latest: true
       - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
           pulumi-version: "latest"
