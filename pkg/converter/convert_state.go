@@ -612,9 +612,8 @@ func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins *property
 		return packages.WrapTerraformDataValue(src.Type(), v)
 	}
 	input := wrap("input")
-	outMap := property.NewMap(map[string]property.Value{"input": input, "output": wrap("output")})
-	inMap := property.NewMap(map[string]property.Value{"input": input})
-	return &outMap, &inMap, nil
+	return new(property.NewMap(map[string]property.Value{"input": input, "output": wrap("output")})),
+		new(property.NewMap(map[string]property.Value{"input": input})), nil
 }
 
 // resourceSchema loads token's resource schema through the engine's loader.
