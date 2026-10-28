@@ -29,7 +29,9 @@ jobs:
       - uses: jdx/mise-action@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: stable
+          # Go 1.27 changes gzip output, breaking byte-for-byte compatibility
+          # with OpenTofu base64gzip results; use the latest Go 1.26 patch
+          go-version: "1.26.x"
           check-latest: true
       - name: Add env vars
         id: version
@@ -174,7 +176,9 @@ jobs:
           token: ${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}
       - uses: actions/setup-go@v6
         with:
-          go-version: stable
+          # Go 1.27 changes gzip output, breaking byte-for-byte compatibility
+          # with OpenTofu base64gzip results; use the latest Go 1.26 patch
+          go-version: "1.26.x"
           check-latest: true
       - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
         with:
