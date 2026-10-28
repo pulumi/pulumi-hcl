@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Accept attribute syntax for the list- and set-nested attributes of plugin-framework providers, such as `helm_release.set`
+time: 2026-10-28T18:00:00.000000+01:00
+custom:
+    Component: resource-host
+    PR: "772"

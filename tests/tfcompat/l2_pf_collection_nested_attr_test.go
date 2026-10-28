@@ -29,8 +29,6 @@ import (
 // https://github.com/pulumi/pulumi-hcl/issues/687
 func TestL2PFCollectionNestedAttr(t *testing.T) {
 	t.Parallel()
-	// Correct behavior pinned in tests/putest/l2_pf_collection_nested_attr_test.go.
-	t.Skip("TODO[https://github.com/pulumi/pulumi-hcl/issues/687]: terraform-provider encodes list- and set-nested attributes as blocks")
 	tfcompat.RunCase(t, "l2_pf_collection_nested_attr", tfcompat.Case{
 		Providers: []tfcompat.Provider{
 			{Name: "pfx", PFFactory: providers.PFXProvider},

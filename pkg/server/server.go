@@ -168,7 +168,7 @@ const bridgePackageName = "terraform-provider"
 // plugin cache, so a stale install keeps serving long-fixed schema bugs
 // (https://github.com/pulumi/pulumi-hcl/issues/204). Renovate bumps it on
 // each release (see renovate.json5).
-const bridgePackageVersion = "1.5.0" // renovate: github-releases pulumi/pulumi-terraform-provider
+const bridgePackageVersion = "1.5.1" // renovate: github-releases pulumi/pulumi-terraform-provider
 
 // terraformProviderVersionOption is the Pulumi.yaml runtime option that
 // overrides bridgePackageVersion:
