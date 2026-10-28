@@ -46,7 +46,7 @@ import (
 //
 // When extraVars is non-nil, the expression should be evaluated with these
 // additional variables in scope (e.g. iterator variables for dynamic blocks).
-type EvalFunc = func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics)
+type EvalFunc = func(propKey string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics)
 
 // EvalFunctionWithSchema evaluates a function-call body against the Pulumi
 // function schema. When mapping is non-nil, TF names that are blocks (per the
@@ -172,7 +172,7 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 			return cty.Value{}, nil, append(diags, unmappedProperty(name, puName, props, attr.Range))
 		}
 
-		out, attrDiag := eval(resource.PropertyKey(prop.Name), attr.Expr, nil)
+		out, attrDiag := eval(prop.Name, attr.Expr, nil)
 		diags = diags.Extend(attrDiag)
 		if attrDiag.HasErrors() {
 			return cty.Value{}, nil, diags
@@ -404,7 +404,7 @@ func evalDynamicBlock(
 	// expressions are not evaluated; the content body is still checked
 	// against the schema, with every attribute standing in as unknown.
 	if !forEachVal.IsKnown() {
-		unknownEval := func(resource.PropertyKey, hcl.Expression, map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		unknownEval := func(string, hcl.Expression, map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			return cty.DynamicVal.WithMarks(forEachMarks), nil
 		}
 		_, _, d := evalBlockWithSchema(contentBody, blockProps, nestedMapping, unknownEval)
@@ -433,7 +433,7 @@ func evalDynamicBlock(
 			}),
 		}
 
-		dynamicEval := func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		dynamicEval := func(propKey string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 			merged := make(map[string]cty.Value, len(iterVars)+len(extraVars))
 			maps.Copy(merged, iterVars)
 			maps.Copy(merged, extraVars)

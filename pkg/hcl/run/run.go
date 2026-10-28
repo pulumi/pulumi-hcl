@@ -1410,9 +1410,9 @@ func providerExprKey(expr hcl.Expression) string {
 // evalSchemaInputs evaluates schema inputs and reports successful values.
 func evalSchemaInputs(
 	hclCtx *hcl.EvalContext,
-	onEvaluated func(resource.PropertyKey, cty.Value),
+	onEvaluated func(string, cty.Value),
 ) transform.EvalFunc {
-	return func(propKey resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+	return func(propKey string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 		c := hclCtx
 		if len(extraVars) > 0 {
 			c = hclCtx.NewChild()
@@ -1669,9 +1669,9 @@ func (e *Engine) registerResourceInstanceInContext(
 		tdataEvaluated = map[string]cty.Value{}
 	}
 	inputEval := evalSchemaInputs(hclCtx,
-		func(propKey resource.PropertyKey, val cty.Value) {
+		func(propKey string, val cty.Value) {
 			if tdataEvaluated != nil {
-				tdataEvaluated[string(propKey)] = val
+				tdataEvaluated[propKey] = val
 			}
 		})
 	resourceInputs, ephemeralPaths, diags := transform.EvalResourceWithSchema(
@@ -3638,7 +3638,7 @@ func (e *Engine) invokeDataSourceOnce(
 	if err != nil {
 		return cty.NilVal, err
 	}
-	inputEval := evalSchemaInputs(hclCtx, func(_ resource.PropertyKey, val cty.Value) {
+	inputEval := evalSchemaInputs(hclCtx, func(_ string, val cty.Value) {
 		for _, urn := range eval.CollectDepURNs(val) {
 			addURN(urn)
 		}

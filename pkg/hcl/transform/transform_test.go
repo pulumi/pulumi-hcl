@@ -517,7 +517,7 @@ resource "fake" "f" {
 		}),
 	}).WithMarks(cty.NewValueMarks(eval.DepMark("urn:pulumi:dev::p::aws:ec2/vpc:Vpc::test")))
 
-	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+	evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 		if extraVars == nil {
 			return markedForEach, nil
 		}
@@ -571,7 +571,7 @@ resource "fake" "f" {
 		}),
 	}).WithMarks(cty.NewValueMarks(eval.SensitiveMark))
 
-	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+	evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 		if extraVars == nil {
 			return sensitiveForEach, nil
 		}
@@ -654,7 +654,7 @@ resource "fake" "f" {
 			require.False(t, diags.HasErrors(), diags.Error())
 			resourceBody := file.Body.(*hclsyntax.Body).Blocks[0].Body
 
-			evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 				return expr.Value(&hcl.EvalContext{Variables: extraVars})
 			}
 
@@ -704,7 +704,7 @@ resource "fake" "f" {
 	require.False(t, diags.HasErrors(), diags.Error())
 	resourceBody := file.Body.(*hclsyntax.Body).Blocks[0].Body
 
-	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+	evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 		return expr.Value(&hcl.EvalContext{Variables: extraVars})
 	}
 
@@ -2130,7 +2130,7 @@ resource "fake" "f" {
   }
 }`)
 
-			evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 				if extraVars == nil {
 					return tt.forEach, nil
 				}
@@ -2167,7 +2167,7 @@ resource "fake" "f" {
   }
 }`)
 
-	evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+	evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 		if extraVars == nil {
 			traversal := expr.Variables()[0]
 			if traversal[len(traversal)-1].(hcl.TraverseAttr).Name == "unknown" {
@@ -2219,7 +2219,7 @@ resource "fake" "f" {
   }
 }`)
 
-			evalFn := func(_ resource.PropertyKey, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+			evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
 				if extraVars == nil {
 					return tt.forEach, nil
 				}
