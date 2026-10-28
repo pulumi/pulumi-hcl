@@ -309,6 +309,7 @@ func convertTFState(
 			if !ok {
 				id = missingID
 			}
+			// nil outs and ins import the instance by id only.
 			var outs, ins *property.Map
 			var err error
 			if stash {
@@ -552,7 +553,7 @@ func translateInstanceValues(
 		outMap[reservedkeys.Meta] = property.New(
 			fmt.Sprintf(`{"schema_version":"%d"}`, current.SchemaVersion))
 	}
-	return mapPtr(outMap), mapPtr(inMap), nil
+	return new(property.NewMap(outMap)), new(property.NewMap(inMap)), nil
 }
 
 // markSensitivePaths re-marks the state's dynamically-sensitive paths (e.g.
@@ -578,13 +579,6 @@ var terraformDataStateType = cty.Object(map[string]cty.Type{
 	"output":           cty.DynamicPseudoType,
 	"triggers_replace": cty.DynamicPseudoType,
 })
-
-// mapPtr converts to the pointer form plugin.ResourceImport carries, where nil
-// means an id-only import.
-func mapPtr(m map[string]property.Value) *property.Map {
-	pm := property.NewMap(m)
-	return &pm
-}
 
 // stashValues translates a terraform_data instance's attributes into Stash's
 // property surface — the resource the runtime lowers terraform_data onto,
@@ -618,8 +612,9 @@ func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins *property
 		return packages.WrapTerraformDataValue(src.Type(), v)
 	}
 	input := wrap("input")
-	return mapPtr(map[string]property.Value{"input": input, "output": wrap("output")}),
-		mapPtr(map[string]property.Value{"input": input}), nil
+	outMap := property.NewMap(map[string]property.Value{"input": input, "output": wrap("output")})
+	inMap := property.NewMap(map[string]property.Value{"input": input})
+	return &outMap, &inMap, nil
 }
 
 // resourceSchema loads token's resource schema through the engine's loader.
