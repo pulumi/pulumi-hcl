@@ -25,6 +25,12 @@ resource "fromNestedOptional" "optional-primitive-ref:index:Resource" {
   }
 }
 
+resource "fromOptionalLists" "optional-primitive-ref:index:Resource" {
+  data = {
+    numberArray = optionalLists[0]
+  }
+}
+
 output "setBoolean" {
   value = setRes.data.boolean
 }
@@ -80,4 +86,10 @@ output "setOptionalData" {
 output "unsetOptionalData" {
   value = unsetRes.optionalData == null ? "null" : "not null"
 }
+
+output "tupleOfOptional" {
+  value = [setRes.data.string, unsetRes.data.string]
+}
+
+optionalLists = [setRes.data.numberArray, unsetRes.data.numberArray]
 

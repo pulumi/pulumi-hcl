@@ -40,6 +40,14 @@ resource "optional-primitive-ref_resource" "fromNestedOptional" {
     string = optional-primitive-ref_resource.setRes.optional_data.string
   }
 }
+resource "optional-primitive-ref_resource" "fromOptionalLists" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  data = {
+    number_array = local.optionalLists[0]
+  }
+}
 output "setBoolean" {
   value = optional-primitive-ref_resource.setRes.data.boolean
 }
@@ -81,4 +89,10 @@ output "setOptionalData" {
 }
 output "unsetOptionalData" {
   value = optional-primitive-ref_resource.unsetRes.optional_data == null ? "null" : "not null"
+}
+output "tupleOfOptional" {
+  value = [optional-primitive-ref_resource.setRes.data.string, optional-primitive-ref_resource.unsetRes.data.string]
+}
+locals {
+  optionalLists = [optional-primitive-ref_resource.setRes.data.number_array, optional-primitive-ref_resource.unsetRes.data.number_array]
 }
