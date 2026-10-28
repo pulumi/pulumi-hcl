@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Type outputs whose value is `try(...)` as a union of its arguments when their types differ
-time: 2026-10-26T12:00:00.000000+01:00
-custom:
-    Component: language-host
-    PR: "755"

@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Write `ignore_changes` paths with TF property names and the list index of MaxItems=1 blocks
-time: 2026-10-26T15:51:05.000000+01:00
-custom:
-    Component: codegen
-    PR: "759"

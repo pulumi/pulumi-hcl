@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Report every error of a broken module when the program runs
-time: 2026-10-26T11:07:26.000000+01:00
-custom:
-    Component: language-host
-    PR: "751"
