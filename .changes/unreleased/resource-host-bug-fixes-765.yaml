@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Forward `triggers_replace` and the other resource options of resources inside an `hcl_module`
+time: 2026-10-28T15:30:00.000000+01:00
+custom:
+    Component: resource-host
+    PR: "765"
