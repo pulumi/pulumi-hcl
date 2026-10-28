@@ -30,7 +30,6 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
@@ -1218,42 +1217,42 @@ func TestBoundaryNameConversion(t *testing.T) {
 		},
 	}
 
-	propMap := func(m map[string]any) property.Map {
-		return resource.FromResourcePropertyMap(resource.NewPropertyMapFromMap(m))
-	}
+	type m = map[string]property.Value
+	str := property.New[string]
+	obj := property.New[map[string]property.Value]
 
 	// Inputs arrive camelCase (top-level names and object fields). A map's keys
 	// are user data, so a key that looks like snake_case stays verbatim.
-	assert.Equal(t, propMap(map[string]any{
-		"object_in": map[string]any{"field_one": "a"},
-		"map_in":    map[string]any{"user_key": "b"},
-	}), s.InputsToHCL(propMap(map[string]any{
-		"objectIn": map[string]any{"fieldOne": "a"},
-		"mapIn":    map[string]any{"user_key": "b"},
+	assert.Equal(t, property.NewMap(m{
+		"object_in": obj(m{"field_one": str("a")}),
+		"map_in":    obj(m{"user_key": str("b")}),
+	}), s.InputsToHCL(property.NewMap(m{
+		"objectIn": obj(m{"fieldOne": str("a")}),
+		"mapIn":    obj(m{"user_key": str("b")}),
 	})))
 
 	// Outputs arrive snake_case from HCL; object fields become camelCase, map
 	// keys are preserved verbatim.
-	assert.Equal(t, propMap(map[string]any{
-		"objectOut": map[string]any{"fieldTwo": "c"},
-		"mapOut":    map[string]any{"user_key": "d"},
-	}), s.OutputsToPulumi(propMap(map[string]any{
-		"object_out": map[string]any{"field_two": "c"},
-		"map_out":    map[string]any{"user_key": "d"},
+	assert.Equal(t, property.NewMap(m{
+		"objectOut": obj(m{"fieldTwo": str("c")}),
+		"mapOut":    obj(m{"user_key": str("d")}),
+	}), s.OutputsToPulumi(property.NewMap(m{
+		"object_out": obj(m{"field_two": str("c")}),
+		"map_out":    obj(m{"user_key": str("d")}),
 	})))
 
 	// A union output renames by the member the value belongs to: the object
 	// member whose fields cover the most of the value's keys, or the member of
 	// the value's kind.
-	assert.Equal(t, propMap(map[string]any{
-		"unionOut": map[string]any{"fieldThree": "e", "onlyThere": "f"},
-	}), s.OutputsToPulumi(propMap(map[string]any{
-		"union_out": map[string]any{"field_three": "e", "only_there": "f"},
+	assert.Equal(t, property.NewMap(m{
+		"unionOut": obj(m{"fieldThree": str("e"), "onlyThere": str("f")}),
+	}), s.OutputsToPulumi(property.NewMap(m{
+		"union_out": obj(m{"field_three": str("e"), "only_there": str("f")}),
 	})))
-	assert.Equal(t, propMap(map[string]any{
-		"unionOut": []any{map[string]any{"fieldFour": "g"}},
-	}), s.OutputsToPulumi(propMap(map[string]any{
-		"union_out": []any{map[string]any{"field_four": "g"}},
+	assert.Equal(t, property.NewMap(m{
+		"unionOut": property.New([]property.Value{obj(m{"fieldFour": str("g")})}),
+	}), s.OutputsToPulumi(property.NewMap(m{
+		"union_out": property.New([]property.Value{obj(m{"field_four": str("g")})}),
 	})))
 }
 

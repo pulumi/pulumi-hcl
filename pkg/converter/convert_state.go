@@ -46,7 +46,6 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
@@ -310,7 +309,7 @@ func convertTFState(
 			if !ok {
 				id = missingID
 			}
-			var outs, ins resource.PropertyMap
+			var outs, ins *property.Map
 			var err error
 			if stash {
 				if outs, ins, err = stashValues(current); err != nil {
@@ -327,8 +326,8 @@ func convertTFState(
 				Name:              component.Append(instanceStep(res.Addr.Resource.Name, key)).LogicalName(),
 				Parent:            component.LogicalName(),
 				ID:                id,
-				Inputs:            propertyMapPtr(ins),
-				Outputs:           propertyMapPtr(outs),
+				Inputs:            ins,
+				Outputs:           outs,
 				Version:           version,
 				PluginDownloadURL: pluginDownloadURL,
 				Parameterization:  parameterization,
@@ -496,7 +495,7 @@ func translateInstanceValues(
 	info *tfbridge.ProviderInfo,
 	token, tfType, id string,
 	current *states.ResourceInstanceObjectSrc,
-) (outs, ins resource.PropertyMap, err error) {
+) (outs, ins *property.Map, err error) {
 	if current.AttrsJSON == nil {
 		return nil, nil, errors.New("pre-0.12 flatmap attributes are not translatable")
 	}
@@ -527,22 +526,22 @@ func translateInstanceValues(
 		return nil, nil, fmt.Errorf("translating attributes: %w", err)
 	}
 
-	outs = resource.ToResourcePropertyValue(property.New(m)).ObjectValue()
+	outMap := m.AsMap()
 	// Inputs are the outputs' input-property subset — minus the renamed id,
 	// which is provider-populated and never a program input. Nested computed
 	// leaves are not stripped; revisit if the round-trip check flags diffs.
 	idProp := transform.IDProperty(res, mapping)
-	ins = make(resource.PropertyMap, len(res.InputProperties))
+	inMap := make(map[string]property.Value, len(res.InputProperties))
 	for _, p := range res.InputProperties {
 		if idProp != nil && p.Name == idProp.Name {
 			continue
 		}
-		if pv, has := outs[resource.PropertyKey(p.Name)]; has {
-			ins[resource.PropertyKey(p.Name)] = pv
+		if pv, has := outMap[p.Name]; has {
+			inMap[p.Name] = pv
 		}
 	}
 	if idProp == nil {
-		outs["id"] = resource.NewStringProperty(id)
+		outMap["id"] = property.New(id)
 	}
 	// The state's own schema version travels with the values in the metadata
 	// the bridge keeps its Terraform state under, so the provider runs its
@@ -550,10 +549,10 @@ func translateInstanceValues(
 	// values read as version 0 and the whole upgrade chain runs over state
 	// that is already current.
 	if current.SchemaVersion != 0 {
-		outs[reservedkeys.Meta] = resource.NewStringProperty(
+		outMap[reservedkeys.Meta] = property.New(
 			fmt.Sprintf(`{"schema_version":"%d"}`, current.SchemaVersion))
 	}
-	return outs, ins, nil
+	return mapPtr(outMap), mapPtr(inMap), nil
 }
 
 // markSensitivePaths re-marks the state's dynamically-sensitive paths (e.g.
@@ -580,13 +579,10 @@ var terraformDataStateType = cty.Object(map[string]cty.Type{
 	"triggers_replace": cty.DynamicPseudoType,
 })
 
-// propertyMapPtr converts to the pointer form plugin.ResourceImport carries,
-// preserving nil (an id-only import).
-func propertyMapPtr(m resource.PropertyMap) *property.Map {
-	if m == nil {
-		return nil
-	}
-	pm := resource.FromResourcePropertyMap(m)
+// mapPtr converts to the pointer form plugin.ResourceImport carries, where nil
+// means an id-only import.
+func mapPtr(m map[string]property.Value) *property.Map {
+	pm := property.NewMap(m)
 	return &pm
 }
 
@@ -599,7 +595,7 @@ func propertyMapPtr(m resource.PropertyMap) *property.Map {
 // trigger; the trigger records on the first up, which the engine forgives
 // without a replace. An untranslatable instance is skipped outright: with no
 // plugin behind Stash, an id-only import could only fail.
-func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins resource.PropertyMap, err error) {
+func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins *property.Map, err error) {
 	if current.AttrsJSON == nil {
 		return nil, nil, errors.New("pre-0.12 flatmap attributes are not translatable")
 	}
@@ -613,18 +609,17 @@ func stashValues(current *states.ResourceInstanceObjectSrc) (outs, ins resource.
 	if err != nil {
 		return nil, nil, fmt.Errorf("translating attributes: %w", err)
 	}
-	wrap := func(name string) resource.PropertyValue {
+	wrap := func(name string) property.Value {
 		v := m.Get(name)
 		if v.IsNull() {
-			return resource.NewNullProperty()
+			return property.New(property.Null)
 		}
 		src, _ := val.GetAttr(name).Unmark()
-		return resource.ToResourcePropertyValue(packages.WrapTerraformDataValue(src.Type(), v))
+		return packages.WrapTerraformDataValue(src.Type(), v)
 	}
 	input := wrap("input")
-	ins = resource.PropertyMap{"input": input}
-	outs = resource.PropertyMap{"input": input, "output": wrap("output")}
-	return outs, ins, nil
+	return mapPtr(map[string]property.Value{"input": input, "output": wrap("output")}),
+		mapPtr(map[string]property.Value{"input": input}), nil
 }
 
 // resourceSchema loads token's resource schema through the engine's loader.
