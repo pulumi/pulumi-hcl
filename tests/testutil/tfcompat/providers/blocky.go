@@ -211,6 +211,29 @@ func BlockyProvider() *schema.Provider {
 				UpdateContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
 				DeleteContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
 			},
+			// blocky_single has a TypeSet MaxItems=1 block, which the bridge
+			// flattens to one object like a TypeList MaxItems=1 block.
+			"blocky_single": {
+				Schema: map[string]*schema.Schema{
+					"opt": {
+						Type:     schema.TypeSet,
+						Optional: true,
+						MaxItems: 1,
+						Elem: &schema.Resource{
+							Schema: map[string]*schema.Schema{
+								"label": {Type: schema.TypeString, Required: true},
+							},
+						},
+					},
+				},
+				CreateContext: func(_ context.Context, d *schema.ResourceData, _ any) diag.Diagnostics {
+					d.SetId("blocky-single-id")
+					return nil
+				},
+				ReadContext:   func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
+				UpdateContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
+				DeleteContext: func(_ context.Context, _ *schema.ResourceData, _ any) diag.Diagnostics { return nil },
+			},
 		},
 	}
 }
