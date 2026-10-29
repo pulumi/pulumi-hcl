@@ -788,7 +788,7 @@ func (p *Parser) parseDataBlock(config *ast.Config, block *hcl.Block) hcl.Diagno
 // A reference splits at each ".", so nothing can reference such a block.
 func typeLabelDiags(kind string, block *hcl.Block) hcl.Diagnostics {
 	label := block.Labels[0]
-	if hclsyntax.ValidIdentifier(label) {
+	if ValidIdentifier(label) {
 		return nil
 	}
 	detail := fmt.Sprintf("The %s type %q is not a valid identifier, so references to this %s cannot work.",

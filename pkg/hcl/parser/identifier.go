@@ -23,6 +23,14 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 )
 
+// ValidIdentifier reports whether s is a valid HCL identifier.
+func ValidIdentifier(s string) bool {
+	// hclsyntax.ValidIdentifier scans s as a whole file, so it ignores a leading
+	// UTF-8 byte order mark. A byte order mark is invalid anywhere else in a file,
+	// so ValidIdentifier rejects it.
+	return !strings.HasPrefix(s, "\ufeff") && hclsyntax.ValidIdentifier(s)
+}
+
 // MakeValidIdentifier turns s into a valid HCL identifier.
 //
 // Each run of runes that an identifier cannot contain becomes one "_", and

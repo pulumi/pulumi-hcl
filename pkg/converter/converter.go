@@ -500,7 +500,7 @@ func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
 	// First pass: collect all names that are already valid identifiers.
 	for _, body := range bodies {
 		for _, block := range body.Blocks {
-			if name := blockLogicalName(block); name != "" && hclsyntax.ValidIdentifier(name) {
+			if name := blockLogicalName(block); name != "" && parser.ValidIdentifier(name) {
 				usedNames[name] = true
 			}
 		}
@@ -513,7 +513,7 @@ func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
 				continue
 			}
 			name := blockLogicalName(block)
-			if name == "" || hclsyntax.ValidIdentifier(name) {
+			if name == "" || parser.ValidIdentifier(name) {
 				continue
 			}
 			if _, seen := ft.nameRewrites[name]; seen {
@@ -701,7 +701,7 @@ func (ft *fileTransformer) emitFile(
 			}
 			name := block.Labels[0]
 			blk := out.AppendNewBlock("output", []string{name})
-			if !hclsyntax.ValidIdentifier(name) {
+			if !parser.ValidIdentifier(name) {
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(name)))
 			}
 			for _, attr := range sortedAttributes(block.Body.Attributes) {

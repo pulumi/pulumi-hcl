@@ -19,6 +19,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/parser"
 )
 
 // dataPlan records how the converter emits one data block.
@@ -471,7 +473,7 @@ func boundNames(dataBlocks map[dataReference]*hclsyntax.Body) map[string]bool {
 // uniqueName returns a valid identifier for name that is not in used, and
 // adds it to used.
 func uniqueName(name string, used map[string]bool) string {
-	if !hclsyntax.ValidIdentifier(name) {
+	if !parser.ValidIdentifier(name) {
 		name = sanitizeIdentifier(name)
 	}
 	for used[name] {

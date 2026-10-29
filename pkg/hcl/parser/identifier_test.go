@@ -19,7 +19,6 @@ import (
 	"testing"
 	"unicode"
 
-	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
@@ -56,6 +55,8 @@ func TestMakeValidIdentifier(t *testing.T) {
 		{"!_1foo", "foo"},
 		{"😃foo", "foo"},
 		{"foo😃bar", "foo_bar"},
+		{"\ufefffoo", "foo"},
+		{"\ufeffῌ_", "ῌ_"},
 		{"foo bar", "foo_bar"},
 		{"rbac.authorization.k8s.io/v1", "rbac_authorization_k8s_io_v1"},
 	}
@@ -95,9 +96,9 @@ func TestMakeValidIdentifierProperties(t *testing.T) {
 		if err != nil {
 			t.SkipNow()
 		}
-		assert.True(t, hclsyntax.ValidIdentifier(valid), "MakeValidIdentifier(%q) = %q is not valid", ident, valid)
+		assert.True(t, ValidIdentifier(valid), "MakeValidIdentifier(%q) = %q is not valid", ident, valid)
 		assert.Equal(t, reduceToASCII(ident), reduceToASCII(valid), "an ascii reduction shouldn't be changed")
-		if hclsyntax.ValidIdentifier(ident) {
+		if ValidIdentifier(ident) {
 			assert.Equal(t, ident, valid)
 		}
 	})
@@ -113,4 +114,27 @@ func reduceToASCII(name string) string {
 		}
 	}
 	return b.String()
+}
+
+func TestValidIdentifier(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"foo", true},
+		{"a-b", true},
+		{"日本", true},
+		{"1foo", false},
+		{"a.b", false},
+		{"\ufefffoo", false},
+		{"foo\ufeff", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, ValidIdentifier(tt.in))
+		})
+	}
 }

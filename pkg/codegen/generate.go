@@ -3020,7 +3020,7 @@ func findPropertyType(props []*schema.Property, name string) schema.Type {
 // or a TraverseIndex with a string key for names that contain special characters
 // (e.g. `["aA-Alpha_alpha.🤯⁉️"]`).
 func traverseNameStep(name string) hcl.Traverser {
-	if hclsyntax.ValidIdentifier(name) {
+	if parser.ValidIdentifier(name) {
 		return hcl.TraverseAttr{Name: name}
 	}
 	return hcl.TraverseIndex{Key: cty.StringVal(name)}
