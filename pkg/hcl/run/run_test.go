@@ -2916,7 +2916,7 @@ resource "aws_instance" "web" {
 	}
 	require.NotNil(t, instance)
 	assert.Equal(t, &run.ResourceHookBinding{
-		AfterCreate:  []string{"aws_instance.web:provisioner:0"},
+		AfterCreate:  []string{"urn:pulumi:test::project::aws:index:Instance::web:provisioner:0"},
 		BeforeDelete: []string{"pulumi-hcl:provisioner:before-delete"},
 	}, instance.Hooks)
 }

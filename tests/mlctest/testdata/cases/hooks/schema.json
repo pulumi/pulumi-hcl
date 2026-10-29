@@ -1,0 +1,21 @@
+{
+  "name": "guarded",
+  "version": "0.0.0-dev",
+  "config": {},
+  "resources": {
+    "guarded:index:Module": {
+      "properties": {
+        "x": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "inputProperties": {
+        "x": {
+          "type": "string"
+        }
+      },
+      "isComponent": true
+    }
+  }
+}

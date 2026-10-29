@@ -1759,20 +1759,25 @@ func (e *Engine) registerResourceInstanceInContext(
 		return err
 	}
 
+	// Hook names are unique per deployment. The instance URN is, while
+	// resourceName is not: a component monitor prefixes it after this point,
+	// so two instances of one component would share it.
+	instanceURN, _ := e.resmon.ResolveURN(opts.Parent, resSchema.Token, resourceName)
+
 	if len(res.Preconditions) > 0 {
-		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts, resourceName); err != nil {
+		if err := e.bindPreconditionHooks(ctx, res, instance, evalCtx, opts, instanceURN); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Postconditions) > 0 {
-		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
+		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, instanceURN); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Provisioners) > 0 || opts.PreventDestroy != preventDestroyAllow {
-		if err := e.bindGlobalHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, resourceName); err != nil {
+		if err := e.bindGlobalHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, instanceURN); err != nil {
 			return err
 		}
 	}
@@ -4915,7 +4920,7 @@ func (e *Engine) bindPreconditionHooks(
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
-	resourceName string,
+	instanceURN urn.URN,
 ) error {
 	if len(res.Preconditions) == 0 {
 		return nil
@@ -4924,7 +4929,7 @@ func (e *Engine) bindPreconditionHooks(
 		opts.Hooks = &ResourceHookBinding{}
 	}
 	hclSnapshot := evalCtx.HCLContext()
-	hookName := fmt.Sprintf("%s.%s:precondition", res.Type, resourceName)
+	hookName := string(instanceURN) + ":precondition"
 	callback := func(_ context.Context, _ *ResourceHookArgs) error {
 		return evaluatePreconditions(res.Preconditions, hclSnapshot, instance.Key.String())
 	}
@@ -4953,7 +4958,7 @@ func (e *Engine) bindPostconditionHooks(
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
-	resourceName string,
+	instanceURN urn.URN,
 ) error {
 	if len(res.Postconditions) == 0 {
 		return nil
@@ -4963,7 +4968,7 @@ func (e *Engine) bindPostconditionHooks(
 	}
 	hclSnapshot := evalCtx.HCLContext()
 	dryRun := e.dryRun
-	hookName := fmt.Sprintf("%s.%s:postcondition", res.Type, resourceName)
+	hookName := string(instanceURN) + ":postcondition"
 	callback := func(_ context.Context, args *ResourceHookArgs) error {
 		// Hooks receive raw engine outputs, so terraform_data's surface is
 		// adapted the same way as on the registration path: property-level

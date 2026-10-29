@@ -1,0 +1,9 @@
+resources:
+  a:
+    type: guarded:index:Module
+    properties:
+      x: a
+  b:
+    type: guarded:index:Module
+    properties:
+      x: b

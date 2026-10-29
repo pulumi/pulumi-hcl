@@ -20,6 +20,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 
@@ -46,7 +47,7 @@ func (e *Engine) bindGlobalHooks(
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
-	resourceName string,
+	instanceURN urn.URN,
 ) error {
 	if len(res.Provisioners) == 0 && opts.PreventDestroy == preventDestroyAllow {
 		return nil
@@ -55,7 +56,7 @@ func (e *Engine) bindGlobalHooks(
 		opts.Hooks = &ResourceHookBinding{}
 	}
 
-	destroyProvisioners, err := e.bindProvisionerHooks(ctx, res, resSchema, mapping, instance, evalCtx, opts, resourceName)
+	destroyProvisioners, err := e.bindProvisionerHooks(ctx, res, resSchema, mapping, instance, evalCtx, opts, instanceURN)
 	if err != nil {
 		return err
 	}
@@ -65,7 +66,6 @@ func (e *Engine) bindGlobalHooks(
 	}
 
 	dryRun := e.dryRun
-	instanceURN, _ := e.resmon.ResolveURN(opts.Parent, resSchema.Token, resourceName)
 	e.dispatcher.putInstance(string(instanceURN),
 		func(hookCtx context.Context, args *ResourceHookArgs) error {
 			if guard != nil {
@@ -116,7 +116,7 @@ func (e *Engine) bindProvisionerHooks(
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
-	resourceName string,
+	instanceURN urn.URN,
 ) (ResourceHookFunction, error) {
 	hclSnapshot := evalCtx.HCLContext()
 	dryRun := e.dryRun
@@ -156,7 +156,7 @@ func (e *Engine) bindProvisionerHooks(
 			destroy = true
 			continue
 		}
-		hookName := fmt.Sprintf("%s.%s:provisioner:%d", res.Type, resourceName, i)
+		hookName := fmt.Sprintf("%s:provisioner:%d", instanceURN, i)
 		callback := func(hookCtx context.Context, args *ResourceHookArgs) error {
 			return runOne(hookCtx, prov, index, args.NewOutputs, args.ID, args.URN)
 		}
