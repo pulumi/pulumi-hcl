@@ -326,6 +326,20 @@ type Graph struct {
 	// block they use.
 	scopes map[modulepath.Path]*moduleScope
 
+	// loaded holds the loaded configuration of each module call, keyed by the
+	// call's path. A scope's calls are loaded before anything in the scope is
+	// added, so a reference to a child's outputs can be checked against the
+	// outputs that the child declares.
+	loaded map[modulepath.Path]*LoadedModule
+
+	// warnings collects the warnings found while the graph is built.
+	warnings hcl.Diagnostics
+
+	// providerRefs holds each node key that a `provider` argument names. A
+	// provider configuration and a managed resource can have the same key, so
+	// the key alone does not tell Validate what an undeclared reference names.
+	providerRefs map[NodeKey]bool
+
 	// missingProviders collects, keyed by provider address, the diagnostics
 	// for module-call `providers` entries that name a provider configuration
 	// the parent scope does not have. Reported by Validate.
@@ -397,6 +411,8 @@ func NewGraph() *Graph {
 		dependents:   make(map[NodeKey]int),
 		moved:        make(map[modulepath.Path][]*ast.Moved),
 		scopes:       make(map[modulepath.Path]*moduleScope),
+		loaded:       make(map[modulepath.Path]*LoadedModule),
+		providerRefs: make(map[NodeKey]bool),
 
 		missingProviders: make(map[string]*hcl.Diagnostic),
 	}
@@ -629,6 +645,11 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	reported[rootDir] = true
 	rootScope := &moduleScope{config: config, sourcePath: rootDir}
 	g.scopes[root] = rootScope
+	loadDiags := g.loadModuleCalls(config, root, moduleLoader, workDir, reported)
+	diags = append(diags, loadDiags...)
+	if loadDiags.HasErrors() {
+		return nil, diags
+	}
 
 	for _, builtin := range []string{"pulumi.stack", "pulumi.project", "pulumi.organization"} {
 		diags := g.AddNode(&Node{Key: NodeKey{ID: builtin}, Type: NodeTypeBuiltin}, nil)
@@ -743,7 +764,16 @@ func BuildFromConfig(config *ast.Config, moduleLoader ModuleLoader, workDir stri
 	g.addInitReadEdges()
 	g.classifyPlanTimeReads()
 
-	return g, diags
+	slices.SortFunc(g.warnings, func(a, b *hcl.Diagnostic) int {
+		switch {
+		case rangeLess(*a.Subject, *b.Subject):
+			return -1
+		case rangeLess(*b.Subject, *a.Subject):
+			return 1
+		}
+		return 0
+	})
+	return g, append(diags, g.warnings...)
 }
 
 // addInitReadEdges orders each module init after what its component
@@ -1134,6 +1164,32 @@ func (g *Graph) traversalDepRefs(path modulepath.Path, traversals ...hcl.Travers
 	return refs
 }
 
+// dependsOnDepRefs resolves the traversals of a depends_on entry like
+// traversalDepRefs. An entry that names an undeclared output of a declared
+// module call adds no dependency, and it is reported as a warning.
+func (g *Graph) dependsOnDepRefs(path modulepath.Path, traversals ...hcl.Traversal) []depRef {
+	var kept []hcl.Traversal
+	for _, t := range traversals {
+		key, ok := TraversalKey(path, t)
+		if !ok {
+			continue
+		}
+		name, isOutput := strings.CutPrefix(key.ID, "output.")
+		if child, declared := g.loaded[key.Module]; isOutput && declared && child.Config.Outputs[name] == nil {
+			g.warnings = append(g.warnings, &hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  "Reference to undeclared output value",
+				Detail: fmt.Sprintf("%s declares no output named %q, so this depends_on entry adds no dependency.",
+					ModuleAddress(key.Module), name),
+				Subject: t.SourceRange().Ptr(),
+			})
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return g.traversalDepRefs(path, kept...)
+}
+
 // resourceDeps extracts all dependencies from a resource declared in the
 // module at path. It returns the block-level edge set for the node (unchanged
 // coarse semantics: cycle detection, Validate, and completion ordering all
@@ -1147,7 +1203,7 @@ func (g *Graph) resourceDeps(resource *ast.Resource, path modulepath.Path) (*Blo
 
 	c.classify(g.exprDepRefs(resource.Count, path, nil))
 	c.classify(g.exprDepRefs(resource.ForEach, path, nil))
-	c.classify(g.traversalDepRefs(path, resource.DependsOn...))
+	c.classify(g.dependsOnDepRefs(path, resource.DependsOn...))
 	if resource.Config != nil {
 		c.classify(g.bodyDepRefs(resource.Config, path, nil))
 	}
@@ -1174,7 +1230,7 @@ func (g *Graph) dataSourceDeps(ds *ast.DataSource, path modulepath.Path) (*Block
 
 	c.classify(g.exprDepRefs(ds.Count, path, nil))
 	c.classify(g.exprDepRefs(ds.ForEach, path, nil))
-	c.classify(g.traversalDepRefs(path, ds.DependsOn...))
+	c.classify(g.dependsOnDepRefs(path, ds.DependsOn...))
 	if ds.Config != nil {
 		c.classify(g.bodyDepRefs(ds.Config, path, nil))
 	}
@@ -1194,7 +1250,11 @@ func (g *Graph) dataSourceDeps(ds *ast.DataSource, path modulepath.Path) (*Block
 // (`call.x.y`) provider expressions have further segments and are resolved by
 // exprDepRefs.
 func (g *Graph) classifyProviderRef(c *depClassifier, provider hcl.Expression, path modulepath.Path) {
-	c.addStaticRefs(g.exprDepRefs(provider, path, nil))
+	refs := g.exprDepRefs(provider, path, nil)
+	for _, ref := range refs {
+		g.providerRefs[ref.key] = true
+	}
+	c.addStaticRefs(refs)
 	if provider == nil {
 		return
 	}
@@ -1618,6 +1678,9 @@ func (g *Graph) Validate() []error {
 			Severity: hcl.DiagError,
 			Summary:  fmt.Sprintf("unknown node %q", key.String()),
 		}
+		if summary, detail, ok := g.undeclaredReference(key); ok {
+			diag.Summary, diag.Detail = summary, detail
+		}
 		if refs := g.references[key]; len(refs) > 0 {
 			// Use the earliest reference (sorted by filename, then position)
 			// as the subject so the error points at a deterministic location.
@@ -1703,23 +1766,38 @@ func rangeLess(a, b hcl.Range) bool {
 	return a.Start.Column < b.Start.Column
 }
 
-// inlineModule loads a module and inlines its contents into the graph
+// loadModuleCalls loads each module call that config declares in the module
+// at path. Each source's diagnostics are reported once.
+func (g *Graph) loadModuleCalls(
+	config *ast.Config, path modulepath.Path, moduleLoader ModuleLoader, workDir string,
+	reported map[string]bool,
+) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, name := range slices.Sorted(maps.Keys(config.Modules)) {
+		contract.Requiref(moduleLoader != nil, "moduleLoader", "cannot be nil")
+		loaded, loadDiags := moduleLoader.LoadModule(config.Modules[name], workDir)
+		if loadDiags.HasErrors() {
+			return append(diags, loadDiags...)
+		}
+		if !reported[loaded.SourcePath] {
+			diags = append(diags, loadDiags...)
+			reported[loaded.SourcePath] = true
+		}
+		g.loaded[path.Append(modulepath.NewStep(name))] = loaded
+	}
+	return diags
+}
+
+// inlineModule inlines the contents of a loaded module call into the graph
 // rooted at parentPath.
 func (g *Graph) inlineModule(
 	name string, mod *ast.Module, parentPath modulepath.Path,
 	moduleLoader ModuleLoader, workDir string, parent *moduleScope,
 	reported map[string]bool,
 ) hcl.Diagnostics {
-	contract.Requiref(moduleLoader != nil, "moduleLoader", "cannot be nil")
 	var diags hcl.Diagnostics
-	loaded, loadDiags := moduleLoader.LoadModule(mod, workDir)
-	if loadDiags.HasErrors() {
-		return loadDiags
-	}
-	if !reported[loaded.SourcePath] {
-		diags = append(diags, loadDiags...)
-		reported[loaded.SourcePath] = true
-	}
+	path := parentPath.Append(modulepath.NewStep(name))
+	loaded := g.loaded[path]
 
 	// Module expansion is static — count/for_each do not gate inlining — so a
 	// source directory that is already being expanded on the ancestor chain
@@ -1740,7 +1818,6 @@ func (g *Graph) inlineModule(
 		})
 	}
 
-	path := parentPath.Append(modulepath.NewStep(name))
 	// Rewrite child-declared removed addresses to root-relative before
 	// validating, so the child's own declarations are checked against its
 	// configuration along with any ancestor's.
@@ -1762,6 +1839,11 @@ func (g *Graph) inlineModule(
 		sourcePath: loaded.SourcePath,
 	}
 	g.scopes[path] = scope
+	loadDiags := g.loadModuleCalls(loaded.Config, path, moduleLoader, loaded.SourcePath, reported)
+	diags = append(diags, loadDiags...)
+	if loadDiags.HasErrors() {
+		return diags
+	}
 	modInfo := &ModuleInfo{
 		Path:             path,
 		Module:           mod,
@@ -1781,7 +1863,7 @@ func (g *Graph) inlineModule(
 	}
 	initDeps = append(initDeps, g.exprDeps(mod.Count, parentPath)...)
 	initDeps = append(initDeps, g.exprDeps(mod.ForEach, parentPath)...)
-	initDeps = append(initDeps, g.refsToNodes(g.traversalDepRefs(parentPath, mod.DependsOn...))...)
+	initDeps = append(initDeps, g.refsToNodes(g.dependsOnDepRefs(parentPath, mod.DependsOn...))...)
 	// The module's component registration records the providers passed in
 	// via `providers = {...}`, so init must run after those parent-scope
 	// configurations are registered.

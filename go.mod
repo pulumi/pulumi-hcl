@@ -3,6 +3,7 @@ module github.com/pulumi/pulumi-hcl
 go 1.26.10
 
 require (
+	github.com/agext/levenshtein v1.2.3
 	github.com/apparentlymart/go-cidr v1.1.0
 	github.com/apparentlymart/go-shquot v0.0.1
 	github.com/blang/semver v3.5.1+incompatible
@@ -79,7 +80,6 @@ require (
 	github.com/ProtonMail/go-crypto v1.5.2 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d // indirect
-	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/armon/go-radix v1.0.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.43.0 // indirect

@@ -522,3 +522,232 @@ func TestCycleErrorLabelsExpansionNodes(t *testing.T) {
 	assert.EqualError(t, b.DependOn(b.Complete()),
 		"dependency cycle: pfx_res.a (completion) -> pfx_res.a (expand) -> pfx_res.a (completion)")
 }
+
+// buildWithModules parses root and the given module sources and builds the
+// graph, failing the test on a parse error.
+func buildWithModules(t *testing.T, root string, modules map[string]string) (*Graph, hcl.Diagnostics) {
+	t.Helper()
+	p := parser.NewParser()
+	config, diags := p.ParseSource("main.tf", []byte(root))
+	require.False(t, diags.HasErrors(), diags.Error())
+	loader := fakeModuleLoader{modules: map[string]*LoadedModule{}}
+	for source, src := range modules {
+		mod, diags := p.ParseSource(source+"/main.tf", []byte(src))
+		require.False(t, diags.HasErrors(), diags.Error())
+		loader.modules[source] = &LoadedModule{Config: mod, SourcePath: "/proj/" + source}
+	}
+	return BuildFromConfig(config, loader, "/proj")
+}
+
+// TestDependsOnUndeclaredModuleOutput: depends_on entries in a module call, a
+// resource and a data source that name an undeclared output of a declared
+// module call add no dependency, and each entry warns
+// (https://github.com/pulumi/pulumi-hcl/issues/685).
+func TestDependsOnUndeclaredModuleOutput(t *testing.T) {
+	t.Parallel()
+	g, diags := buildWithModules(t, `module "m" {
+  source = "./m"
+}
+module "n" {
+  source     = "./n"
+  depends_on = [module.m.missing]
+}
+resource "simple_resource" "r" {
+  depends_on = [module.m.missing]
+}
+data "simple_data" "d" {
+  depends_on = [module.m.missing]
+}
+`, map[string]string{
+		"./m": `resource "simple_resource" "slow" {}`,
+		"./n": ``,
+	})
+	warning := func(line, byteOffset int) *hcl.Diagnostic {
+		return &hcl.Diagnostic{
+			Severity: hcl.DiagWarning,
+			Summary:  "Reference to undeclared output value",
+			Detail:   `module.m declares no output named "missing", so this depends_on entry adds no dependency.`,
+			Subject: &hcl.Range{
+				Filename: "main.tf",
+				Start:    hcl.Pos{Line: line, Column: 17, Byte: byteOffset},
+				End:      hcl.Pos{Line: line, Column: 33, Byte: byteOffset + 16},
+			},
+		}
+	}
+	assert.Equal(t, hcl.Diagnostics{warning(6, 82), warning(9, 151), warning(12, 212)}, diags)
+	assert.Empty(t, g.Validate())
+
+	_, exists := g.seen[NodeKey{Module: modulepath.Root().Append(modulepath.NewStep("m")), ID: "output.missing"}]
+	assert.False(t, exists, "a dropped depends_on entry must not create a node")
+}
+
+// TestDependsOnUndeclaredModuleOutputAlsoReferenced: an undeclared module
+// output stays an error when an expression also references it.
+func TestDependsOnUndeclaredModuleOutputAlsoReferenced(t *testing.T) {
+	t.Parallel()
+	g, diags := buildWithModules(t, `module "m" {
+  source = "./m"
+}
+resource "simple_resource" "r" {
+  depends_on = [module.m.missing]
+}
+output "o" {
+  value = module.m.missing
+}
+`, map[string]string{"./m": ``})
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	errs := g.Validate()
+	require.Len(t, errs, 1)
+	var diag *hcl.Diagnostic
+	require.ErrorAs(t, errs[0], &diag)
+	assert.Equal(t, "Unsupported attribute", diag.Summary)
+	assert.Equal(t, `This object does not have an attribute named "missing".`, diag.Detail)
+}
+
+// TestUndeclaredReference: a reference to an undeclared object names the kind
+// of the object, the same way from an expression and from a depends_on entry.
+func TestUndeclaredReference(t *testing.T) {
+	t.Parallel()
+	type message struct{ Summary, Detail string }
+	for _, tc := range []struct {
+		name    string
+		root    string
+		modules map[string]string
+		want    message
+	}{
+		{
+			name: "variable from an expression",
+			root: `resource "simple_resource" "r" {
+  input = var.nope
+}`,
+			want: message{
+				"Reference to undeclared input variable",
+				`An input variable with the name "nope" has not been declared. This variable can be declared with a variable "nope" {} block.`,
+			},
+		},
+		{
+			name: "variable from depends_on with a suggestion",
+			root: `variable "nopee" {}
+resource "simple_resource" "r" {
+  depends_on = [var.nope]
+}`,
+			want: message{
+				"Reference to undeclared input variable",
+				`An input variable with the name "nope" has not been declared. Did you mean "nopee"?`,
+			},
+		},
+		{
+			name: "local from depends_on",
+			root: `resource "simple_resource" "r" {
+  depends_on = [local.nope]
+}`,
+			want: message{"Reference to undeclared local value", `A local value with the name "nope" has not been declared.`},
+		},
+		{
+			name: "local from an expression with a suggestion",
+			root: `locals {
+  nopee = 1
+}
+resource "simple_resource" "r" {
+  input = local.nope
+}`,
+			want: message{
+				"Reference to undeclared local value",
+				`A local value with the name "nope" has not been declared. Did you mean "nopee"?`,
+			},
+		},
+		{
+			name: "managed resource from an expression",
+			root: `resource "simple_resource" "r" {
+  input = simple_resource.nope.id
+}`,
+			want: message{
+				"Reference to undeclared resource",
+				`There is no managed resource "simple_resource" "nope" definition in the root module.`,
+			},
+		},
+		{
+			name: "managed resource from depends_on that names a data resource",
+			root: `data "simple_data" "d" {}
+resource "simple_resource" "r" {
+  depends_on = [simple_data.d]
+}`,
+			want: message{
+				"Reference to undeclared resource",
+				"There is no managed resource \"simple_data\" \"d\" definition in the root module.\n\nDid you mean the data resource data.simple_data.d?",
+			},
+		},
+		{
+			name: "data resource from an expression that names a managed resource",
+			root: `resource "simple_resource" "x" {}
+resource "simple_resource" "r" {
+  input = data.simple_resource.x.id
+}`,
+			want: message{
+				"Reference to undeclared resource",
+				"There is no data resource \"simple_resource\" \"x\" definition in the root module.\n\nDid you mean the resource resource simple_resource.x?",
+			},
+		},
+		{
+			name: "module call from depends_on",
+			root: `resource "simple_resource" "r" {
+  depends_on = [module.nope]
+}`,
+			want: message{"Reference to undeclared module", `No module call named "nope" is declared in the root module.`},
+		},
+		{
+			name: "managed resource in a child module",
+			root: `module "a" {
+  source = "./a"
+}`,
+			modules: map[string]string{"./a": `resource "simple_resource" "r" {
+  input = simple_resource.nope.id
+}`},
+			want: message{
+				"Reference to undeclared resource",
+				`There is no managed resource "simple_resource" "nope" definition in module.a.`,
+			},
+		},
+		{
+			name: "module call output in a child module with a suggestion",
+			root: `module "a" {
+  source = "./a"
+}`,
+			modules: map[string]string{
+				"./a": `module "inner" {
+  source = "./inner"
+}
+resource "simple_resource" "r" {
+  input = module.innr.x
+}`,
+				"./inner": ``,
+			},
+			want: message{
+				"Reference to undeclared module",
+				`No module call named "innr" is declared in module.a. Did you mean "inner"?`,
+			},
+		},
+		{
+			// The key of a provider configuration has the same shape as the
+			// key of a managed resource.
+			name: "provider configuration",
+			root: `resource "simple_resource" "r" {
+  provider = simple.nope
+}`,
+			want: message{Summary: `unknown node "simple.nope"`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, diags := buildWithModules(t, tc.root, tc.modules)
+			require.False(t, diags.HasErrors(), diags.Error())
+
+			errs := g.Validate()
+			require.Len(t, errs, 1)
+			var diag *hcl.Diagnostic
+			require.ErrorAs(t, errs[0], &diag)
+			assert.Equal(t, tc.want, message{diag.Summary, diag.Detail})
+		})
+	}
+}

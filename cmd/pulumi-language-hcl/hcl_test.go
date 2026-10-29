@@ -2385,7 +2385,7 @@ resource "test_bucket" "bucket" {
 
 		err := engine.Run(t.Context())
 		assert.EqualError(t, err, fmt.Sprintf(
-			`%s:12,10-26: unknown node "module.mod.local.parentName"; `,
+			`%s:12,10-26: Reference to undeclared local value; A local value with the name "parentName" has not been declared.`,
 			filepath.Join(dir, "mod", "main.tf"),
 		))
 	})
@@ -2431,7 +2431,7 @@ data "test_getlen" "invoke_0" {
 
 		err := engine.Run(t.Context())
 		assert.EqualError(t, err, fmt.Sprintf(
-			`%s:12,12-28: unknown node "module.mod.local.parentName"; `,
+			`%s:12,12-28: Reference to undeclared local value; A local value with the name "parentName" has not been declared.`,
 			filepath.Join(dir, "mod", "main.tf"),
 		))
 	})
