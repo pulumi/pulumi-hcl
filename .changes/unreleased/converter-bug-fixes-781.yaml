@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Handle a name that starts with a UTF-8 byte order mark
+time: 2026-10-29T13:47:24.000000+01:00
+custom:
+    Component: converter
+    PR: "781"
