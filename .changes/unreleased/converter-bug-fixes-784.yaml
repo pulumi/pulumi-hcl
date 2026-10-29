@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: "Read a TypeSet `MaxItems: 1` block with `one()` when converting PCL to HCL"
+time: 2026-10-29T14:29:52.000000+01:00
+custom:
+    Component: converter
+    PR: "784"
