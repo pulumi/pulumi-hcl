@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: "Convert `one()` of a `MaxItems: 1` field to the flattened field when converting HCL to PCL"
+time: 2026-10-29T14:29:52.000000+01:00
+custom:
+    Component: converter
+    PR: "785"
