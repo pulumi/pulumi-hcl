@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Fix "resource hook already registered" when one HCL component with a precondition, postcondition, or provisioner is instantiated more than once
+time: 2026-10-29T12:30:00.000000+01:00
+custom:
+    Component: runtime
+    PR: "780"
