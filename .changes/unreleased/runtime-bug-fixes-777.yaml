@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Accept `depends_on` on an undeclared module output, and name the kind of object in undeclared reference errors
+time: 2026-10-29T12:00:00.000000+01:00
+custom:
+    Component: runtime
+    PR: "777"
