@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package mlctest is the component half of putest: it runs a YAML program
+// Package mlctest is the component half of hcltest: it runs a YAML program
 // that consumes one local HCL component directory, pins the component's
 // package schema against a golden file, and asserts on stack outputs,
 // exported Pulumi state, and recorded provider operations.

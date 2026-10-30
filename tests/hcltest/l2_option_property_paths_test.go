@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/stretchr/testify/assert"
@@ -28,8 +28,8 @@ import (
 // replaces the resource, so the round trip must keep each whole path.
 func TestL2OptionPropertyPaths(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_option_property_paths", putest.Case{
-		Providers: []putest.Provider{
+	hcltest.RunCase(t, "l2_option_property_paths", hcltest.Case{
+		Providers: []hcltest.Provider{
 			{Name: "collections", Factory: providers.CollectionsProvider},
 		},
 		AssertOps: func(t *testing.T, ops []tfexec.Op) {

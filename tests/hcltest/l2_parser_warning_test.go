@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +28,7 @@ import (
 // after it.
 func TestL2ParserWarningRoot(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_parser_warning_root", putest.Case{
+	hcltest.RunCase(t, "l2_parser_warning_root", hcltest.Case{
 		SkipRoundTrip:   "HCL -> PCL drops `required_version`.",
 		ExpectedOutputs: map[string]string{"out": "ok"},
 		AssertOutput: func(t *testing.T, output string) {
@@ -42,7 +42,7 @@ func TestL2ParserWarningRoot(t *testing.T) {
 // A parser warning in a child module reaches the user once.
 func TestL2ParserWarningModule(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_parser_warning_module", putest.Case{
+	hcltest.RunCase(t, "l2_parser_warning_module", hcltest.Case{
 		SkipRoundTrip:   "HCL -> PCL drops the `backend` block.",
 		ExpectedOutputs: map[string]string{"out": "ok"},
 		AssertOutput: func(t *testing.T, output string) {

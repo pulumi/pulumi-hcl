@@ -137,11 +137,11 @@ particular:
   resource options) belong in the language-host test suite, not here.
 - Provider setups a tf-compatible program cannot produce — `Customize`
   hooks on the bridged `ProviderInfo` foremost — belong in the
-  Pulumi-only `putest` suite (`tests/putest/`,
-  `tests/testutil/putest/`), which asserts directly on stack outputs,
+  Pulumi-only `hcltest` suite (`tests/hcltest/`,
+  `tests/testutil/hcltest/`), which asserts directly on stack outputs,
   Pulumi state, and recorded provider ops instead of comparing against
   OpenTofu. A tfcompat case skipped as a known divergence of the
-  terraform-provider plugin path gets a putest twin pinning the correct
+  terraform-provider plugin path gets an hcltest twin pinning the correct
   (OpenTofu-matching) behavior against the linked-in bridge until the
   divergence is fixed.
 

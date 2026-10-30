@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 )
@@ -31,8 +31,8 @@ import (
 // translated before the engine validates the HCL body.
 func TestL2SingleSegmentToken(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_single_segment_token", putest.Case{
-		Providers: []putest.Provider{
+	hcltest.RunCase(t, "l2_single_segment_token", hcltest.Case{
+		Providers: []hcltest.Provider{
 			{
 				Name:    "single",
 				Factory: providers.SingleSegmentProvider,

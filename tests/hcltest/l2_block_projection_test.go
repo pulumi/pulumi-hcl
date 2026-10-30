@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfexec"
 	"github.com/stretchr/testify/assert"
@@ -33,8 +33,8 @@ import (
 // An omitted optional MaxItems=1 nested block reads as `[]`, length 0.
 func TestL2OmittedNestedBlock(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_omitted_nested_block", putest.Case{
-		Providers: []putest.Provider{
+	hcltest.RunCase(t, "l2_omitted_nested_block", hcltest.Case{
+		Providers: []hcltest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
 		ExpectedOutputs: map[string]string{
@@ -48,10 +48,10 @@ func TestL2OmittedNestedBlock(t *testing.T) {
 // variant and as the empty set for the TypeSet variant.
 func TestL2OptionalComputedBlockUnset(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_optional_computed_block_unset", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/714]: The PCL reads the unset set block `identitySet` as null, " +
+	hcltest.RunCase(t, "l2_optional_computed_block_unset", hcltest.Case{
+		SkipRunConverted: "TODO[https://github.com/pulumi/pulumi-hcl/issues/714]: The PCL reads the unset set block `identitySet` as null, " +
 			"not as an empty set.",
-		Providers: []putest.Provider{
+		Providers: []hcltest.Provider{
 			{Name: "optcomp", Factory: providers.OptCompBlockProvider},
 		},
 		ExpectedOutputs: map[string]string{
@@ -67,9 +67,9 @@ func TestL2OptionalComputedBlockUnset(t *testing.T) {
 // the same elements is true regardless of order.
 func TestL2SetBlockEquality(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_set_block_equality", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/711]: HCL -> PCL writes `toset` as `notImplemented`.",
-		Providers: []putest.Provider{
+	hcltest.RunCase(t, "l2_set_block_equality", hcltest.Case{
+		SkipRunConverted: "TODO[https://github.com/pulumi/pulumi-hcl/issues/711]: HCL -> PCL writes `toset` as `notImplemented`.",
+		Providers: []hcltest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
 		ExpectedOutputs: map[string]string{
@@ -83,9 +83,9 @@ func TestL2SetBlockEquality(t *testing.T) {
 // replaces the resource, and `settings` reports the replacement's empty list.
 func TestL2IgnoreChangesForceNewBlockRemoved(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_ignore_changes_forcenew_block_removed", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/758]: PCL `ignoreChanges` still applies after the block is removed.",
-		Providers: []putest.Provider{
+	hcltest.RunCase(t, "l2_ignore_changes_forcenew_block_removed", hcltest.Case{
+		SkipRunConverted: "TODO[https://github.com/pulumi/pulumi-hcl/issues/758]: PCL `ignoreChanges` still applies after the block is removed.",
+		Providers: []hcltest.Provider{
 			{Name: "fnblock", Factory: providers.FNBlockProvider},
 		},
 		ExpectedOutputs: map[string]string{

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	gp "github.com/pulumi/pulumi-go-provider"
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -63,8 +63,8 @@ func hdProvider() gp.Provider {
 // an input. The engine applies hideDiffs to the diff of the outputs.
 func TestL2HideDiffsOutput(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_hide_diffs_output", putest.Case{
-		Providers:       []putest.Provider{{Name: "hd", Native: hdProvider}},
+	hcltest.RunCase(t, "l2_hide_diffs_output", hcltest.Case{
+		Providers:       []hcltest.Provider{{Name: "hd", Native: hdProvider}},
 		ExpectedOutputs: map[string]string{"out_val": "out-a"},
 		AssertState: func(t *testing.T, resources []apitype.ResourceV3) {
 			for _, r := range resources {

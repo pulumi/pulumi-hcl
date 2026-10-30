@@ -12,22 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package putest is the Pulumi-only half of the tfcompat harness: it runs a
-// `.tf` program from testdata/cases/<name>/ through `pulumi up` against
-// in-process bridged providers (pulexec's attach path), asserting directly on
-// stack outputs, exported Pulumi state, and recorded provider operations. Use
-// it for setups a tf-compatible program cannot produce (Customize foremost)
-// and to pin the linked-in bridge's correct behavior on cases skipped in
-// tfcompat because the terraform-provider plugin path diverges. Everything
-// else belongs in the tfcompat harness, where OpenTofu defines the expected
-// behavior.
-package putest
+// Package stacktest runs a program from testdata/cases/<name>/ through
+// `pulumi up` against in-process bridged providers (pulexec's attach path),
+// and asserts directly on stack outputs, exported Pulumi state, and recorded
+// provider operations. It then round trips the program through the other
+// language and runs the results. The hcltest and pcltest packages fix the
+// language of the source.
+package stacktest
 
 import (
 	"maps"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"testing"
 
@@ -84,42 +80,48 @@ type Case struct {
 	// the apply. SDKv2 providers record at the helper/schema CRUD boundary,
 	// plugin-framework providers at the tfprotov6 boundary.
 	AssertOps func(t *testing.T, ops []tfexec.Op)
-	// SkipRoundTrip, if set, skips the HCL -> PCL -> HCL round trip. It is the
-	// reason the case cannot round trip.
+	// SkipRoundTrip, if set, skips the round trip through the other
+	// language. It is the reason the case cannot round trip.
 	SkipRoundTrip string
-	// SkipRunPCL, if set, skips the run of the PCL that the round trip
-	// generates. It is the reason the PCL cannot run.
-	SkipRunPCL string
+	// SkipRunConverted, if set, skips the run of the program in the other
+	// language that the round trip generates. It is the reason the program
+	// cannot run.
+	SkipRunConverted string
 }
 
-// RunCase resolves testdata/cases/<caseName>/ relative to the calling test
-// file, runs `pulumi up` on it, and applies the Case's assertions. A case
-// directory containing only numbered stage subdirs (0/, 1/, ...) applies one
-// file set per subdir in order; assertions run after the last apply.
+// newDrivers maps each language to the driver that runs a program in it.
+var newDrivers = map[string]func(*testing.T, []pulexec.Provider, map[string]string) *pulexec.Driver{
+	"hcl": pulexec.NewDriver,
+	"pcl": pulexec.NewPCLDriver,
+}
+
+// RunCase loads testdata/cases/<caseName>/ under testdataDir, a program in
+// the language from, runs `pulumi up` on it, and applies the Case's
+// assertions. A case directory containing only numbered stage subdirs (0/,
+// 1/, ...) applies one file set per subdir in order; assertions run after the
+// last apply.
 //
-// RunCase then converts each stage HCL -> PCL -> HCL with `pulumi convert`
-// and compares both results against the golden files in
+// RunCase then converts each stage to the language to and back with `pulumi
+// convert`, and compares both results against the golden files in
 // testdata/roundtrip/<caseName>/[<stage>/]{pcl,hcl}/. If PULUMI_ACCEPT is
-// truthy, it writes the golden files instead. RunCase runs the PCL stages on a
-// new stack and applies the Case's assertions again. If the round-tripped HCL
-// differs from the source, RunCase also runs the round-tripped HCL stages on a
-// new stack and applies the Case's assertions again.
-func RunCase(t *testing.T, caseName string, c Case) {
+// truthy, it writes the golden files instead. RunCase runs the converted
+// stages on a new stack and applies the Case's assertions again. If the
+// round-tripped stages differ from the source, RunCase also runs them on a new
+// stack and applies the Case's assertions again.
+func RunCase(t *testing.T, testdataDir, caseName, from, to string, c Case) {
 	t.Helper()
 
-	_, callerFile, _, _ := runtime.Caller(1)
-	testdataDir := filepath.Join(filepath.Dir(callerFile), "testdata")
 	stages, staged, err := testutil.LoadStages(filepath.Join(testdataDir, "cases", caseName))
 	require.NoError(t, err)
 
-	driver := run(t, c, stages, pulexec.NewDriver)
+	driver := run(t, c, stages, newDrivers[from])
 
 	t.Run("round-trip", func(t *testing.T) {
 		if c.SkipRoundTrip != "" {
 			t.Skip(c.SkipRoundTrip)
 		}
 		goldenDir := filepath.Join(testdataDir, "roundtrip", caseName)
-		pcls := make([]map[string]string, len(stages))
+		converted := make([]map[string]string, len(stages))
 		roundTripped := make([]map[string]string, len(stages))
 		identical := true
 		for i, files := range stages {
@@ -127,27 +129,27 @@ func RunCase(t *testing.T, caseName string, c Case) {
 			if staged {
 				stageDir = filepath.Join(goldenDir, strconv.Itoa(i))
 			}
-			pcl, err := driver.Convert(t, files, "hcl", "pcl")
-			require.NoErrorf(t, err, "stage %d: HCL -> PCL", i)
-			assertGoldenDir(t, filepath.Join(stageDir, "pcl"), pcl)
-			hcl, err := driver.Convert(t, pcl, "pcl", "hcl")
-			require.NoErrorf(t, err, "stage %d: PCL -> HCL", i)
-			assertGoldenDir(t, filepath.Join(stageDir, "hcl"), hcl)
-			pcls[i] = pcl
-			roundTripped[i] = hcl
-			identical = identical && maps.Equal(files, hcl)
+			out, err := driver.Convert(t, files, from, to)
+			require.NoErrorf(t, err, "stage %d: %s -> %s", i, from, to)
+			assertGoldenDir(t, filepath.Join(stageDir, to), out)
+			back, err := driver.Convert(t, out, to, from)
+			require.NoErrorf(t, err, "stage %d: %s -> %s", i, to, from)
+			assertGoldenDir(t, filepath.Join(stageDir, from), back)
+			converted[i] = out
+			roundTripped[i] = back
+			identical = identical && maps.Equal(files, back)
 		}
-		t.Run("pcl", func(t *testing.T) {
-			if c.SkipRunPCL != "" {
-				t.Skip(c.SkipRunPCL)
+		t.Run(to, func(t *testing.T) {
+			if c.SkipRunConverted != "" {
+				t.Skip(c.SkipRunConverted)
 			}
-			run(t, c, pcls, pulexec.NewPCLDriver)
+			run(t, c, converted, newDrivers[to])
 		})
-		t.Run("hcl", func(t *testing.T) {
+		t.Run(from, func(t *testing.T) {
 			if identical {
-				t.Skip("The round-tripped HCL is identical to the source.")
+				t.Skip("The round-tripped program is identical to the source.")
 			}
-			run(t, c, roundTripped, pulexec.NewDriver)
+			run(t, c, roundTripped, newDrivers[from])
 		})
 	})
 }

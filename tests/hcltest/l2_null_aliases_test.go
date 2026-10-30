@@ -12,28 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// TestL2OperatorPrecedence covers parentheses that change the value of an
-// expression. PCL keeps no parentheses, so the round trip must write them
-// back where HCL precedence needs them.
-func TestL2OperatorPrecedence(t *testing.T) {
+func TestL2NullAliases(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_operator_precedence", putest.Case{
-		ExpectedOutputs: map[string]string{
-			"sum_times":         "9",
-			"minus_minus":       "9",
-			"not_and":           "true",
-			"negate_sum":        "-3",
-			"eq_eq":             "true",
-			"conditional_index": "1",
-			"conditional_cond":  "no",
+	hcltest.RunCase(t, "l2_null_aliases", hcltest.Case{
+		SkipRunConverted: "TODO[https://github.com/pulumi/pulumi-hcl/issues/711]: HCL -> PCL writes `tolist` as `notImplemented`.",
+		Providers: []hcltest.Provider{
+			{Name: "simple", Factory: providers.SimpleProvider},
 		},
 	})
 }

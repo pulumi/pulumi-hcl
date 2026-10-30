@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	gp "github.com/pulumi/pulumi-go-provider"
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 )
@@ -91,8 +91,8 @@ func rocProvider() gp.Provider {
 // resource and a change to `value` does not.
 func TestL2SchemaReplaceOnChanges(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_schema_replace_on_changes", putest.Case{
-		Providers:       []putest.Provider{{Name: "roc", Native: rocProvider}},
+	hcltest.RunCase(t, "l2_schema_replace_on_changes", hcltest.Case{
+		Providers:       []hcltest.Provider{{Name: "roc", Native: rocProvider}},
 		ExpectedOutputs: map[string]string{"id": "id-1"},
 		AssertState: func(t *testing.T, resources []apitype.ResourceV3) {
 			assertResources(t, resources, map[string]wantResource{

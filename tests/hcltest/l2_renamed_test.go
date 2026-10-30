@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 )
@@ -74,9 +74,9 @@ func renamedProviderCustomize(_ *testing.T, info *tfbridge.ProviderInfo) {
 }
 
 // renamedCase is the standard provider list for these tests.
-func renamedCase(expectedOutputs map[string]string) putest.Case {
-	return putest.Case{
-		Providers: []putest.Provider{
+func renamedCase(expectedOutputs map[string]string) hcltest.Case {
+	return hcltest.Case{
+		Providers: []hcltest.Provider{
 			{
 				Name:      "renamed",
 				Factory:   providers.RenamedProvider,
@@ -99,7 +99,7 @@ func renamedCase(expectedOutputs map[string]string) putest.Case {
 // `arn` to confirm default-cased outputs still work alongside renames.
 func TestL2RenamedOutputs(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_outputs", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_outputs", renamedCase(map[string]string{
 		"fn_name": "alpha",
 		"arn":     "arn:test:alpha",
 		"window":  "5",
@@ -111,7 +111,7 @@ func TestL2RenamedOutputs(t *testing.T) {
 // surfaced under the TF name even though the bridge renames it to `source`.
 func TestL2RenamedDataSourceOutputs(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_data_source_outputs", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_data_source_outputs", renamedCase(map[string]string{
 		"matched": "hit:lambda:",
 		"from":    "registry",
 	}))
@@ -128,7 +128,7 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 		"endpoint_seen": "https://example.test/api",
 		"retries_seen":  "3",
 	})
-	putest.RunCase(t, "l2_renamed_provider_config", c)
+	hcltest.RunCase(t, "l2_renamed_provider_config", c)
 }
 
 // TestL2RenamedDataSourceInputs covers data-source nested-block input renames:
@@ -137,7 +137,7 @@ func TestL2RenamedProviderConfig(t *testing.T) {
 // when the renamed nested input was forwarded through the bridge.
 func TestL2RenamedDataSourceInputs(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_data_source_inputs", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_data_source_inputs", renamedCase(map[string]string{
 		"matched": "hit:lambda:trigger",
 	}))
 }
@@ -148,7 +148,7 @@ func TestL2RenamedDataSourceInputs(t *testing.T) {
 // `result[0].tag` traversal resolves.
 func TestL2RenamedDataSourceNestedOutputs(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_data_source_nested_outputs", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_data_source_nested_outputs", renamedCase(map[string]string{
 		"tag": "tag-for-lambda",
 	}))
 }
@@ -157,7 +157,7 @@ func TestL2RenamedDataSourceNestedOutputs(t *testing.T) {
 // resource and on a data source.
 func TestL2RenamedParentheses(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_parentheses", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_parentheses", renamedCase(map[string]string{
 		"fn_name": "alpha",
 		"window":  "6",
 		"nested":  "alpha",
@@ -169,7 +169,7 @@ func TestL2RenamedParentheses(t *testing.T) {
 // the bridge flattens to one object.
 func TestL2RenamedMaxItemsOneSplat(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_max_items_one_splat", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_max_items_one_splat", renamedCase(map[string]string{
 		"splat": "[5]",
 	}))
 }
@@ -181,8 +181,8 @@ func TestL2RenamedMaxItemsOneSplatUnset(t *testing.T) {
 	c := renamedCase(map[string]string{
 		"splat": "[]",
 	})
-	c.SkipRunPCL = "TODO[https://github.com/pulumi/pulumi/issues/25328]: A PCL splat over null fails."
-	putest.RunCase(t, "l2_renamed_max_items_one_splat_unset", c)
+	c.SkipRunConverted = "TODO[https://github.com/pulumi/pulumi/issues/25328]: A PCL splat over null fails."
+	hcltest.RunCase(t, "l2_renamed_max_items_one_splat_unset", c)
 }
 
 // TestL2RenamedRangedDataSource covers renamed references into a ranged data
@@ -190,7 +190,7 @@ func TestL2RenamedMaxItemsOneSplatUnset(t *testing.T) {
 // key.
 func TestL2RenamedRangedDataSource(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_ranged_data_source", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_ranged_data_source", renamedCase(map[string]string{
 		"kind": "trigger",
 		"arn":  "arn:test:trigger",
 	}))
@@ -202,7 +202,7 @@ func TestL2RenamedRangedDataSource(t *testing.T) {
 // whole block, because its keys are TF names in HCL and Pulumi names in PCL.
 func TestL2RenamedMaxItemsOneWhole(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_renamed_max_items_one_whole", renamedCase(map[string]string{
+	hcltest.RunCase(t, "l2_renamed_max_items_one_whole", renamedCase(map[string]string{
 		"set_len":       "1",
 		"unset_len":     "0",
 		"unset_is_null": "false",

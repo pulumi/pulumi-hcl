@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	gp "github.com/pulumi/pulumi-go-provider"
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
@@ -139,8 +139,8 @@ func TestL2NonIdentifierTypeNames(t *testing.T) {
 	t.Parallel()
 
 	odd := &oddProvider{}
-	putest.RunCase(t, "l2_non_identifier_type_names", putest.Case{
-		Providers:       []putest.Provider{{Name: "odd", Native: odd.build}},
+	hcltest.RunCase(t, "l2_non_identifier_type_names", hcltest.Case{
+		Providers:       []hcltest.Provider{{Name: "odd", Native: odd.build}},
 		ExpectedOutputs: map[string]string{"value": "c"},
 		AssertState: func(t *testing.T, resources []apitype.ResourceV3) {
 			odd.assertInvokes(t, map[string]any{"value": "c"})
@@ -168,8 +168,8 @@ func TestL2NonIdentifierPropertyNames(t *testing.T) {
 	}
 
 	odd := &oddProvider{}
-	putest.RunCase(t, "l2_non_identifier_property_names", putest.Case{
-		Providers:       []putest.Provider{{Name: "odd", Native: odd.build}},
+	hcltest.RunCase(t, "l2_non_identifier_property_names", hcltest.Case{
+		Providers:       []hcltest.Provider{{Name: "odd", Native: odd.build}},
 		ExpectedOutputs: outputs,
 		AssertState: func(t *testing.T, resources []apitype.ResourceV3) {
 			odd.assertInvokes(t, inputs)
@@ -189,8 +189,8 @@ func TestL2NonIdentifierTypeWarning(t *testing.T) {
 	t.Parallel()
 
 	odd := &oddProvider{}
-	putest.RunCase(t, "l2_non_identifier_type_warning", putest.Case{
-		Providers:       []putest.Provider{{Name: "odd", Native: odd.build}},
+	hcltest.RunCase(t, "l2_non_identifier_type_warning", hcltest.Case{
+		Providers:       []hcltest.Provider{{Name: "odd", Native: odd.build}},
 		ExpectedOutputs: map[string]string{"value": "ok"},
 		AssertOutput: func(t *testing.T, output string) {
 			assert.Equal(t, 1, strings.Count(diagnosticsSection(t, output),

@@ -12,23 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package pcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/pcltest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-// TestL2IgnoreChangesNestedBlock writes `ignore_changes` into a MaxItems=1
-// block as `settings[0].mode`. The bridge flattens the block to one object,
-// so PCL must name the path `settings.mode`, and HCL must get the [0] back.
-// Stage 1 changes only the ignored attribute, so `mode` stays "a".
-func TestL2IgnoreChangesNestedBlock(t *testing.T) {
+// TestL2MaxItemsOneRef covers a PCL reference into a TypeList MaxItems=1
+// block, which HCL reads with [0].
+func TestL2MaxItemsOneRef(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_ignore_changes_nested_block", putest.Case{
-		Providers: []putest.Provider{
+	pcltest.RunCase(t, "l2_max_items_one_ref", pcltest.Case{
+		Providers: []pcltest.Provider{
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
 		ExpectedOutputs: map[string]string{

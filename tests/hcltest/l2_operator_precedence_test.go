@@ -12,24 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
-	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 )
 
-// TestL2MapKeyAttribute writes a map key as an attribute (`tags.foo_bar`) in
-// `ignore_changes` and in a reference. A map key is data, not a property
-// name, so the round trip must keep it as `foo_bar`.
-func TestL2MapKeyAttribute(t *testing.T) {
+// TestL2OperatorPrecedence covers parentheses that change the value of an
+// expression. PCL keeps no parentheses, so the round trip must write them
+// back where HCL precedence needs them.
+func TestL2OperatorPrecedence(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_map_key_attribute", putest.Case{
-		Providers: []putest.Provider{
-			{Name: "collections", Factory: providers.CollectionsProvider},
+	hcltest.RunCase(t, "l2_operator_precedence", hcltest.Case{
+		ExpectedOutputs: map[string]string{
+			"sum_times":         "9",
+			"minus_minus":       "9",
+			"not_and":           "true",
+			"negate_sum":        "-3",
+			"eq_eq":             "true",
+			"conditional_index": "1",
+			"conditional_cond":  "no",
 		},
-		ExpectedOutputs: map[string]string{"foo_bar": "x"},
 	})
 }

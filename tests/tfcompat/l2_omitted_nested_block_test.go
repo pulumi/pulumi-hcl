@@ -28,7 +28,7 @@ import (
 // deploy.
 func TestL2OmittedNestedBlock(t *testing.T) {
 	t.Parallel()
-	// Correct behavior pinned in tests/putest/l2_block_projection_test.go.
+	// Correct behavior pinned in tests/hcltest/l2_block_projection_test.go.
 	t.Skip("TODO[https://github.com/pulumi/pulumi-hcl/issues/508]: dynamic bridge reads the absent nested block as null, not []")
 	tfcompat.RunCase(t, "l2_omitted_nested_block", tfcompat.Case{
 		Providers: []tfcompat.Provider{

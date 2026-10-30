@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	gp "github.com/pulumi/pulumi-go-provider"
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
@@ -80,8 +80,8 @@ func unionProvider() gp.Provider {
 // TODO[https://github.com/pulumi/pulumi/pull/24337]: This test can be replaced by a conformance test.
 func TestL2UnionDiscriminatorSensitive(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_union_discriminator_sensitive", putest.Case{
-		Providers: []putest.Provider{{Name: "union", Native: unionProvider}},
+	hcltest.RunCase(t, "l2_union_discriminator_sensitive", hcltest.Case{
+		Providers: []hcltest.Provider{{Name: "union", Native: unionProvider}},
 	})
 }
 
@@ -92,7 +92,7 @@ func TestL2UnionDiscriminatorSensitive(t *testing.T) {
 // TODO[https://github.com/pulumi/pulumi/pull/24337]: This test can be replaced by a conformance test.
 func TestL2UnionDiscriminatorUnknown(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_union_discriminator_unknown", putest.Case{
-		Providers: []putest.Provider{{Name: "union", Native: unionProvider}},
+	hcltest.RunCase(t, "l2_union_discriminator_unknown", hcltest.Case{
+		Providers: []hcltest.Provider{{Name: "union", Native: unionProvider}},
 	})
 }

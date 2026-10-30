@@ -25,7 +25,7 @@ import (
 // word (no underscore) — e.g. `hashicorp/external` exposing `data "external"`,
 // or `hashicorp/http` exposing `data "http"` — resolve through the dynamic
 // bridge without being rejected as malformed tokens. The hand-renamed
-// body-mapping variant lives in tests/putest, which supports Customize.
+// body-mapping variant lives in tests/hcltest, which supports Customize.
 func TestL2SingleSegmentToken(t *testing.T) {
 	t.Parallel()
 	tfcompat.RunCase(t, "l2_single_segment_token", tfcompat.Case{

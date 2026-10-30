@@ -12,21 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package putest_test
+package hcltest_test
 
 import (
 	"testing"
 
-	"github.com/pulumi/pulumi-hcl/tests/testutil/putest"
+	"github.com/pulumi/pulumi-hcl/tests/testutil/hcltest"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/tfcompat/providers"
 )
 
-func TestL2NullAliases(t *testing.T) {
+// TestL2MapKeyAttribute writes a map key as an attribute (`tags.foo_bar`) in
+// `ignore_changes` and in a reference. A map key is data, not a property
+// name, so the round trip must keep it as `foo_bar`.
+func TestL2MapKeyAttribute(t *testing.T) {
 	t.Parallel()
-	putest.RunCase(t, "l2_null_aliases", putest.Case{
-		SkipRunPCL: "TODO[https://github.com/pulumi/pulumi-hcl/issues/711]: HCL -> PCL writes `tolist` as `notImplemented`.",
-		Providers: []putest.Provider{
-			{Name: "simple", Factory: providers.SimpleProvider},
+	hcltest.RunCase(t, "l2_map_key_attribute", hcltest.Case{
+		Providers: []hcltest.Provider{
+			{Name: "collections", Factory: providers.CollectionsProvider},
 		},
+		ExpectedOutputs: map[string]string{"foo_bar": "x"},
 	})
 }
