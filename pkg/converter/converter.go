@@ -1188,6 +1188,14 @@ func (ft *fileTransformer) transformTypedExpr(
 				return hclwrite.TokensForFunctionCall("invoke", args...)
 			}
 		}
+		// one() of a MaxItems=1 field reads the one element or null that the
+		// bridge flattens the field to. If HCL reads the unset field as null,
+		// one() fails on it, so that call keeps its list form.
+		if e.Name == "one" && len(e.Args) == 1 {
+			if tokens, block := ft.flattenedRef(e.Args[0]); block != nil && !transform.UnsetSingularIsNull(block) {
+				return tokens
+			}
+		}
 		pclName := transformFunctionName(e.Name)
 		if !pclSupportedFunctions[pclName] {
 			r := e.Range()
@@ -1370,14 +1378,36 @@ func (ft *fileTransformer) transformIndexExpr(e *hclsyntax.IndexExpr) hclwrite.T
 // (source.attr...) to PCL tokens. The source is transformed recursively, then
 // the trailing traversal steps are appended with schema-aware name mapping.
 func (ft *fileTransformer) transformRelativeTraversal(e *hclsyntax.RelativeTraversalExpr) hclwrite.Tokens {
-	tokens := ft.transformExpr(e.Source)
-	props, mapping := ft.relativeTraversalSourceProps(e.Source)
-	converted, block := mapSteps(e.Traversal, props, mapping)
-	tokens = append(tokens, hclwrite.TokensForTraversal(converted)...)
+	tokens, block := ft.transformRelativeTraversalRef(e)
 	if block != nil {
 		return blockListTokens(block, tokens)
 	}
 	return tokens
+}
+
+// transformRelativeTraversalRef converts an HCL relative traversal expression
+// to PCL tokens. block is as for [schemaAwareTraversalAttrs].
+func (ft *fileTransformer) transformRelativeTraversalRef(
+	e *hclsyntax.RelativeTraversalExpr,
+) (hclwrite.Tokens, *bridge.FieldMapping) {
+	tokens := ft.transformExpr(e.Source)
+	props, mapping := ft.relativeTraversalSourceProps(e.Source)
+	converted, block := mapSteps(e.Traversal, props, mapping)
+	return append(tokens, hclwrite.TokensForTraversal(converted)...), block
+}
+
+// flattenedRef converts expr to PCL tokens if expr is a traversal that ends on
+// a MaxItems=1 field. The tokens are the one element or null that the bridge
+// flattens the field to.
+func (ft *fileTransformer) flattenedRef(expr hclsyntax.Expression) (hclwrite.Tokens, *bridge.FieldMapping) {
+	switch e := expr.(type) {
+	case *hclsyntax.ScopeTraversalExpr:
+		return ft.transformTraversalRef(e)
+	case *hclsyntax.RelativeTraversalExpr:
+		return ft.transformRelativeTraversalRef(e)
+	default:
+		return nil, nil
+	}
 }
 
 // relativeTraversalSourceProps returns the schema properties of the value

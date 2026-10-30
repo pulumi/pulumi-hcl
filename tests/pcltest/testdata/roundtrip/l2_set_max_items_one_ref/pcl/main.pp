@@ -7,6 +7,6 @@ resource "set" "blocky:index/single:Single" {
 }
 
 output "label" {
-  value = singleOrNone((set.opt == null ? [] : [set.opt])).label
+  value = set.opt.label
 }
 
