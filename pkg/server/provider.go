@@ -18,15 +18,14 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/blang/semver"
 	p "github.com/pulumi/pulumi-go-provider"
 	"github.com/pulumi/pulumi-hcl/pkg/grpcerr"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
-	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -43,22 +42,17 @@ import (
 // NewLocalProvider serves the HCL module package at modulePath as a source
 // MLC: the module provider born parameterized by the local package — one
 // component per consumable directory — reading provider descriptors from the
-// package's own sdks folder. addr is the engine's schema-loader target, which
-// also serves the mapper.
+// package's own sdks folder. addr is the engine's schema-loader target.
+//
+// Typing a component needs the bridge mappings of the TF providers it uses
+// internally. RunPlugin carries no mapper target, so the component schemas are
+// built by the first GetSchema or Construct, after the handshake supplies one.
 func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.ResourceProviderServer, error) {
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
 	if err != nil {
 		return nil, fmt.Errorf("unable to acquire schema loader: %w", err)
 	}
-
-	// The schema-loader target also serves the mapper service, so a component
-	// can resolve the bridge mappings for the TF providers it uses internally.
-	mapperClient, err := convert.NewMapperClient(addr)
-	if err != nil {
-		return nil, fmt.Errorf("unable to acquire mapper: %w", err)
-	}
-	providerInfoSource := bridge.NewCache(bridge.NewMapperSource(mapperClient))
 
 	comps, resolvedVersion, err := localComponents(ctx, loader, modulePath)
 	if err != nil {
@@ -70,24 +64,57 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 	}
 
 	m := &moduleProvider{
-		version:            version.String(),
-		moduleLoader:       loader,
-		schemaLoader:       pkgLoader,
-		providerInfoSource: providerInfoSource,
-	}
-	components, spec, err := buildComponents(ctx, comps, pkgName, rootToken, version,
-		m.componentBinderFactory(loader))
-	if err != nil {
-		return nil, err
-	}
-
-	m.param = &parameterizedModule{
-		spec:       spec,
-		components: components,
-		loader:     loader,
-		name:       pkgName,
+		version:      version.String(),
+		moduleLoader: loader,
+		schemaLoader: pkgLoader,
+		local: &localPackage{
+			comps:     comps,
+			name:      pkgName,
+			rootToken: rootToken,
+			version:   version,
+		},
 	}
 	return p.RawServer(pkgName, version.String(), m.asProvider())(nil)
+}
+
+// localPackage is a local package that NewLocalProvider loaded. bindLocal
+// builds its component schemas into the provider's param once.
+type localPackage struct {
+	comps     []loadedComponent
+	name      string
+	rootToken tokens.Type
+	version   semver.Version
+
+	build sync.Once
+	err   error
+}
+
+// bindLocal builds the component schemas of the local package on its first
+// call, typing them through the mapper the handshake supplied, and returns the
+// build's error on every call. rpc names the calling RPC for the error that a
+// call before the handshake gets.
+func (m *moduleProvider) bindLocal(ctx context.Context, rpc string) error {
+	if m.providerInfoSource == nil {
+		return fmt.Errorf("%s called before a successful handshake", rpc)
+	}
+	m.local.build.Do(func() {
+		// The build is shared by every caller, so the first caller's
+		// cancellation must not fail it for the others.
+		ctx := context.WithoutCancel(ctx)
+		components, spec, err := buildComponents(ctx, m.local.comps, m.local.name, m.local.rootToken,
+			m.local.version, m.componentBinderFactory(m.moduleLoader))
+		if err != nil {
+			m.local.err = err
+			return
+		}
+		m.param = &parameterizedModule{
+			spec:       spec,
+			components: components,
+			loader:     m.moduleLoader,
+			name:       m.local.name,
+		}
+	})
+	return m.local.err
 }
 
 // localComponents loads the components of the module package at modulePath

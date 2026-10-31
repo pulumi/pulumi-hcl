@@ -63,6 +63,10 @@ type moduleProvider struct {
 	providerInfoSource bridge.ProviderInfoSource
 	resolver           pulumirpc.PackageResolverClient
 
+	// local is the package a locally-born provider (NewLocalProvider) serves,
+	// until the handshake builds its component schemas into param.
+	local *localPackage
+
 	// param is non-nil once the provider has been parameterized by a specific
 	// module source (via Parameterize). It makes the provider serve that module's
 	// typed component schema instead of the generic hcl:index:Module.
@@ -106,15 +110,27 @@ func (m *moduleProvider) asProvider() p.Provider {
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
-// engine exposes. All three are required for the dynamic provider; a
-// locally-born provider (NewLocalProvider) already carries its services, so for
-// it the handshake only negotiates capabilities.
+// engine exposes. All three are required for the dynamic provider. A
+// locally-born provider (NewLocalProvider) already carries its schema loader
+// and needs no resolver, so for it the handshake takes only the mapper, which
+// bindLocal later types the components through.
 func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) (p.HandshakeResponse, error) {
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
 			grpc.WithTransportCredentials(insecure.NewCredentials())); err == nil {
 			m.engine = pulumirpc.NewEngineClient(engineConn)
 		}
+	}
+	if m.local != nil {
+		if req.MapperAddress == nil || *req.MapperAddress == "" {
+			return p.HandshakeResponse{}, fmt.Errorf("no mapper target received during handshake")
+		}
+		mapperClient, err := convert.NewMapperClient(*req.MapperAddress)
+		if err != nil {
+			return p.HandshakeResponse{}, fmt.Errorf("dial mapper at %s: %w", *req.MapperAddress, err)
+		}
+		m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
+		return p.HandshakeResponse{}, nil
 	}
 	if m.param != nil {
 		return p.HandshakeResponse{}, nil
@@ -155,7 +171,12 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 // has been parameterized — the parameterized package's typed component schemas.
 // A bundle-backed parameterization carries its Value so a generated SDK can
 // re-parameterize; a locally-born provider has no bundle.
-func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSchemaResponse, error) {
+func (m *moduleProvider) getSchema(ctx context.Context, _ p.GetSchemaRequest) (p.GetSchemaResponse, error) {
+	if m.local != nil {
+		if err := m.bindLocal(ctx, "GetSchema"); err != nil {
+			return p.GetSchemaResponse{}, err
+		}
+	}
 	spec := moduleResourceSchema(m.version)
 	if m.param != nil {
 		spec = m.param.spec
@@ -176,7 +197,8 @@ func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSc
 // cancel removes any unpacked module bundle when the provider shuts down.
 func (m *moduleProvider) cancel(context.Context) error {
 	m.hooks.close()
-	if m.param != nil && m.param.tempDir != "" {
+	// A local provider has no bundle, and its param may still be building.
+	if m.local == nil && m.param != nil && m.param.tempDir != "" {
 		return os.RemoveAll(m.param.tempDir)
 	}
 	return nil
@@ -187,6 +209,11 @@ func (m *moduleProvider) cancel(context.Context) error {
 // under the component's single "outputs" property.
 func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
 	logging.V(5).Infof("Construct: type=%s name=%s", req.Urn.Type(), req.Urn.Name())
+	if m.local != nil {
+		if err := m.bindLocal(ctx, "construct"); err != nil {
+			return p.ConstructResponse{}, err
+		}
+	}
 	if m.param != nil {
 		return m.constructParameterized(ctx, req)
 	}

@@ -11,9 +11,6 @@
         "inputOne": {
           "type": "string"
         },
-        "resourceId": {
-          "type": "string"
-        },
         "result": {
           "type": "string"
         },
@@ -23,7 +20,6 @@
       },
       "type": "object",
       "required": [
-        "resourceId",
         "result"
       ]
     },
