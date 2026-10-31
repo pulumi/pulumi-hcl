@@ -1,0 +1,19 @@
+{
+  "name": "blocks",
+  "version": "0.0.0-dev",
+  "config": {},
+  "resources": {
+    "blocks:index:Module": {
+      "properties": {
+        "summary": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "required": [
+        "summary"
+      ],
+      "isComponent": true
+    }
+  }
+}

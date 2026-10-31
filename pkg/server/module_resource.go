@@ -106,9 +106,7 @@ func (m *moduleProvider) asProvider() p.Provider {
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
-// engine exposes. All three are required for the dynamic provider; a
-// locally-born provider (NewLocalProvider) already carries its services, so for
-// it the handshake only negotiates capabilities.
+// engine exposes. All three are required.
 func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) (p.HandshakeResponse, error) {
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
@@ -151,11 +149,14 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 	return p.HandshakeResponse{}, nil
 }
 
+// handshaken reports whether a handshake has supplied the engine's services.
+func (m *moduleProvider) handshaken() bool { return m.providerInfoSource != nil }
+
 // getSchema returns the static hcl:index:Module schema, or — once the provider
 // has been parameterized — the parameterized package's typed component schemas.
 // A bundle-backed parameterization carries its Value so a generated SDK can
 // re-parameterize; a locally-born provider has no bundle.
-func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSchemaResponse, error) {
+func (m *moduleProvider) getSchema(ctx context.Context, _ p.GetSchemaRequest) (p.GetSchemaResponse, error) {
 	spec := moduleResourceSchema(m.version)
 	if m.param != nil {
 		spec = m.param.spec

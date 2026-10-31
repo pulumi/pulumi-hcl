@@ -347,7 +347,9 @@ resource "random_uuid4" "id" {}
 `,
 	}))
 
-	_, err := NewLocalProvider(t.Context(), dir, w.loaderAddr)
+	prov, err := newLocalProvider(t, dir, w.loaderAddr)
+	require.NoError(t, err)
+	_, err = prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})
 	assert.EqualError(t, err,
 		`generating schema for the module root: resolving resource "random_uuid4.id": not found; did you mean "random_uuid"?`)
 }
