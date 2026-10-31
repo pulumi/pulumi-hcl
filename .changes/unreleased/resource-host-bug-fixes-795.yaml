@@ -1,5 +1,5 @@
 kind: bug-fixes
-body: Apply the bridge mappings of Terraform providers in local HCL components, such as `MaxItems: 1` blocks
+body: "Apply the bridge mappings of Terraform providers in local HCL components, such as `MaxItems: 1` blocks"
 time: 2026-10-31T12:00:00.000000+01:00
 custom:
     Component: resource-host
