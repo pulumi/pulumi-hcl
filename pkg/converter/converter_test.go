@@ -1058,6 +1058,87 @@ component "child" "./child" {
 	assert.Equal(t, expected, string(out.Bytes()))
 }
 
+// TestEjectSameResourceNameAcrossTypes checks that two resources of different HCL
+// types sharing a logical name (valid in HCL, where names are scoped per type) get
+// distinct PCL names, with references following the right one.
+func TestEjectSameResourceNameAcrossTypes(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Thing": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+			"test:index:Single": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"x": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+resource "test_thing" "r" {
+  value = "a"
+}
+
+resource "test_single" "r" {
+  value = "b"
+}
+
+resource "test_thing" "other" {
+  value = test_single.r.x
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	expected := `resource "r" "test:index:Thing" {
+  value = "a"
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+resource "r_" "test:index:Single" {
+  __logicalName = "r"
+  value         = "b"
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+resource "other" "test:index:Thing" {
+  value = r_.x
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+`
+	assert.Equal(t, expected, string(out.Bytes()))
+}
+
 // TestEjectTopLevelOptionNamesAreInputs checks that the converter reserves
 // the same top-level names as the parser: an attribute named after an option
 // that lives in the `pulumi` block (`version`, `protect`, ...) is an input

@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Give resources of different types that share a logical name distinct PCL names instead of failing with `already declared`
+time: 2026-10-31T17:00:00.000000+01:00
+custom:
+    Component: converter
+    PR: "782"

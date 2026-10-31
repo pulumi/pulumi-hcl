@@ -248,6 +248,12 @@ func (ft *fileTransformer) defaultProviderRef(hclType string, body *hclsyntax.Bo
 	return hclwrite.TokensForIdentifier(pkg)
 }
 
+// resourceReference identifies a resource block by HCL type and logical name.
+type resourceReference struct {
+	hclType string
+	name    string
+}
+
 // dataReference identifies a data block by HCL type and logical name.
 type dataReference struct {
 	hclType string
@@ -286,6 +292,9 @@ type fileTransformer struct {
 	// name that could not be resolved so it falls back to notImplemented.
 	providerFunctions map[string]*schema.Function
 	nameRewrites      map[string]string // logical name → sanitized PCL identifier (only for invalid names)
+	// resourceRewrites gives a resource its own PCL name when its logical name
+	// is already taken: HCL scopes resource names per type, PCL does not.
+	resourceRewrites map[resourceReference]string
 	// dataPlans records, for each data block, if its invoke is inlined or
 	// hoisted to a local.
 	dataPlans map[dataReference]*dataPlan
@@ -341,6 +350,7 @@ func newProjectTransformer(
 		resourceMappings:  make(map[string]*bridge.BodyMapping),
 		functionMappings:  make(map[string]*bridge.BodyMapping),
 		nameRewrites:      make(map[string]string),
+		resourceRewrites:  make(map[resourceReference]string),
 		functionSchemas:   make(map[string]*schema.Function),
 		providerFunctions: make(map[string]*schema.Function),
 		providerAliases:   make(map[string]bool),
@@ -527,6 +537,51 @@ func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
 			ft.nameRewrites[name] = sanitized
 		}
 	}
+	ft.computeResourceRewrites(bodies, usedNames)
+}
+
+// computeResourceRewrites gives resources that would share a PCL name with
+// another block a distinct one. HCL scopes resource names per type, so
+// `a_thing.r` and `a_single.r` are legal, but PCL declares every resource,
+// config, and component in one namespace. Non-resource blocks keep their name;
+// of the resources, the first to claim a name keeps it and later ones get a
+// trailing "_" (the `__logicalName` attribute preserves the Pulumi name).
+func (ft *fileTransformer) computeResourceRewrites(bodies []*hclsyntax.Body, usedNames map[string]bool) {
+	claimed := make(map[string]bool)
+	for _, body := range bodies {
+		for _, block := range body.Blocks {
+			if block.Type == "output" || block.Type == "resource" {
+				continue
+			}
+			if name := blockLogicalName(block); name != "" {
+				claimed[ft.pclName(name)] = true
+			}
+		}
+	}
+	for _, body := range bodies {
+		for _, block := range body.Blocks {
+			if block.Type != "resource" || len(block.Labels) < 2 {
+				continue
+			}
+			name := ft.pclName(block.Labels[1])
+			if claimed[name] {
+				for claimed[name] || usedNames[name] {
+					name += "_"
+				}
+				ft.resourceRewrites[resourceReference{block.Labels[0], block.Labels[1]}] = name
+			}
+			claimed[name] = true
+		}
+	}
+}
+
+// pclName returns the PCL identifier for a logical name, ignoring any
+// per-resource rewrite.
+func (ft *fileTransformer) pclName(logicalName string) string {
+	if rewritten, ok := ft.nameRewrites[logicalName]; ok {
+		return rewritten
+	}
+	return logicalName
 }
 
 // sanitizeIdentifier converts a string into a valid HCL identifier by replacing
@@ -788,8 +843,8 @@ func (ft *fileTransformer) emitFile(
 			}
 			hclType := block.Labels[0]
 			logicalName := block.Labels[1]
-			pclName := logicalName
-			if rewritten, ok := ft.nameRewrites[logicalName]; ok {
+			pclName := ft.pclName(logicalName)
+			if rewritten, ok := ft.resourceRewrites[resourceReference{hclType, logicalName}]; ok {
 				pclName = rewritten
 			}
 
@@ -1746,7 +1801,12 @@ func (ft *fileTransformer) transformTraversalRef(
 	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop"),
 	// and convert property attribute names from snake_case to camelCase.
 	if ft.knownHCLTypes[root] {
-		stripped := ft.rewriteTraversalRoot(stripRoot(e.Traversal))
+		stripped := stripRoot(e.Traversal)
+		if rewritten, ok := ft.resourceRewrites[resourceReference{root, stripped.RootName()}]; ok {
+			stripped = append(hcl.Traversal{hcl.TraverseRoot{Name: rewritten}}, stripped[1:]...)
+		} else {
+			stripped = ft.rewriteTraversalRoot(stripped)
+		}
 		// StackReference: <type>.<name>.outputs["key"] → getOutput(<name>, "key")
 		if len(stripped) == 3 {
 			logicalName, ok1 := stripped[0].(hcl.TraverseRoot)
