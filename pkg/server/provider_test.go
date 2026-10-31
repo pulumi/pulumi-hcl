@@ -40,7 +40,9 @@ func newLocalProvider(t *testing.T, dir, addr string) (pulumirpc.ResourceProvide
 	t.Helper()
 	prov, err := NewLocalProvider(t.Context(), dir)
 	require.NoError(t, err)
-	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{LoaderTarget: &addr, MapperTarget: &addr})
+	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{
+		LoaderTarget: &addr, MapperTarget: &addr, ResolverTarget: &addr,
+	})
 	return prov, err
 }
 
@@ -110,7 +112,7 @@ func TestNewLocalProviderRequiresMapper(t *testing.T) {
 	require.NoError(t, err)
 
 	addr := "127.0.0.1:1"
-	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{LoaderTarget: &addr})
+	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{LoaderTarget: &addr, ResolverTarget: &addr})
 	assert.EqualError(t, err, "no mapper target received during handshake")
 
 	_, err = prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})

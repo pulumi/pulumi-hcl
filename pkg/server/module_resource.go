@@ -110,8 +110,7 @@ func (m *moduleProvider) asProvider() p.Provider {
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
-// engine exposes. The loader and the mapper are required. The resolver is
-// required only by Parameterize, which checks for it.
+// engine exposes. All three are required.
 func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) (p.HandshakeResponse, error) {
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
@@ -128,6 +127,9 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 	if req.MapperAddress == nil || *req.MapperAddress == "" {
 		return p.HandshakeResponse{}, fmt.Errorf("no mapper target received during handshake")
 	}
+	if req.ResolverAddress == nil || *req.ResolverAddress == "" {
+		return p.HandshakeResponse{}, fmt.Errorf("no resolver target received during handshake")
+	}
 
 	schemaLoader, err := pulumiSchema.NewLoaderClient(*req.LoaderAddress)
 	if err != nil {
@@ -139,16 +141,14 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 		return p.HandshakeResponse{}, fmt.Errorf("dial mapper at %s: %w", *req.MapperAddress, err)
 	}
 
-	if req.ResolverAddress != nil && *req.ResolverAddress != "" {
-		resolverClient, err := NewPackageResolverClient(*req.ResolverAddress)
-		if err != nil {
-			return p.HandshakeResponse{}, fmt.Errorf("dial resolver at %s: %w", *req.ResolverAddress, err)
-		}
-		m.resolver = resolve.NewCache(resolverClient)
+	resolverClient, err := NewPackageResolverClient(*req.ResolverAddress)
+	if err != nil {
+		return p.HandshakeResponse{}, fmt.Errorf("dial resolver at %s: %w", *req.ResolverAddress, err)
 	}
 
 	m.schemaLoader = schemaLoader
 	m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
+	m.resolver = resolve.NewCache(resolverClient)
 
 	return p.HandshakeResponse{}, nil
 }
