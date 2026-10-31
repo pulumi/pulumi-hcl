@@ -110,27 +110,14 @@ func (m *moduleProvider) asProvider() p.Provider {
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
-// engine exposes. All three are required for the dynamic provider. A
-// locally-born provider (NewLocalProvider) already carries its schema loader
-// and needs no resolver, so for it the handshake takes only the mapper, which
-// bindLocal later types the components through.
+// engine exposes. The loader and the mapper are required. The resolver is
+// required only by Parameterize, which checks for it.
 func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) (p.HandshakeResponse, error) {
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
 			grpc.WithTransportCredentials(insecure.NewCredentials())); err == nil {
 			m.engine = pulumirpc.NewEngineClient(engineConn)
 		}
-	}
-	if m.local != nil {
-		if req.MapperAddress == nil || *req.MapperAddress == "" {
-			return p.HandshakeResponse{}, fmt.Errorf("no mapper target received during handshake")
-		}
-		mapperClient, err := convert.NewMapperClient(*req.MapperAddress)
-		if err != nil {
-			return p.HandshakeResponse{}, fmt.Errorf("dial mapper at %s: %w", *req.MapperAddress, err)
-		}
-		m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
-		return p.HandshakeResponse{}, nil
 	}
 	if m.param != nil {
 		return p.HandshakeResponse{}, nil
@@ -140,9 +127,6 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 	}
 	if req.MapperAddress == nil || *req.MapperAddress == "" {
 		return p.HandshakeResponse{}, fmt.Errorf("no mapper target received during handshake")
-	}
-	if req.ResolverAddress == nil || *req.ResolverAddress == "" {
-		return p.HandshakeResponse{}, fmt.Errorf("no resolver target received during handshake")
 	}
 
 	schemaLoader, err := pulumiSchema.NewLoaderClient(*req.LoaderAddress)
@@ -155,14 +139,16 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 		return p.HandshakeResponse{}, fmt.Errorf("dial mapper at %s: %w", *req.MapperAddress, err)
 	}
 
-	resolverClient, err := NewPackageResolverClient(*req.ResolverAddress)
-	if err != nil {
-		return p.HandshakeResponse{}, fmt.Errorf("dial resolver at %s: %w", *req.ResolverAddress, err)
+	if req.ResolverAddress != nil && *req.ResolverAddress != "" {
+		resolverClient, err := NewPackageResolverClient(*req.ResolverAddress)
+		if err != nil {
+			return p.HandshakeResponse{}, fmt.Errorf("dial resolver at %s: %w", *req.ResolverAddress, err)
+		}
+		m.resolver = resolve.NewCache(resolverClient)
 	}
 
 	m.schemaLoader = schemaLoader
 	m.providerInfoSource = bridge.NewCache(bridge.NewMapperSource(mapperClient))
-	m.resolver = resolve.NewCache(resolverClient)
 
 	return p.HandshakeResponse{}, nil
 }

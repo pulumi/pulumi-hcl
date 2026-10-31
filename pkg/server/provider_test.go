@@ -38,9 +38,9 @@ import (
 // with addr as the mapper target. It returns the handshake error.
 func newLocalProvider(t *testing.T, dir, addr string) (pulumirpc.ResourceProviderServer, error) {
 	t.Helper()
-	prov, err := NewLocalProvider(t.Context(), dir, addr)
+	prov, err := NewLocalProvider(t.Context(), dir)
 	require.NoError(t, err)
-	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{MapperTarget: &addr})
+	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{LoaderTarget: &addr, MapperTarget: &addr})
 	return prov, err
 }
 
@@ -106,10 +106,11 @@ func TestNewLocalProviderRequiresMapper(t *testing.T) {
 	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
 	require.NoError(t, err)
 
-	prov, err := NewLocalProvider(t.Context(), dir, "127.0.0.1:1")
+	prov, err := NewLocalProvider(t.Context(), dir)
 	require.NoError(t, err)
 
-	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{})
+	addr := "127.0.0.1:1"
+	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{LoaderTarget: &addr})
 	assert.EqualError(t, err, "no mapper target received during handshake")
 
 	_, err = prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})

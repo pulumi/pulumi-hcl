@@ -26,7 +26,6 @@ import (
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modules"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/run"
-	pulumiSchema "github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
@@ -42,18 +41,13 @@ import (
 // NewLocalProvider serves the HCL module package at modulePath as a source
 // MLC: the module provider born parameterized by the local package — one
 // component per consumable directory — reading provider descriptors from the
-// package's own sdks folder. addr is the engine's schema-loader target.
+// package's own sdks folder.
 //
-// Typing a component needs the bridge mappings of the TF providers it uses
-// internally. RunPlugin carries no mapper target, so the component schemas are
-// built by the first GetSchema or Construct, after the handshake supplies one.
-func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.ResourceProviderServer, error) {
+// Typing a component needs the schema loader and the bridge mappings of the TF
+// providers it uses internally. The handshake supplies both, so the component
+// schemas are built by the first GetSchema or Construct.
+func NewLocalProvider(ctx context.Context, modulePath string) (pulumirpc.ResourceProviderServer, error) {
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
-	pkgLoader, err := pulumiSchema.NewLoaderClient(addr)
-	if err != nil {
-		return nil, fmt.Errorf("unable to acquire schema loader: %w", err)
-	}
-
 	comps, resolvedVersion, err := localComponents(ctx, loader, modulePath)
 	if err != nil {
 		return nil, err
@@ -66,7 +60,6 @@ func NewLocalProvider(ctx context.Context, modulePath, addr string) (pulumirpc.R
 	m := &moduleProvider{
 		version:      version.String(),
 		moduleLoader: loader,
-		schemaLoader: pkgLoader,
 		local: &localPackage{
 			comps:     comps,
 			name:      pkgName,
