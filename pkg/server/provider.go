@@ -103,6 +103,12 @@ func selfParameterize(m *moduleProvider, bind func(context.Context) (*parameteri
 		}
 		return construct(ctx, req)
 	}
+	// The package is fixed at birth, and a Parameterize would race the bind
+	// for m.param.
+	prov.Parameterize = func(context.Context, p.ParameterizeRequest) (p.ParameterizeResponse, error) {
+		return p.ParameterizeResponse{}, grpcerr.Errorf(codes.FailedPrecondition,
+			"a local package provider cannot be parameterized")
+	}
 	// Cancel reads m.param, so it must not run while the first call binds.
 	prov.Cancel = func(ctx context.Context) error {
 		if !bound.Load() {

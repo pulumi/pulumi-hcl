@@ -84,12 +84,13 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 		version:      version,
 		moduleLoader: modules.NewLoader(modules.LiveResolver(ctx)),
 	}
-	return m.asProvider()
+	return grpcerr.Wrap(m.asProvider())
 }
 
 // asProvider wires the moduleProvider into the raw pulumi-go-provider surface.
+// The caller classifies its errors with grpcerr.Wrap.
 func (m *moduleProvider) asProvider() p.Provider {
-	return grpcerr.Wrap(p.Provider{
+	return p.Provider{
 		Handshake:    m.handshake,
 		Parameterize: m.parameterize,
 		GetSchema:    m.getSchema,
@@ -102,7 +103,7 @@ func (m *moduleProvider) asProvider() p.Provider {
 		},
 		Construct: m.construct,
 		Cancel:    m.cancel,
-	})
+	}
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
@@ -306,8 +307,8 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 // inputs to the module's HCL variables, runs the engine against the module tree
 // (bundled and offline on the parameterize path, the local directory on the
 // RunPlugin path), and exposes the module's outputs under their typed schema
-// property names. Handshake preconditions are enforced by parameterize and the
-// local birth, not here.
+// property names. Handshake preconditions are enforced by parameterize and by
+// selfParameterize, not here.
 func (m *moduleProvider) constructParameterized(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
 	param := m.param
 	comp, ok := param.components[req.Urn.Type()]

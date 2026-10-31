@@ -29,6 +29,8 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -117,6 +119,25 @@ func TestNewLocalProviderRequiresMapper(t *testing.T) {
 
 	_, err = prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})
 	assert.EqualError(t, err, "GetSchema called before a successful handshake")
+}
+
+// The package of a locally-born provider is fixed at birth.
+func TestNewLocalProviderRejectsParameterize(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	prov, err := newLocalProvider(t, dir, "127.0.0.1:1")
+	require.NoError(t, err)
+
+	_, err = prov.Parameterize(t.Context(), &pulumirpc.ParameterizeRequest{
+		Parameters: &pulumirpc.ParameterizeRequest_Args{
+			Args: &pulumirpc.ParameterizeRequest_ParametersArgs{Args: []string{"module", "./other"}},
+		},
+	})
+	assert.Equal(t, status.New(codes.FailedPrecondition,
+		"a local package provider cannot be parameterized").Proto(), status.Convert(err).Proto())
 }
 
 // The engine can send GetSchema and Construct calls in parallel, and the first
