@@ -63,10 +63,6 @@ type moduleProvider struct {
 	providerInfoSource bridge.ProviderInfoSource
 	resolver           pulumirpc.PackageResolverClient
 
-	// local is the package a locally-born provider (NewLocalProvider) serves,
-	// until the handshake builds its component schemas into param.
-	local *localPackage
-
 	// param is non-nil once the provider has been parameterized by a specific
 	// module source (via Parameterize). It makes the provider serve that module's
 	// typed component schema instead of the generic hcl:index:Module.
@@ -153,16 +149,14 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 	return p.HandshakeResponse{}, nil
 }
 
+// handshaken reports whether a handshake has supplied the engine's services.
+func (m *moduleProvider) handshaken() bool { return m.providerInfoSource != nil }
+
 // getSchema returns the static hcl:index:Module schema, or — once the provider
 // has been parameterized — the parameterized package's typed component schemas.
 // A bundle-backed parameterization carries its Value so a generated SDK can
 // re-parameterize; a locally-born provider has no bundle.
 func (m *moduleProvider) getSchema(ctx context.Context, _ p.GetSchemaRequest) (p.GetSchemaResponse, error) {
-	if m.local != nil {
-		if err := m.bindLocal(ctx, "GetSchema"); err != nil {
-			return p.GetSchemaResponse{}, err
-		}
-	}
 	spec := moduleResourceSchema(m.version)
 	if m.param != nil {
 		spec = m.param.spec
@@ -183,8 +177,7 @@ func (m *moduleProvider) getSchema(ctx context.Context, _ p.GetSchemaRequest) (p
 // cancel removes any unpacked module bundle when the provider shuts down.
 func (m *moduleProvider) cancel(context.Context) error {
 	m.hooks.close()
-	// A local provider has no bundle, and its param may still be building.
-	if m.local == nil && m.param != nil && m.param.tempDir != "" {
+	if m.param != nil && m.param.tempDir != "" {
 		return os.RemoveAll(m.param.tempDir)
 	}
 	return nil
@@ -195,11 +188,6 @@ func (m *moduleProvider) cancel(context.Context) error {
 // under the component's single "outputs" property.
 func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
 	logging.V(5).Infof("Construct: type=%s name=%s", req.Urn.Type(), req.Urn.Name())
-	if m.local != nil {
-		if err := m.bindLocal(ctx, "construct"); err != nil {
-			return p.ConstructResponse{}, err
-		}
-	}
 	if m.param != nil {
 		return m.constructParameterized(ctx, req)
 	}

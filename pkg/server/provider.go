@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/blang/semver"
 	p "github.com/pulumi/pulumi-go-provider"
@@ -39,13 +40,9 @@ import (
 )
 
 // NewLocalProvider serves the HCL module package at modulePath as a source
-// MLC: the module provider born parameterized by the local package — one
-// component per consumable directory — reading provider descriptors from the
-// package's own sdks folder.
-//
-// Typing a component needs the schema loader and the bridge mappings of the TF
-// providers it uses internally. The handshake supplies both, so the component
-// schemas are built by the first GetSchema or Construct.
+// MLC: the module provider parameterized by the local package — one component
+// per consumable directory — reading provider descriptors from the package's
+// own sdks folder.
 func NewLocalProvider(ctx context.Context, modulePath string) (pulumirpc.ResourceProviderServer, error) {
 	loader := modules.NewLoader(modules.LiveResolver(ctx))
 	comps, resolvedVersion, err := localComponents(ctx, loader, modulePath)
@@ -57,57 +54,63 @@ func NewLocalProvider(ctx context.Context, modulePath string) (pulumirpc.Resourc
 		return nil, err
 	}
 
-	m := &moduleProvider{
-		version:      version.String(),
-		moduleLoader: loader,
-		local: &localPackage{
-			comps:     comps,
-			name:      pkgName,
-			rootToken: rootToken,
-			version:   version,
-		},
-	}
-	return p.RawServer(pkgName, version.String(), m.asProvider())(nil)
-}
-
-// localPackage is a local package that NewLocalProvider loaded. bindLocal
-// builds its component schemas into the provider's param once.
-type localPackage struct {
-	comps     []loadedComponent
-	name      string
-	rootToken tokens.Type
-	version   semver.Version
-
-	build sync.Once
-	err   error
-}
-
-// bindLocal builds the component schemas of the local package on its first
-// call, typing them through the mapper the handshake supplied, and returns the
-// build's error on every call. rpc names the calling RPC for the error that a
-// call before the handshake gets.
-func (m *moduleProvider) bindLocal(ctx context.Context, rpc string) error {
-	if m.providerInfoSource == nil {
-		return fmt.Errorf("%s called before a successful handshake", rpc)
-	}
-	m.local.build.Do(func() {
-		// The build is shared by every caller, so the first caller's
-		// cancellation must not fail it for the others.
-		ctx := context.WithoutCancel(ctx)
-		components, spec, err := buildComponents(ctx, m.local.comps, m.local.name, m.local.rootToken,
-			m.local.version, m.componentBinderFactory(m.moduleLoader))
-		if err != nil {
-			m.local.err = err
-			return
-		}
-		m.param = &parameterizedModule{
-			spec:       spec,
-			components: components,
-			loader:     m.moduleLoader,
-			name:       m.local.name,
-		}
+	m := &moduleProvider{version: version.String(), moduleLoader: loader}
+	prov := selfParameterize(m, func(ctx context.Context) (*parameterizedModule, error) {
+		return m.bind(ctx, loader, comps, pkgName, rootToken, version)
 	})
-	return m.local.err
+	return p.RawServer(pkgName, version.String(), prov)(nil)
+}
+
+// selfParameterize parameterizes m with bind on the first GetSchema or
+// Construct, as Parameterize does for a bundle. The engine sends no
+// Parameterize to a provider that RunPlugin started, and bind needs the
+// services of the handshake.
+func selfParameterize(m *moduleProvider, bind func(context.Context) (*parameterizedModule, error)) p.Provider {
+	var (
+		once    sync.Once
+		bindErr error
+		bound   atomic.Bool
+	)
+	ensureBound := func(ctx context.Context, rpc string) error {
+		if !m.handshaken() {
+			return fmt.Errorf("%s called before a successful handshake", rpc)
+		}
+		once.Do(func() {
+			// The build is shared by every caller, so the first caller's
+			// cancellation must not fail it for the others.
+			param, err := bind(context.WithoutCancel(ctx))
+			if err != nil {
+				bindErr = err
+				return
+			}
+			m.param = param
+			bound.Store(true)
+		})
+		return bindErr
+	}
+
+	prov := m.asProvider()
+	getSchema, construct, cancel := prov.GetSchema, prov.Construct, prov.Cancel
+	prov.GetSchema = func(ctx context.Context, req p.GetSchemaRequest) (p.GetSchemaResponse, error) {
+		if err := ensureBound(ctx, "GetSchema"); err != nil {
+			return p.GetSchemaResponse{}, err
+		}
+		return getSchema(ctx, req)
+	}
+	prov.Construct = func(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
+		if err := ensureBound(ctx, "construct"); err != nil {
+			return p.ConstructResponse{}, err
+		}
+		return construct(ctx, req)
+	}
+	// Cancel reads m.param, so it must not run while the first call binds.
+	prov.Cancel = func(ctx context.Context) error {
+		if !bound.Load() {
+			return nil
+		}
+		return cancel(ctx)
+	}
+	return grpcerr.Wrap(prov)
 }
 
 // localComponents loads the components of the module package at modulePath
