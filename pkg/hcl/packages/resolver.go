@@ -44,8 +44,8 @@ type Resolver struct {
 
 // NewResolver builds a Resolver. providerInfoSource and packages may be nil/empty
 // when no bridge mapper is available, in which case resolution uses only the
-// convention-based fallback. knownProviders is ignored: each block binds with
-// the required_providers of its own module (see [Resolver.BindResource]).
+// convention-based fallback. knownProviders is ignored; it remains for
+// existing callers.
 func NewResolver(
 	loader schema.ReferenceLoader,
 	providerInfoSource bridge.ProviderInfoSource,

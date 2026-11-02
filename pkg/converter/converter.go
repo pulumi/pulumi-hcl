@@ -222,8 +222,8 @@ func (*hclConverter) ConvertSnippet(ctx context.Context, req *plugin.ConvertSnip
 	return nil, plugin.ErrNotYetImplemented
 }
 
-// providerFunctionCall identifies a provider-defined function call name
-// ("provider::<local>::<fn>") in the module of a directory.
+// providerFunctionCall identifies a provider-defined function call by the
+// directory of its module and its name.
 type providerFunctionCall struct {
 	dir  string
 	name string
@@ -269,11 +269,9 @@ type fileTransformer struct {
 	sources       map[string][]byte
 	knownHCLTypes map[string]bool // set of HCL type labels used in resource blocks
 	stackRefNames map[string]bool // set of logical names of pulumi_stackreference resources
-	// modules holds the configuration of each module, keyed by its
-	// directory. Each block binds with the required_providers of its module.
+	// modules holds the configuration of each module, keyed by its directory.
 	modules map[string]*ast.Config
-	// resources and dataSources hold the binding of each resource and data
-	// block that binds.
+	// resources and dataSources hold the binding of each block that binds.
 	resources   map[*ast.Resource]*packages.BoundResource
 	dataSources map[*ast.DataSource]*packages.BoundDataSource
 	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
@@ -287,10 +285,8 @@ type fileTransformer struct {
 	dataBlocks       map[dataReference]*hclsyntax.Body
 	loader           schema.ReferenceLoader
 	resolver         *packages.Resolver
-	// providerFunctions maps a provider-defined function call
-	// ("provider::<local>::<fn>") in a module to its resolved schema; a nil
-	// value marks a call that could not be resolved so it falls back to
-	// notImplemented.
+	// providerFunctions holds the schema of each provider-defined function
+	// call; nil marks a call that falls back to notImplemented.
 	providerFunctions map[providerFunctionCall]*schema.Function
 	nameRewrites      map[string]string // logical name → sanitized PCL identifier (only for invalid names)
 	// dataPlans records, for each data block, if its invoke is inlined or
@@ -352,14 +348,12 @@ func newProjectTransformer(
 		providerAliases:   make(map[string]bool),
 		defaultProviders:  make(map[defaultProvider]bool),
 	}
-	// Phase 1: parse the configuration of each module and bind its resource
-	// and data blocks.
+	// Phase 1: parse and bind each module.
 	diags := ft.bindModules(ctx, bodies)
 	if diags.HasErrors() {
 		return ft, diags
 	}
-	// Phase 2: scan the symbols (providers, call and data blocks) that
-	// expressions can reference.
+	// Phase 2: scan the symbols that expressions reference.
 	for _, body := range bodies {
 		ft.scanSymbols(body)
 	}
@@ -376,9 +370,8 @@ func newProjectTransformer(
 	return ft, diags
 }
 
-// bindModules parses the bodies of each module, grouped by directory, into
-// its configuration, and binds each resource and data block with the
-// required_providers of its module.
+// bindModules parses the bodies of each directory into a module
+// configuration and binds its resource and data blocks.
 func (ft *fileTransformer) bindModules(ctx context.Context, bodies []*hclsyntax.Body) hcl.Diagnostics {
 	files := map[string]map[string]*hcl.File{}
 	for _, body := range bodies {
@@ -426,7 +419,7 @@ func (ft *fileTransformer) bindModules(ctx context.Context, bodies []*hclsyntax.
 }
 
 // boundResource returns the binding of the resource block hclType.name in the
-// module that the source range r is in, or nil when it has none.
+// module of r, or nil.
 func (ft *fileTransformer) boundResource(r hcl.Range, hclType, name string) *packages.BoundResource {
 	if config := ft.modules[filepath.Dir(r.Filename)]; config != nil {
 		return ft.resources[config.Resources[ast.ResourceKey(hclType, name)]]
@@ -442,8 +435,7 @@ func (ft *fileTransformer) boundDataSource(r hcl.Range, hclType, name string) *p
 	return nil
 }
 
-// moduleTerraform returns the `terraform` block of the module that the source
-// range r is in, or nil when it has none.
+// moduleTerraform returns the `terraform` block of the module of r.
 func (ft *fileTransformer) moduleTerraform(r hcl.Range) *ast.Terraform {
 	if config := ft.modules[filepath.Dir(r.Filename)]; config != nil {
 		return config.Terraform
@@ -500,8 +492,7 @@ func (ft *fileTransformer) scanProviderFunctions(ctx context.Context, body *hcls
 		if _, seen := ft.providerFunctions[key]; seen {
 			return nil
 		}
-		// As in the runtime, the module's required_providers maps the local
-		// name to the package that serves the function.
+		// The module's required_providers maps the local name to a package.
 		pkgName := packages.ProviderPackage(ft.moduleTerraform(call.Range()), local)
 		fns, err := ft.resolver.ProviderFunctions(ctx, pkgName)
 		fn, ok := fns[fnName]
@@ -1458,8 +1449,7 @@ func (ft *fileTransformer) relativeTraversalSourceProps(
 }
 
 // dataResultProps returns the schema properties of the result of the data
-// block hclType.name in the module that the source range r is in, and their
-// bridge mapping.
+// block hclType.name in the module of r, and their bridge mapping.
 func (ft *fileTransformer) dataResultProps(r hcl.Range, hclType, name string) ([]*schema.Property, *bridge.BodyMapping) {
 	bound := ft.boundDataSource(r, hclType, name)
 	if bound == nil {
@@ -2011,9 +2001,8 @@ func (ft *fileTransformer) traversalAttrs(trav hcl.Traversal, bound *packages.Bo
 	return schemaAwareTraversalAttrs(trav, bound.Schema.Properties, bound.Mapping)
 }
 
-// referencedResource returns the binding of the resource block that the
-// traversal <type>.<name>... references, or nil when it names no resource
-// block that binds.
+// referencedResource returns the binding of the resource that trav
+// (<type>.<name>...) references, or nil.
 func (ft *fileTransformer) referencedResource(trav hcl.Traversal) *packages.BoundResource {
 	if len(trav) < 2 {
 		return nil
@@ -2059,8 +2048,7 @@ var providerSyntheticOutputs = []*schema.Property{
 	{Name: "pluginDownloadURL", Type: schema.StringType},
 }
 
-// isKnownProvider reports whether the module that the source range r is in
-// declares the provider local name name.
+// isKnownProvider reports whether the module of r declares the provider name.
 func (ft *fileTransformer) isKnownProvider(r hcl.Range, name string) bool {
 	return slices.Contains(packages.KnownProviders(ft.moduleTerraform(r)), name)
 }
@@ -2107,8 +2095,8 @@ func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclw
 
 // invokeExprTokens generates PCL tokens for invoke("token", {args...}) or
 // invoke("token", {args...}, {opts...}) when invoke options are present.
-// It looks up the matching data block, in the module that the source range r
-// is in, to extract the argument and option objects.
+// It looks up the data block in the module of r to extract the argument and
+// option objects.
 func (ft *fileTransformer) invokeExprTokens(r hcl.Range, hclType, dsName string) hclwrite.Tokens {
 	var token string
 	var inputProps []*schema.Property
