@@ -170,9 +170,7 @@ func TestResolver_MappedTokenMissingFromSchema(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
-// A block binds against the required_providers of the module that declares
-// it, so a provider local name with an underscore splits the type correctly
-// even when no other module declares that provider.
+// A block binds against the required_providers of its own module.
 func TestResolver_BindResourceUsesItsModule(t *testing.T) {
 	t.Parallel()
 

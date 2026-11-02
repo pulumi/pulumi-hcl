@@ -5139,10 +5139,9 @@ func (e *Engine) evaluateConfigChecks(
 	return errors.Join(errs...)
 }
 
-// evaluateCheck evaluates one check block, declared in the module whose
-// `terraform` block is module. Its scoped data source is read into a cloned
-// context so it is visible only to this check's assertions and cannot collide
-// with a top-level data source of the same address.
+// evaluateCheck evaluates one check block. Its scoped data source is read into a
+// cloned context so it is visible only to this check's assertions and cannot
+// collide with a top-level data source of the same address.
 func (e *Engine) evaluateCheck(
 	ctx context.Context, name string, module *ast.Terraform, check *ast.Check, evalCtx *eval.Context,
 ) error {
@@ -5163,11 +5162,10 @@ func (e *Engine) evaluateCheck(
 	return errors.Join(errs...)
 }
 
-// readScopedDataSource reads a check's scoped data source, declared in the
-// module whose `terraform` block is module, into evalCtx, making it available
-// as data.<type>.<name> within that context only. Scoped data sources are
-// single reads: they run after the walk, synchronously, outside the
-// expansion-cell machinery.
+// readScopedDataSource reads a check's scoped data source into evalCtx, making
+// it available as data.<type>.<name> within that context only. Scoped data
+// sources are single reads: they run after the walk, synchronously, outside
+// the expansion-cell machinery.
 func (e *Engine) readScopedDataSource(
 	ctx context.Context, module *ast.Terraform, ds *ast.DataSource, evalCtx *eval.Context,
 ) error {

@@ -40,9 +40,8 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 )
 
-// ResourceTypeResolver binds resource and data blocks to the Pulumi schema and
-// bridge mapping of their types, so an output expression that references a
-// resource or data source can be typed. It is satisfied by *packages.Resolver.
+// ResourceTypeResolver binds resource and data blocks so that an output that
+// references them can be typed. *packages.Resolver satisfies it.
 type ResourceTypeResolver interface {
 	BindResource(ctx context.Context, module *ast.Terraform, res *ast.Resource) (*packages.BoundResource, error)
 	BindDataSource(ctx context.Context, module *ast.Terraform, ds *ast.DataSource) (*packages.BoundDataSource, error)

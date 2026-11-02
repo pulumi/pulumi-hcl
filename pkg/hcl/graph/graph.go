@@ -425,10 +425,9 @@ func (g *Graph) MovedBlocks(path modulepath.Path) []*ast.Moved {
 	return g.moved[path]
 }
 
-// ModuleTerraform returns the `terraform` block of the module at path, a
-// configuration path, or of its nearest ancestor that the configuration has.
-// An address that a `moved` or `removed` block names can be in a module that
-// the configuration no longer has.
+// ModuleTerraform returns the `terraform` block of the module at the
+// configuration path path. A `moved` or `removed` address can name a module
+// that is gone, so a missing module falls back to its nearest ancestor.
 func (g *Graph) ModuleTerraform(path modulepath.Path) *ast.Terraform {
 	for {
 		if scope, ok := g.scopes[path]; ok {

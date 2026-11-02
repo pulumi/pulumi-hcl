@@ -163,9 +163,8 @@ output "count" {
 	assert.Equal(t, &PropertySpec{Type: TypeAny}, moduleSchema.OutputProperties["count"])
 }
 
-// stubResolver resolves a fixed set of resources and their bridge mappings by
-// TF type, plus optionally a fixed set of provider-defined functions, so
-// reference typing can be tested without a provider schema.
+// stubResolver binds a fixed set of resources and mappings by TF type, and
+// serves a fixed set of provider-defined functions.
 type stubResolver struct {
 	resources         map[string]*pulumiSchema.Resource
 	mappings          map[string]*bridge.BodyMapping

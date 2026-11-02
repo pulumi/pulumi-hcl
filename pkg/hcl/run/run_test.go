@@ -6465,10 +6465,9 @@ func TestPropertyDependencies(t *testing.T) {
 	}, deps)
 }
 
-// A block binds against the required_providers of the module that declares
-// it, and the prior object of a `moved` block binds against the module that
-// it was in. The root module does not declare snake_x, so a split at the first
-// underscore would ask for a package named "snake".
+// A block binds against the required_providers of its own module, and the
+// prior object of a `moved` block binds in the module it was in. Only the
+// child module declares snake_x.
 func TestEngine_BlocksBindInTheirModule(t *testing.T) {
 	t.Parallel()
 
