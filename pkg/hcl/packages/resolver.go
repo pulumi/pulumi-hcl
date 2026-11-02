@@ -186,18 +186,10 @@ func (r *Resolver) ProviderConfigBodyMapping(ctx context.Context, providerName s
 	return bridge.ProviderConfigBodyMapping(info)
 }
 
-// providerInfoForType resolves the TF provider that owns a resource or data
-// source token (split on first underscore) and fetches its bridge info. For
-// single-segment tokens — providers like hashicorp/external whose type name
-// equals the provider name — the whole token is the provider name.
+// providerInfoForType fetches the bridge info that a resource or data source
+// type maps under (see [bridge.TypeProvider]).
 func (r *Resolver) providerInfoForType(ctx context.Context, tfType string) *tfbridge.ProviderInfo {
-	if idx := strings.IndexByte(tfType, '_'); idx > 0 {
-		return r.providerInfoFor(ctx, tfType[:idx])
-	}
-	if tfType == "" {
-		return nil
-	}
-	return r.providerInfoFor(ctx, tfType)
+	return r.providerInfoFor(ctx, bridge.TypeProvider(tfType))
 }
 
 // providerInfoFor fetches the bridge ProviderInfo for a TF provider local
