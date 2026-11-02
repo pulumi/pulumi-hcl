@@ -1,7 +1,6 @@
-# The "simple-beta" provider serves the "simple_*" types, the same way
-# hashicorp/google-beta serves "google_*" types. No provider named "simple" is
-# declared, so each block gets its schema from the provider that its
-# `provider` meta-argument selects.
+# The "simple-beta" provider serves the "simple_*" types. No provider named
+# "simple" is declared, so each block gets its schema from the provider that
+# its `provider` meta-argument selects.
 terraform {
   required_providers {
     simple-beta = {

@@ -64,8 +64,7 @@ func NewResolver(
 
 // BoundResource is a resource block bound to the Pulumi schema of its type.
 type BoundResource struct {
-	// Package is the package of the provider that serves the block (see
-	// [BlockPackage]).
+	// Package is the package of the provider that serves the block.
 	Package string
 	Schema  *schema.Resource
 	// Mapping is the bridge mapping of the type, or nil when it has none.
@@ -74,8 +73,7 @@ type BoundResource struct {
 
 // BoundDataSource is a data block bound to the Pulumi schema of its type.
 type BoundDataSource struct {
-	// Package is the package of the provider that serves the block (see
-	// [BlockPackage]).
+	// Package is the package of the provider that serves the block.
 	Package string
 	Schema  *schema.Function
 	// Mapping is the bridge mapping of the type, or nil when it has none.
@@ -84,7 +82,7 @@ type BoundDataSource struct {
 
 // BindResource binds the resource block res, declared in the module whose
 // `terraform` block is module, to the schema of its type in the package that
-// serves it (see [BlockPackage]).
+// serves it.
 func (r *Resolver) BindResource(ctx context.Context, module *ast.Terraform, res *ast.Resource) (*BoundResource, error) {
 	pkgName, err := BlockPackage(module, res.Provider, res.Type)
 	if err != nil {
@@ -103,7 +101,7 @@ func (r *Resolver) BindResource(ctx context.Context, module *ast.Terraform, res 
 
 // BindDataSource binds the data block ds, declared in the module whose
 // `terraform` block is module, to the schema of its type in the package that
-// serves it (see [BlockPackage]).
+// serves it.
 func (r *Resolver) BindDataSource(
 	ctx context.Context, module *ast.Terraform, ds *ast.DataSource,
 ) (*BoundDataSource, error) {
@@ -122,10 +120,9 @@ func (r *Resolver) BindDataSource(
 	}, nil
 }
 
-// BlockPackage returns the Pulumi package of the provider that serves a
-// resource or data source of type typ, declared in the module whose
-// `terraform` block is tf. provider is the block's `provider` meta-argument,
-// or nil when the block does not set it.
+// BlockPackage returns the package of the provider that serves a block of
+// type typ in the module tf. provider is the block's `provider`
+// meta-argument, or nil.
 func BlockPackage(tf *ast.Terraform, provider hcl.Expression, typ string) (string, error) {
 	local, err := ProviderLocalName(tf, provider, typ)
 	if err != nil {
@@ -135,10 +132,8 @@ func BlockPackage(tf *ast.Terraform, provider hcl.Expression, typ string) (strin
 }
 
 // ProviderLocalName returns the local name of the provider that serves a
-// resource or data source of type typ, declared in the module whose
-// `terraform` block is tf. When provider (the block's `provider`
-// meta-argument) is a provider configuration reference, it names the
-// provider. Otherwise, the provider is the one that typ implies.
+// block of type typ in the module tf: the configuration that provider
+// references, or else the provider that typ implies.
 func ProviderLocalName(tf *ast.Terraform, provider hcl.Expression, typ string) (string, error) {
 	if name, ok := providerConfigName(provider); ok {
 		return name, nil
@@ -146,11 +141,9 @@ func ProviderLocalName(tf *ast.Terraform, provider hcl.Expression, typ string) (
 	return PackageFromToken(KnownProviders(tf), typ)
 }
 
-// providerConfigName returns the provider local name that expr references,
-// when expr has the form of a provider configuration reference: name,
-// name.alias, or name.alias[key]. Any other `provider` value, such as a
-// provider that a method call returns (call.<resource>.<method>), is a value
-// that carries its own provider; no configuration names its package.
+// providerConfigName returns the local name that expr references when expr is
+// a provider configuration reference: name, name.alias or name.alias[key].
+// Other values, such as call.<resource>.<method>, carry their own provider.
 func providerConfigName(expr hcl.Expression) (string, bool) {
 	if expr == nil {
 		return "", false

@@ -23,8 +23,7 @@ import (
 
 // TestCrossPackageProvider pins that schema generation and Construct type a
 // resource from the provider its `provider` meta-argument selects, not from
-// the type prefix. This is the hashicorp/google-beta shape: the "simple-beta"
-// provider serves the "simple_resource" type.
+// the type prefix: the "simple-beta" provider serves "simple_resource".
 func TestCrossPackageProvider(t *testing.T) {
 	t.Parallel()
 	mlctest.RunCase(t, "cross_package_provider", mlctest.Case{

@@ -511,7 +511,7 @@ func TestBlockPackage(t *testing.T) {
 	t.Parallel()
 
 	tf := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
-		"google-beta": {Source: "hashicorp/google-beta"},
+		"prov-beta":   {Source: "hashicorp/prov-beta"},
 		"myp":         {Source: "hashicorp/simple"},
 		"snake_names": {Source: "pulumi/snake_names"},
 	}}
@@ -525,15 +525,15 @@ func TestBlockPackage(t *testing.T) {
 		{name: "implied provider", typ: "prov_thing", want: "prov"},
 		{name: "implied provider with underscores", typ: "snake_names_thing", want: "snake_names"},
 		{name: "implied provider renamed by its source", typ: "myp_thing", want: "simple"},
-		{name: "provider", provider: "google-beta", typ: "google_project", want: "google-beta"},
-		{name: "aliased provider", provider: "google-beta.west", typ: "google_project", want: "google-beta"},
-		{name: "keyed provider", provider: "google-beta.by_region[each.key]", typ: "google_project", want: "google-beta"},
-		{name: "provider renamed by its source", provider: "myp", typ: "google_project", want: "simple"},
-		{name: "undeclared provider", provider: "other", typ: "google_project", want: "other"},
-		{name: "keyed provider with a static key", provider: `google-beta.by_region["us"]`, typ: "google_project", want: "google-beta"},
-		{name: "provider value from a method call", provider: "call.res.method", typ: "google_project", want: "google"},
-		{name: "provider value from a module output", provider: "module.child.provider", typ: "google_project", want: "google"},
-		{name: "quoted provider", provider: `"google-beta"`, typ: "google_project", want: "google"},
+		{name: "provider", provider: "prov-beta", typ: "prov_thing", want: "prov-beta"},
+		{name: "aliased provider", provider: "prov-beta.west", typ: "prov_thing", want: "prov-beta"},
+		{name: "keyed provider", provider: "prov-beta.by_region[each.key]", typ: "prov_thing", want: "prov-beta"},
+		{name: "provider renamed by its source", provider: "myp", typ: "prov_thing", want: "simple"},
+		{name: "undeclared provider", provider: "other", typ: "prov_thing", want: "other"},
+		{name: "keyed provider with a static key", provider: `prov-beta.by_region["us"]`, typ: "prov_thing", want: "prov-beta"},
+		{name: "provider value from a method call", provider: "call.res.method", typ: "prov_thing", want: "prov"},
+		{name: "provider value from a module output", provider: "module.child.provider", typ: "prov_thing", want: "prov"},
+		{name: "quoted provider", provider: `"prov-beta"`, typ: "prov_thing", want: "prov"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

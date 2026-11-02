@@ -16,7 +16,6 @@ package packages
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -212,79 +211,6 @@ func TestResolver_BindResourceUsesItsModule(t *testing.T) {
 	bound, err = r.BindResource(t.Context(), nil, &ast.Resource{Type: "snake_names_thing"})
 	require.NoError(t, err)
 	assert.Equal(t, &BoundResource{Package: "snake", Schema: resourceSchema("snake", "snake:index:namesThing")}, bound)
-}
-
-// infoByPackage serves bridge mappings keyed as "<package>/<TF provider>".
-type infoByPackage map[string]*tfbridge.ProviderInfo
-
-func (s infoByPackage) GetProviderInfo(
-	_ context.Context, tfProvider string, desc *workspace.PackageDescriptor,
-) (*tfbridge.ProviderInfo, error) {
-	key := desc.PackageName() + "/" + tfProvider
-	if info, ok := s[key]; ok {
-		return info, nil
-	}
-	return nil, fmt.Errorf("no mapping for %q", key)
-}
-
-// A provider can serve TF types whose prefix names another provider, as
-// hashicorp/google-beta serves google_* types, and the bridge maps it under
-// that prefix. The type then resolves in the package that serves it, not in
-// the package that its prefix names.
-func TestResolver_TypeServedByAnotherPackage(t *testing.T) {
-	t.Parallel()
-
-	loader := schemaloader.New(t,
-		schema.PackageSpec{
-			Name:      "google",
-			Resources: map[string]schema.ResourceSpec{"google:index:Thing": {}},
-		},
-		schema.PackageSpec{
-			Name: "google-beta",
-			Resources: map[string]schema.ResourceSpec{
-				"google-beta:index:Thing":     {},
-				"google-beta:index:BetaThing": {},
-			},
-		},
-	)
-	r := NewResolver(loader, infoByPackage{
-		"google/google": {Name: "google", Resources: map[string]*tfbridge.ResourceInfo{
-			"google_thing": {Tok: "google:index:Thing"},
-		}},
-		"google-beta/google": {Name: "google-beta", Resources: map[string]*tfbridge.ResourceInfo{
-			"google_thing":      {Tok: "google-beta:index:Thing"},
-			"google_beta_thing": {Tok: "google-beta:index:BetaThing"},
-		}},
-	}, nil, nil)
-
-	module := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
-		"google-beta": {Name: "google-beta", Source: "hashicorp/google-beta"},
-	}}
-	token := func(provider, typ string) string {
-		res := &ast.Resource{Type: typ}
-		if provider != "" {
-			expr, diags := hclsyntax.ParseExpression([]byte(provider), "", hcl.InitialPos)
-			require.False(t, diags.HasErrors(), diags.Error())
-			res.Provider = expr
-		}
-		bound, err := r.BindResource(t.Context(), module, res)
-		if err != nil {
-			return err.Error()
-		}
-		return bound.Package + " " + bound.Schema.Token
-	}
-
-	assert.Equal(t, map[string]string{
-		"google-beta google_thing":      "google-beta google-beta:index:Thing",
-		"google-beta google_beta_thing": "google-beta google-beta:index:BetaThing",
-		" google_thing":                 "google google:index:Thing",
-	}, map[string]string{
-		"google-beta google_thing":      token("google-beta", "google_thing"),
-		"google-beta google_beta_thing": token("google-beta", "google_beta_thing"),
-		" google_thing":                 token("", "google_thing"),
-	})
-	_, err := r.BindResource(t.Context(), module, &ast.Resource{Type: "google_beta_thing"})
-	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 // An extension's resources are served by its base provider, so a block that

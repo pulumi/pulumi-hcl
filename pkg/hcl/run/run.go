@@ -3065,11 +3065,10 @@ func (e *Engine) packageVersion(pkgName string) string {
 	return desc.Version.String()
 }
 
-// packageRefForSchema returns the registered package ref for a resource or
-// function served by the provider package pkgName, whose resolved schema
-// belongs to the package ref. An extension's schema names the extension
-// package (e.g. "myext"), which is the one registered as a parameterized
-// package — using it lets the engine record the resource's ExtensionRef.
+// packageRefForSchema returns the registered package ref for a schema of the
+// package ref that the provider package pkgName serves. An extension's schema
+// names the extension package, whose ref lets the engine record the
+// resource's ExtensionRef.
 func (e *Engine) packageRefForSchema(pkgName string, ref schema.PackageReference) PackageRef {
 	if ref != nil {
 		if pkgRef, ok := e.packageRefs[ref.Name()]; ok {
@@ -3079,8 +3078,8 @@ func (e *Engine) packageRefForSchema(pkgName string, ref schema.PackageReference
 	return e.packageRefs[pkgName]
 }
 
-// schemaPackage returns the package of a schema, ref, that the provider
-// package pkgName serves: an extension of pkgName, or pkgName itself.
+// schemaPackage returns the package of a schema of the package ref that the
+// provider package pkgName serves.
 func schemaPackage(pkgName string, ref schema.PackageReference) string {
 	if ref != nil {
 		return ref.Name()

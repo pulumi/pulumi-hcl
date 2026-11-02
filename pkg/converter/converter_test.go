@@ -1566,10 +1566,10 @@ resource "test_item" "r" {}
 `))
 }
 
-// googleAndBetaSchemas returns a loader and a bridge mapping in which the
-// packages google and google-beta both serve the types google_thing and
-// google_lookup.
-func googleAndBetaSchemas(t *testing.T) (schema.ReferenceLoader, routedInfoSource) {
+// provAndBetaSchemas returns a loader and a bridge mapping in which the
+// packages prov and prov-beta both serve the types prov_thing and
+// prov_lookup.
+func provAndBetaSchemas(t *testing.T) (schema.ReferenceLoader, routedInfoSource) {
 	thing := schema.ResourceSpec{
 		ObjectTypeSpec: schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
 			"thingName": {TypeSpec: schema.TypeSpec{Type: "string"}},
@@ -1588,64 +1588,64 @@ func googleAndBetaSchemas(t *testing.T) (schema.ReferenceLoader, routedInfoSourc
 	}
 	loader := schemaloader.New(t,
 		schema.PackageSpec{
-			Name:      "google",
+			Name:      "prov",
 			Meta:      &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
-			Resources: map[string]schema.ResourceSpec{"google:index/thing:Thing": thing},
-			Functions: map[string]schema.FunctionSpec{"google:index/getLookup:getLookup": lookup},
+			Resources: map[string]schema.ResourceSpec{"prov:index/thing:Thing": thing},
+			Functions: map[string]schema.FunctionSpec{"prov:index/getLookup:getLookup": lookup},
 		},
 		schema.PackageSpec{
-			Name:      "google-beta",
+			Name:      "prov-beta",
 			Meta:      &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
-			Resources: map[string]schema.ResourceSpec{"google-beta:index/thing:Thing": thing},
-			Functions: map[string]schema.FunctionSpec{"google-beta:index/getLookup:getLookup": lookup},
+			Resources: map[string]schema.ResourceSpec{"prov-beta:index/thing:Thing": thing},
+			Functions: map[string]schema.FunctionSpec{"prov-beta:index/getLookup:getLookup": lookup},
 		},
 	)
 	info := func(pkg string) *tfbridge.ProviderInfo {
 		return &tfbridge.ProviderInfo{
 			Name:        pkg,
-			Resources:   map[string]*tfbridge.ResourceInfo{"google_thing": {Tok: tokens.Type(pkg + ":index/thing:Thing")}},
-			DataSources: map[string]*tfbridge.DataSourceInfo{"google_lookup": {Tok: tokens.ModuleMember(pkg + ":index/getLookup:getLookup")}},
+			Resources:   map[string]*tfbridge.ResourceInfo{"prov_thing": {Tok: tokens.Type(pkg + ":index/thing:Thing")}},
+			DataSources: map[string]*tfbridge.DataSourceInfo{"prov_lookup": {Tok: tokens.ModuleMember(pkg + ":index/getLookup:getLookup")}},
 		}
 	}
 	return loader, routedInfoSource{
-		"google/google":      info("google"),
-		"google-beta/google": info("google-beta"),
+		"prov/prov":      info("prov"),
+		"prov-beta/prov": info("prov-beta"),
 	}
 }
 
-// A provider can serve types whose prefix names another provider, as
-// hashicorp/google-beta serves google_* types. A block converts against the
-// package of the provider that its `provider` meta-argument selects.
+// A provider can serve types whose prefix names another provider. A block
+// converts against the package of the provider that its `provider`
+// meta-argument selects.
 func TestConvertTypeServedByAnotherPackage(t *testing.T) {
 	t.Parallel()
 
-	loader, infoSource := googleAndBetaSchemas(t)
+	loader, infoSource := provAndBetaSchemas(t)
 
 	src := []byte(`terraform {
   required_providers {
-    google-beta = {
-      source = "hashicorp/google-beta"
+    prov-beta = {
+      source = "hashicorp/prov-beta"
     }
   }
 }
 
 
-resource "google_thing" "beta" {
-  provider   = google-beta
+resource "prov_thing" "beta" {
+  provider   = prov-beta
   thing_name = "a"
 }
 
-resource "google_thing" "ga" {
-  thing_name = google_thing.beta.thing_name
+resource "prov_thing" "ga" {
+  thing_name = prov_thing.beta.thing_name
 }
 
-data "google_lookup" "beta" {
-  provider = google-beta
-  query    = google_thing.ga.thing_name
+data "prov_lookup" "beta" {
+  provider = prov-beta
+  query    = prov_thing.ga.thing_name
 }
 
 output "result" {
-  value = data.google_lookup.beta.result_value
+  value = data.prov_lookup.beta.result_value
 }
 `)
 	f, parseDiags := hclsyntax.ParseConfig(src, "main.tf", hcl.Pos{Line: 1, Column: 1})
@@ -1659,15 +1659,15 @@ output "result" {
 	require.NoError(t, err)
 	require.False(t, diags.HasErrors(), diags.Error())
 
-	assert.Equal(t, `resource "beta" "google-beta:index/thing:Thing" {
+	assert.Equal(t, `resource "beta" "prov-beta:index/thing:Thing" {
   thingName = "a"
   options {
-    provider            = google-beta
+    provider            = prov-beta
     deleteBeforeReplace = true
   }
 }
 
-resource "ga" "google:index/thing:Thing" {
+resource "ga" "prov:index/thing:Thing" {
   thingName = beta.thingName
   options {
     deleteBeforeReplace = true
@@ -1675,10 +1675,10 @@ resource "ga" "google:index/thing:Thing" {
 }
 
 output "result" {
-  value = invoke("google-beta:index/getLookup:getLookup", {
+  value = invoke("prov-beta:index/getLookup:getLookup", {
     query = ga.thingName
     }, {
-    provider = google-beta
+    provider = prov-beta
   }).resultValue
 }
 
@@ -1690,23 +1690,23 @@ output "result" {
 func TestConvertSameAddressInModulesOfDifferentPackages(t *testing.T) {
 	t.Parallel()
 
-	loader, infoSource := googleAndBetaSchemas(t)
+	loader, infoSource := provAndBetaSchemas(t)
 	sources := map[string][]byte{
-		"beta/main.tf": []byte(`resource "google_thing" "this" {
-  provider   = google-beta
+		"beta/main.tf": []byte(`resource "prov_thing" "this" {
+  provider   = prov-beta
   thing_name = "a"
 }
 
 output "name" {
-  value = google_thing.this.thing_name
+  value = prov_thing.this.thing_name
 }
 `),
-		"ga/main.tf": []byte(`resource "google_thing" "this" {
+		"ga/main.tf": []byte(`resource "prov_thing" "this" {
   thing_name = "b"
 }
 
 output "name" {
-  value = google_thing.this.thing_name
+  value = prov_thing.this.thing_name
 }
 `),
 	}
@@ -1730,10 +1730,10 @@ output "name" {
 	}
 
 	assert.Equal(t, map[string]string{
-		"beta/main.tf": `resource "this" "google-beta:index/thing:Thing" {
+		"beta/main.tf": `resource "this" "prov-beta:index/thing:Thing" {
   thingName = "a"
   options {
-    provider            = google-beta
+    provider            = prov-beta
     deleteBeforeReplace = true
   }
 }
@@ -1743,7 +1743,7 @@ output "name" {
 }
 
 `,
-		"ga/main.tf": `resource "this" "google:index/thing:Thing" {
+		"ga/main.tf": `resource "this" "prov:index/thing:Thing" {
   thingName = "b"
   options {
     deleteBeforeReplace = true
@@ -1763,17 +1763,17 @@ output "name" {
 func TestConvertOverriddenRequiredProvider(t *testing.T) {
 	t.Parallel()
 
-	loader, infoSource := googleAndBetaSchemas(t)
+	loader, infoSource := provAndBetaSchemas(t)
 	sources := map[string][]byte{
 		"main.tf": []byte(`terraform {
   required_providers {
     beta = {
-      source = "hashicorp/google"
+      source = "hashicorp/prov"
     }
   }
 }
 
-resource "google_thing" "this" {
+resource "prov_thing" "this" {
   provider   = beta
   thing_name = "a"
 }
@@ -1781,7 +1781,7 @@ resource "google_thing" "this" {
 		"a_override.tf": []byte(`terraform {
   required_providers {
     beta = {
-      source = "hashicorp/google-beta"
+      source = "hashicorp/prov-beta"
     }
   }
 }
@@ -1801,7 +1801,7 @@ resource "google_thing" "this" {
 	require.NoError(t, err)
 	require.False(t, diags.HasErrors(), diags.Error())
 
-	assert.Equal(t, `resource "this" "google-beta:index/thing:Thing" {
+	assert.Equal(t, `resource "this" "prov-beta:index/thing:Thing" {
   thingName = "a"
   options {
     provider            = beta

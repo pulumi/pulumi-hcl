@@ -1497,9 +1497,8 @@ func TestPackageSchema(t *testing.T) {
 	})
 }
 
-// packageResolver binds resources and data sources by the package that serves
-// them (see [packages.BlockPackage]) and their TF type, keyed as
-// "<package>/<type>".
+// packageResolver binds resources and data sources keyed as
+// "<serving package>/<type>".
 type packageResolver struct {
 	stubResolver
 	functions map[string]*pulumiSchema.Function
@@ -1543,27 +1542,27 @@ func TestBlockOutputsAreTypedFromTheirProvider(t *testing.T) {
 	child, childDiags := parser.NewParser().ParseSource("child/main.tf", []byte(`
 terraform {
   required_providers {
-    google-beta = {
-      source = "hashicorp/google-beta"
+    prov-beta = {
+      source = "hashicorp/prov-beta"
     }
   }
 }
 
-resource "google_project_service_identity" "this" {
-  provider = google-beta
-  service  = "container.googleapis.com"
+resource "prov_identity" "this" {
+  provider = prov-beta
+  service  = "api.example.com"
 }
 
-data "google_project" "this" {
-  provider = google-beta
+data "prov_thing" "this" {
+  provider = prov-beta
 }
 
 output "email" {
-  value = google_project_service_identity.this.email
+  value = prov_identity.this.email
 }
 
 output "number" {
-  value = data.google_project.this.number
+  value = data.prov_thing.this.number
 }
 `))
 	require.False(t, childDiags.HasErrors(), childDiags.Error())
@@ -1586,12 +1585,12 @@ output "number" {
 	binder := &Binder{
 		Resources: packageResolver{
 			stubResolver: stubResolver{resources: map[string]*pulumiSchema.Resource{
-				"google-beta/google_project_service_identity": {Properties: []*pulumiSchema.Property{
+				"prov-beta/prov_identity": {Properties: []*pulumiSchema.Property{
 					{Name: "email", Type: pulumiSchema.StringType},
 				}},
 			}},
 			functions: map[string]*pulumiSchema.Function{
-				"google-beta/google_project": {ReturnType: &pulumiSchema.ObjectType{
+				"prov-beta/prov_thing": {ReturnType: &pulumiSchema.ObjectType{
 					Properties: []*pulumiSchema.Property{{Name: "number", Type: pulumiSchema.IntType}},
 				}},
 			},
