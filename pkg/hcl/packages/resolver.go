@@ -105,10 +105,9 @@ func (r *Resolver) BindDataSource(
 	return &BoundDataSource{Schema: fn, Mapping: r.DataSourceBodyMapping(ctx, pkgName, ds.Type)}, nil
 }
 
-// TypePackage returns the Pulumi package of the provider that the resource or
-// data source type typ implies, in the module whose `terraform` block is
-// module: the provider whose local name prefixes typ, mapped to its package by
-// the module's required_providers (see [ProviderPackage]).
+// TypePackage returns the package of the provider that the type typ implies:
+// the declared local name that prefixes typ, mapped to its package by the
+// module's required_providers.
 func TypePackage(module *ast.Terraform, typ string) (string, error) {
 	local, err := PackageFromToken(KnownProviders(module), typ)
 	if err != nil {
@@ -179,8 +178,7 @@ func (r *Resolver) resolveFunction(ctx context.Context, pkgName, tfType string) 
 }
 
 // ResourceBodyMapping returns the bridge BodyMapping for a TF resource type
-// that the package pkgName serves, or nil when the mapper is unavailable, the
-// provider isn't known, or the type isn't in its schema.
+// that the package pkgName serves, or nil.
 func (r *Resolver) ResourceBodyMapping(ctx context.Context, pkgName, tfResourceType string) *bridge.BodyMapping {
 	info := r.providerInfoForType(ctx, pkgName, tfResourceType)
 	if info == nil {
@@ -209,17 +207,13 @@ func (r *Resolver) ProviderConfigBodyMapping(ctx context.Context, providerName s
 }
 
 // providerInfoForType fetches the bridge info that the package pkgName serves
-// for a resource or data source type, which the bridge maps under the type's
-// prefix (see [bridge.TypeProvider]).
+// for a type, under the type's prefix.
 func (r *Resolver) providerInfoForType(ctx context.Context, pkgName, tfType string) *tfbridge.ProviderInfo {
 	return r.providerInfoFor(ctx, pkgName, bridge.TypeProvider(tfType))
 }
 
 // providerInfoFor fetches the bridge ProviderInfo that the package pkgName
-// serves under the TF provider name tfProvider (see
-// [bridge.ProviderInfoSource]), threading the SDK-on-disk descriptor (when
-// present) through to the mapper so dynamically bridged providers route via
-// the correct parameterization. Returns nil on miss.
+// serves under the TF provider name tfProvider, or nil.
 func (r *Resolver) providerInfoFor(ctx context.Context, pkgName, tfProvider string) *tfbridge.ProviderInfo {
 	if r.providerInfoSource == nil {
 		return nil

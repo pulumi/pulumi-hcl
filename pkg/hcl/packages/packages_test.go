@@ -125,55 +125,56 @@ func TestResolveResource(t *testing.T) {
 	ctx := t.Context()
 
 	tests := []struct {
-		name         string
-		pkgName      string
-		token        string
-		wantToken    string
-		wantErr      error
-		errAsInvalid bool
-		errContains  string
+		name           string
+		knownProviders []string
+		pkgName        string // the package to resolve in; by default, the one the token implies
+		token          string
+		wantToken      string
+		wantErr        error
+		errAsInvalid   bool
+		errContains    string
 	}{
 		{
-			name:      "basic resource",
-			pkgName:   "aws",
-			token:     "aws_s3_bucket",
-			wantToken: "aws:s3:Bucket",
+			name:           "basic resource",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_bucket",
+			wantToken:      "aws:s3:Bucket",
 		},
 		{
-			name:      "bridged-style module embeds member name",
-			pkgName:   "bridged",
-			token:     "bridged_iam_role",
-			wantToken: "bridged:iam/Role:Role",
+			name:           "bridged-style module embeds member name",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_iam_role",
+			wantToken:      "bridged:iam/Role:Role",
 		},
 		{
-			name:      "index module",
-			pkgName:   "aws",
-			token:     "aws_instance",
-			wantToken: "aws:index:Instance",
+			name:           "index module",
+			knownProviders: []string{"aws"},
+			token:          "aws_instance",
+			wantToken:      "aws:index:Instance",
 		},
 		{
-			name:      "multi-part module",
-			pkgName:   "aws",
-			token:     "aws_ec2_vpc",
-			wantToken: "aws:ec2:Vpc",
+			name:           "multi-part module",
+			knownProviders: []string{"aws"},
+			token:          "aws_ec2_vpc",
+			wantToken:      "aws:ec2:Vpc",
 		},
 		{
-			name:      "gcp provider",
-			pkgName:   "gcp",
-			token:     "gcp_storage_bucket",
-			wantToken: "gcp:storage:Bucket",
+			name:           "gcp provider",
+			knownProviders: []string{"gcp"},
+			token:          "gcp_storage_bucket",
+			wantToken:      "gcp:storage:Bucket",
 		},
 		{
-			name:      "single-segment token matches same-named provider",
-			pkgName:   "external",
-			token:     "external",
-			wantToken: "external:index/external:External",
+			name:           "single-segment token matches same-named provider",
+			knownProviders: []string{"external"},
+			token:          "external",
+			wantToken:      "external:index/external:External",
 		},
 		{
-			name:    "single-segment token with no same-named resource is not found",
-			pkgName: "aws",
-			token:   "aws",
-			wantErr: ErrNotFound,
+			name:           "single-segment token with no same-named resource is not found",
+			knownProviders: []string{"aws"},
+			token:          "aws",
+			wantErr:        ErrNotFound,
 		},
 		{
 			name:         "empty token",
@@ -182,41 +183,46 @@ func TestResolveResource(t *testing.T) {
 			errContains:  "non-empty",
 		},
 		{
-			name:    "resource not found",
-			pkgName: "aws",
-			token:   "aws_nonexistent",
-			wantErr: ErrNotFound,
+			name:           "resource not found",
+			knownProviders: []string{"aws"},
+			token:          "aws_nonexistent",
+			wantErr:        ErrNotFound,
 		},
 		{
 			name:    "package not found",
-			pkgName: "fake",
 			token:   "fake_resource",
 			wantErr: ErrNotFound,
 		},
 		{
-			name:      "underscore package name",
-			pkgName:   "fail_on_create",
-			token:     "fail_on_create_resource",
-			wantToken: "fail_on_create:index:Resource",
+			name:           "underscore package name",
+			knownProviders: []string{"fail_on_create", "simple"},
+			token:          "fail_on_create_resource",
+			wantToken:      "fail_on_create:index:Resource",
 		},
 		{
 			name:    "token without the package prefix is not found",
-			pkgName: "gcp",
-			token:   "aws_s3_bucket",
+			pkgName: "bridged",
+			token:   "fail_on_create_resource",
 			wantErr: ErrNotFound,
 		},
 		{
-			name:        "provider as resource (pulumi_providers_ prefix)",
-			pkgName:     "aws",
-			token:       "pulumi_providers_aws",
-			errContains: "is a provider type and cannot be declared with a resource block",
+			name:           "ambiguous token",
+			knownProviders: []string{"foo", "foo_bar"},
+			token:          "foo_bar_thing",
+			errContains:    "ambiguous token",
+		},
+		{
+			name:           "provider as resource (pulumi_providers_ prefix)",
+			knownProviders: []string{"aws"},
+			token:          "pulumi_providers_aws",
+			errContains:    "is a provider type and cannot be declared with a resource block",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			res, err := ResolveResource(ctx, loader, tt.pkgName, tt.token)
+			res, err := resolveTestResource(ctx, loader, tt.knownProviders, tt.pkgName, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
@@ -309,55 +315,56 @@ func TestResolveFunction(t *testing.T) {
 	ctx := t.Context()
 
 	tests := []struct {
-		name         string
-		pkgName      string
-		token        string
-		wantToken    string
-		wantErr      error
-		errAsInvalid bool
-		errContains  string
+		name           string
+		knownProviders []string
+		pkgName        string // the package to resolve in; by default, the one the token implies
+		token          string
+		wantToken      string
+		wantErr        error
+		errAsInvalid   bool
+		errContains    string
 	}{
 		{
-			name:      "direct function match",
-			pkgName:   "aws",
-			token:     "aws_s3_getbucket",
-			wantToken: "aws:s3:getBucket",
+			name:           "direct function match",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_getbucket",
+			wantToken:      "aws:s3:getBucket",
 		},
 		{
-			name:      "index module function",
-			pkgName:   "aws",
-			token:     "aws_getinstance",
-			wantToken: "aws:index:getInstance",
+			name:           "index module function",
+			knownProviders: []string{"aws"},
+			token:          "aws_getinstance",
+			wantToken:      "aws:index:getInstance",
 		},
 		{
-			name:      "implicit get prefix",
-			pkgName:   "aws",
-			token:     "aws_s3_bucket",
-			wantToken: "aws:s3:getBucket",
+			name:           "implicit get prefix",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_bucket",
+			wantToken:      "aws:s3:getBucket",
 		},
 		{
-			name:      "implicit get prefix multi-part",
-			pkgName:   "aws",
-			token:     "aws_ec2_vpc",
-			wantToken: "aws:ec2:getVpc",
+			name:           "implicit get prefix multi-part",
+			knownProviders: []string{"aws"},
+			token:          "aws_ec2_vpc",
+			wantToken:      "aws:ec2:getVpc",
 		},
 		{
-			name:      "gcp implicit get",
-			pkgName:   "gcp",
-			token:     "gcp_storage_bucket",
-			wantToken: "gcp:storage:getBucket",
+			name:           "gcp implicit get",
+			knownProviders: []string{"gcp"},
+			token:          "gcp_storage_bucket",
+			wantToken:      "gcp:storage:getBucket",
 		},
 		{
-			name:      "list function",
-			pkgName:   "aws",
-			token:     "aws_s3_listbuckets",
-			wantToken: "aws:s3:listBuckets",
+			name:           "list function",
+			knownProviders: []string{"aws"},
+			token:          "aws_s3_listbuckets",
+			wantToken:      "aws:s3:listBuckets",
 		},
 		{
-			name:      "single-segment data source matches same-named provider via implicit get",
-			pkgName:   "external",
-			token:     "external",
-			wantToken: "external:index/getExternal:getExternal",
+			name:           "single-segment data source matches same-named provider via implicit get",
+			knownProviders: []string{"external"},
+			token:          "external",
+			wantToken:      "external:index/getExternal:getExternal",
 		},
 		{
 			name:         "empty token",
@@ -366,34 +373,34 @@ func TestResolveFunction(t *testing.T) {
 			errContains:  "non-empty",
 		},
 		{
-			name:      "non-standard module format",
-			pkgName:   "mypkg",
-			token:     "mypkg_mod_concatworld",
-			wantToken: "mypkg:mod_concatWorld:concatWorld",
+			name:           "non-standard module format",
+			knownProviders: []string{"mypkg"},
+			token:          "mypkg_mod_concatworld",
+			wantToken:      "mypkg:mod_concatWorld:concatWorld",
 		},
 		{
-			name:      "non-standard module format with nested slash",
-			pkgName:   "mypkg",
-			token:     "mypkg_mod_nested_concatworld",
-			wantToken: "mypkg:mod/nested_concatWorld:concatWorld",
+			name:           "non-standard module format with nested slash",
+			knownProviders: []string{"mypkg"},
+			token:          "mypkg_mod_nested_concatworld",
+			wantToken:      "mypkg:mod/nested_concatWorld:concatWorld",
 		},
 		{
-			name:      "bridged-style data source implicit get",
-			pkgName:   "bridged",
-			token:     "bridged_iam_role",
-			wantToken: "bridged:iam/getRole:getRole",
+			name:           "bridged-style data source implicit get",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_iam_role",
+			wantToken:      "bridged:iam/getRole:getRole",
 		},
 		{
-			name:      "bridged-style index module implicit get",
-			pkgName:   "bridged",
-			token:     "bridged_availability_zone",
-			wantToken: "bridged:index/getAvailabilityZone:getAvailabilityZone",
+			name:           "bridged-style index module implicit get",
+			knownProviders: []string{"bridged"},
+			token:          "bridged_availability_zone",
+			wantToken:      "bridged:index/getAvailabilityZone:getAvailabilityZone",
 		},
 		{
-			name:    "function not found",
-			pkgName: "aws",
-			token:   "aws_nonexistent",
-			wantErr: ErrNotFound,
+			name:           "function not found",
+			knownProviders: []string{"aws"},
+			token:          "aws_nonexistent",
+			wantErr:        ErrNotFound,
 		},
 		{
 			name:    "package not found",
@@ -405,7 +412,7 @@ func TestResolveFunction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			fn, err := ResolveFunction(ctx, loader, tt.pkgName, tt.token)
+			fn, err := resolveTestFunction(ctx, loader, tt.knownProviders, tt.pkgName, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
@@ -469,6 +476,35 @@ func TestParameterizationAwareLoader_PlainPackageVersionAndURL(t *testing.T) {
 	}, inner.got)
 }
 
+// testPackage returns pkgName, or else the package of the provider that token
+// implies among knownProviders.
+func testPackage(knownProviders []string, pkgName, token string) (string, error) {
+	if pkgName != "" {
+		return pkgName, nil
+	}
+	return PackageFromToken(knownProviders, token)
+}
+
+func resolveTestResource(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, pkgName, token string,
+) (*schema.Resource, error) {
+	pkgName, err := testPackage(knownProviders, pkgName, token)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveResource(ctx, loader, pkgName, token)
+}
+
+func resolveTestFunction(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, pkgName, token string,
+) (*schema.Function, error) {
+	pkgName, err := testPackage(knownProviders, pkgName, token)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveFunction(ctx, loader, pkgName, token)
+}
+
 func TestTypePackage(t *testing.T) {
 	t.Parallel()
 
@@ -482,7 +518,7 @@ func TestTypePackage(t *testing.T) {
 		typ  string
 		want string
 	}{
-		{name: "implied provider", typ: "google_project", want: "google"},
+		{name: "implied provider", typ: "prov_thing", want: "prov"},
 		{name: "implied provider with underscores", typ: "snake_names_thing", want: "snake_names"},
 		{name: "implied provider renamed by its source", typ: "myp_thing", want: "simple"},
 	}

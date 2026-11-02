@@ -393,8 +393,7 @@ func (g *generator) collectMappings(ctx context.Context) {
 	}
 }
 
-// tokenPackageName returns the package of a Pulumi resource or function token
-// (e.g. "aws" for "aws:s3/bucket:Bucket").
+// tokenPackageName returns the package of a Pulumi resource or function token.
 func tokenPackageName(token string) string {
 	return string(tokens.Type(token).Package().Name())
 }
