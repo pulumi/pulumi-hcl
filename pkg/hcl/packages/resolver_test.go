@@ -192,11 +192,20 @@ func TestResolver_BindResourceUsesItsModule(t *testing.T) {
 		"snake_names": {Name: "snake_names"},
 	}}
 
+	resourceSchema := func(pkgName, token string) *schema.Resource {
+		pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: pkgName})
+		require.NoError(t, err)
+		res, ok, err := pkg.Resources().Get(token)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return res
+	}
+
 	bound, err := r.BindResource(t.Context(), module, &ast.Resource{Type: "snake_names_thing"})
 	require.NoError(t, err)
-	assert.Equal(t, "snake_names:index:thing", bound.Schema.Token)
+	assert.Equal(t, &BoundResource{Schema: resourceSchema("snake_names", "snake_names:index:thing")}, bound)
 
 	bound, err = r.BindResource(t.Context(), nil, &ast.Resource{Type: "snake_names_thing"})
 	require.NoError(t, err)
-	assert.Equal(t, "snake:index:namesThing", bound.Schema.Token)
+	assert.Equal(t, &BoundResource{Schema: resourceSchema("snake", "snake:index:namesThing")}, bound)
 }
