@@ -26,6 +26,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
@@ -525,10 +526,18 @@ func TestTransformSplatExpr(t *testing.T) {
 			file, diags := hclsyntax.ParseConfig(src, "test.tf", hcl.Pos{})
 			require.False(t, diags.HasErrors(), diags.Error())
 
+			config := ast.NewConfig()
+			resources := map[*ast.Resource]binding[packages.BoundResource]{}
+			for hclType, res := range tt.schemas {
+				block := &ast.Resource{Type: hclType, Name: "source"}
+				config.Resources[ast.ResourceKey(hclType, "source")] = block
+				resources[block] = binding[packages.BoundResource]{bound: &packages.BoundResource{Schema: res}}
+			}
 			ft := &fileTransformer{
-				sources:         map[string][]byte{"test.tf": src},
-				knownHCLTypes:   map[string]bool{"my_res": true},
-				resourceSchemas: tt.schemas,
+				sources:       map[string][]byte{"test.tf": src},
+				knownHCLTypes: map[string]bool{"my_res": true},
+				modules:       map[string]*ast.Config{".": config},
+				resources:     resources,
 			}
 
 			body := file.Body.(*hclsyntax.Body)
@@ -1476,4 +1485,51 @@ component "child" "./child" {
 
 `
 	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// A provider function call names the provider by its local name, which the
+// module's required_providers maps to the package that serves the function.
+func TestConvertProviderFunctionOfRenamedProvider(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name: "simple",
+		Functions: map[string]schema.FunctionSpec{"simple:index:joinStr": {
+			MultiArgumentInputs: []string{"left", "right"},
+			Inputs: &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+				"left":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+				"right": {TypeSpec: schema.TypeSpec{Type: "string"}},
+			}},
+			ReturnType: &schema.ReturnTypeSpec{TypeSpec: &schema.TypeSpec{Type: "string"}},
+		}},
+	})
+
+	src := []byte(`terraform {
+  required_providers {
+    myp = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+output "joined" {
+  value = provider::myp::join_str("a", "b")
+}
+`)
+	f, parseDiags := hclsyntax.ParseConfig(src, "main.tf", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+	body := f.Body.(*hclsyntax.Body)
+	ft, diags := newProjectTransformer(t.Context(), loader, nil, nil, []*hclsyntax.Body{body},
+		map[string][]byte{"main.tf": src})
+	require.False(t, diags.HasErrors(), diags.Error())
+	out := hclwrite.NewEmptyFile()
+	diags, err := ft.emitFile(t.Context(), src, "main.tf", body, out.Body(), nil)
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	assert.Equal(t, `output "joined" {
+  value = invoke("simple:index:joinStr", "a", "b")
+}
+
+`, string(out.Bytes()))
 }

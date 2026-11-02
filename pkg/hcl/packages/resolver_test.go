@@ -149,24 +149,26 @@ func TestResolver_MappedTokenMissingFromSchema(t *testing.T) {
 			"random_uuid4": {Tok: "random:index/getRandomUuid4:getRandomUuid4"},
 		},
 	}
-	r := NewResolver(loader, staticInfoSource{info}, nil, []string{"random"})
+	r := NewResolver(loader, staticInfoSource{info}, nil, nil)
+	res := &ast.Resource{Type: "random_uuid4"}
+	ds := &ast.DataSource{Type: "random_uuid4"}
 
-	res, err := r.ResolveResource(t.Context(), "random_uuid4")
-	assert.Nil(t, res)
+	boundRes, err := r.BindResource(t.Context(), nil, res)
+	assert.Nil(t, boundRes)
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	fn, err := r.ResolveFunction(t.Context(), "random_uuid4")
-	assert.Nil(t, fn)
+	boundDS, err := r.BindDataSource(t.Context(), nil, ds)
+	assert.Nil(t, boundDS)
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	// A mapping whose package the loader cannot serve at all is not-found too.
 	info.Name = "missing"
-	res, err = r.ResolveResource(t.Context(), "random_uuid4")
-	assert.Nil(t, res)
+	boundRes, err = r.BindResource(t.Context(), nil, res)
+	assert.Nil(t, boundRes)
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	fn, err = r.ResolveFunction(t.Context(), "random_uuid4")
-	assert.Nil(t, fn)
+	boundDS, err = r.BindDataSource(t.Context(), nil, ds)
+	assert.Nil(t, boundDS)
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 

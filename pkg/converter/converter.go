@@ -222,6 +222,13 @@ func (*hclConverter) ConvertSnippet(ctx context.Context, req *plugin.ConvertSnip
 	return nil, plugin.ErrNotYetImplemented
 }
 
+// providerFunctionCall identifies a provider-defined function call name
+// ("provider::<local>::<fn>") in the module of a directory.
+type providerFunctionCall struct {
+	dir  string
+	name string
+}
+
 // callReference identifies a call block by resource name and method name.
 type callReference struct {
 	resourceName string
@@ -259,10 +266,16 @@ type fileTransformer struct {
 	// sources maps each contributing source filename to its raw bytes so that
 	// expression byte slicing (e.g. for notImplemented() fall-throughs) works
 	// correctly when expressions from one file are inlined into another.
-	sources        map[string][]byte
-	knownHCLTypes  map[string]bool // set of HCL type labels used in resource blocks
-	stackRefNames  map[string]bool // set of logical names of pulumi_stackreference resources
-	knownProviders []string        // provider names from pulumi.required_providers
+	sources       map[string][]byte
+	knownHCLTypes map[string]bool // set of HCL type labels used in resource blocks
+	stackRefNames map[string]bool // set of logical names of pulumi_stackreference resources
+	// modules holds the configuration of each module, keyed by its
+	// directory. Each block binds with the required_providers of its module.
+	modules map[string]*ast.Config
+	// resources and dataSources hold the binding of each resource and data
+	// block, or the error that binding it gave.
+	resources   map[*ast.Resource]binding[packages.BoundResource]
+	dataSources map[*ast.DataSource]binding[packages.BoundDataSource]
 	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
 	// `provider` blocks; used to detect provider references in traversals.
 	providerAliases map[string]bool
@@ -272,19 +285,13 @@ type fileTransformer struct {
 	defaultProviders map[defaultProvider]bool
 	callBlocks       map[callReference]*hclsyntax.Body
 	dataBlocks       map[dataReference]*hclsyntax.Body
-	dataTokens       map[string]string // key: hclType, value: resolved PCL token
 	loader           schema.ReferenceLoader
 	resolver         *packages.Resolver
-	resourceSchemas  map[string]*schema.Resource // cache: HCL type label → resolved schema resource
-	functionSchemas  map[string]*schema.Function // cache: HCL type label → resolved schema function
-	// resourceMappings and functionMappings hold the bridge mapping of each
-	// entry of resourceSchemas and functionSchemas, or nil when it has none.
-	resourceMappings map[string]*bridge.BodyMapping
-	functionMappings map[string]*bridge.BodyMapping
-	// providerFunctions maps a provider-defined function call name
-	// ("provider::<local>::<fn>") to its resolved schema; a nil value marks a
-	// name that could not be resolved so it falls back to notImplemented.
-	providerFunctions map[string]*schema.Function
+	// providerFunctions maps a provider-defined function call
+	// ("provider::<local>::<fn>") in a module to its resolved schema; a nil
+	// value marks a call that could not be resolved so it falls back to
+	// notImplemented.
+	providerFunctions map[providerFunctionCall]*schema.Function
 	nameRewrites      map[string]string // logical name → sanitized PCL identifier (only for invalid names)
 	// dataPlans records, for each data block, if its invoke is inlined or
 	// hoisted to a local.
@@ -335,27 +342,26 @@ func newProjectTransformer(
 		callBlocks:        make(map[callReference]*hclsyntax.Body),
 		dataBlocks:        make(map[dataReference]*hclsyntax.Body),
 		dataPlans:         make(map[dataReference]*dataPlan),
-		dataTokens:        make(map[string]string),
 		loader:            loader,
-		resourceSchemas:   make(map[string]*schema.Resource),
-		resourceMappings:  make(map[string]*bridge.BodyMapping),
-		functionMappings:  make(map[string]*bridge.BodyMapping),
+		resolver:          packages.NewResolver(loader, providerInfoSource, pkgs, nil),
+		modules:           make(map[string]*ast.Config),
+		resources:         make(map[*ast.Resource]binding[packages.BoundResource]),
+		dataSources:       make(map[*ast.DataSource]binding[packages.BoundDataSource]),
 		nameRewrites:      make(map[string]string),
-		functionSchemas:   make(map[string]*schema.Function),
-		providerFunctions: make(map[string]*schema.Function),
+		providerFunctions: make(map[providerFunctionCall]*schema.Function),
 		providerAliases:   make(map[string]bool),
 		defaultProviders:  make(map[defaultProvider]bool),
 	}
-	// Phase 1: collect pulumi.required_providers across every body so that
-	// later resolution sees the full set regardless of which file declared it.
-	for _, body := range bodies {
-		ft.scanProviders(body)
+	// Phase 1: parse the configuration of each module and bind its resource
+	// and data blocks.
+	diags := ft.bindModules(ctx, bodies)
+	if diags.HasErrors() {
+		return ft, diags
 	}
-	ft.resolver = packages.NewResolver(loader, providerInfoSource, pkgs, ft.knownProviders)
-	// Phase 2: scan symbols (resources, data, call) using the merged provider set.
-	var diags hcl.Diagnostics
+	// Phase 2: scan the symbols (providers, call and data blocks) that
+	// expressions can reference.
 	for _, body := range bodies {
-		diags = append(diags, ft.scanSymbols(ctx, body)...)
+		ft.scanSymbols(body)
 	}
 	// Phase 2.5: resolve provider-defined function calls (provider::<local>::<fn>)
 	// that appear anywhere in expressions, so they eject as positional invokes.
@@ -370,32 +376,93 @@ func newProjectTransformer(
 	return ft, diags
 }
 
-func (ft *fileTransformer) scanProviders(body *hclsyntax.Body) {
-	seen := make(map[string]bool, len(ft.knownProviders))
-	for _, name := range ft.knownProviders {
-		seen[name] = true
-	}
-	for _, block := range body.Blocks {
-		if block.Type != "terraform" {
-			continue
-		}
-		for _, sub := range block.Body.Blocks {
-			if sub.Type != "required_providers" {
-				continue
-			}
-			for name := range sub.Body.Attributes {
-				if seen[name] {
-					continue
-				}
-				seen[name] = true
-				ft.knownProviders = append(ft.knownProviders, name)
-			}
-		}
-	}
+// binding is a block bound to the schema of its type, or the error that
+// binding it gave.
+type binding[T any] struct {
+	bound *T
+	err   error
 }
 
-func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body) hcl.Diagnostics {
+// bindModules parses the bodies of each module, grouped by directory, into
+// its configuration, and binds each resource and data block with the
+// required_providers of its module.
+func (ft *fileTransformer) bindModules(ctx context.Context, bodies []*hclsyntax.Body) hcl.Diagnostics {
+	files := map[string]map[string]*hcl.File{}
+	for _, body := range bodies {
+		name := body.SrcRange.Filename
+		dir := filepath.Dir(name)
+		if files[dir] == nil {
+			files[dir] = map[string]*hcl.File{}
+		}
+		files[dir][name] = &hcl.File{Body: body, Bytes: ft.sources[name]}
+	}
 	var diags hcl.Diagnostics
+	for _, dir := range slices.Sorted(maps.Keys(files)) {
+		config, parseDiags := parser.NewParser().ParseFiles(files[dir])
+		diags = append(diags, parseDiags...)
+		if parseDiags.HasErrors() {
+			continue
+		}
+		ft.modules[dir] = config
+		for _, key := range slices.Sorted(maps.Keys(config.Resources)) {
+			res := config.Resources[key]
+			bound, err := ft.resolver.BindResource(ctx, config.Terraform, res)
+			ft.resources[res] = binding[packages.BoundResource]{bound, err}
+		}
+		for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
+			ds := config.DataSources[key]
+			bound, err := ft.resolver.BindDataSource(ctx, config.Terraform, ds)
+			ft.dataSources[ds] = binding[packages.BoundDataSource]{bound, err}
+			if err != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "unknown data source type",
+					Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", ds.Type, err),
+					Subject:  ds.TypeRange.Ptr(),
+				})
+			}
+		}
+	}
+	return diags
+}
+
+// module returns the configuration of the module that the source range r is
+// in, or nil when that module did not parse.
+func (ft *fileTransformer) module(r hcl.Range) *ast.Config {
+	return ft.modules[filepath.Dir(r.Filename)]
+}
+
+// boundResource returns the binding of the resource block hclType.name in the
+// module that the source range r is in.
+func (ft *fileTransformer) boundResource(r hcl.Range, hclType, name string) binding[packages.BoundResource] {
+	if config := ft.module(r); config != nil {
+		if res, ok := config.Resources[ast.ResourceKey(hclType, name)]; ok {
+			return ft.resources[res]
+		}
+	}
+	return binding[packages.BoundResource]{err: fmt.Errorf("no resource %s.%s in the module", hclType, name)}
+}
+
+// boundDataSource mirrors boundResource for the data block hclType.name.
+func (ft *fileTransformer) boundDataSource(r hcl.Range, hclType, name string) binding[packages.BoundDataSource] {
+	if config := ft.module(r); config != nil {
+		if ds, ok := config.DataSources[ast.ResourceKey(hclType, name)]; ok {
+			return ft.dataSources[ds]
+		}
+	}
+	return binding[packages.BoundDataSource]{err: fmt.Errorf("no data source %s.%s in the module", hclType, name)}
+}
+
+// moduleTerraform returns the `terraform` block of the module that the source
+// range r is in, or nil when it has none.
+func (ft *fileTransformer) moduleTerraform(r hcl.Range) *ast.Terraform {
+	if config := ft.module(r); config != nil {
+		return config.Terraform
+	}
+	return nil
+}
+
+func (ft *fileTransformer) scanSymbols(body *hclsyntax.Body) {
 	for _, block := range body.Blocks {
 		if block.Type == "resource" && len(block.Labels) >= 1 {
 			ft.knownHCLTypes[block.Labels[0]] = true
@@ -422,25 +489,8 @@ func (ft *fileTransformer) scanSymbols(ctx context.Context, body *hclsyntax.Body
 			hclType := block.Labels[0]
 			name := block.Labels[1]
 			ft.dataBlocks[dataReference{hclType, name}] = block.Body
-			if _, seen := ft.dataTokens[hclType]; !seen {
-				fn, err := ft.resolver.ResolveFunction(ctx, hclType)
-				if err != nil {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  "unknown data source type",
-						Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", hclType, err),
-						Subject:  block.TypeRange.Ptr(),
-					})
-					ft.dataTokens[hclType] = ""
-				} else {
-					ft.dataTokens[hclType] = fn.Token
-					ft.functionSchemas[hclType] = fn
-					ft.functionMappings[hclType] = ft.resolver.DataSourceBodyMapping(ctx, hclType)
-				}
-			}
 		}
 	}
-	return diags
 }
 
 // scanProviderFunctions walks every expression in body, resolving each
@@ -457,12 +507,18 @@ func (ft *fileTransformer) scanProviderFunctions(ctx context.Context, body *hcls
 		if !ok {
 			return nil
 		}
-		if _, seen := ft.providerFunctions[call.Name]; seen {
+		key := providerFunctionCall{filepath.Dir(call.Range().Filename), call.Name}
+		if _, seen := ft.providerFunctions[key]; seen {
 			return nil
 		}
-		// The provider function's Pulumi token resolves from the same
-		// "<local>_<fn>" HCL form that data sources use.
-		fn, err := ft.resolver.ResolveFunction(ctx, local+"_"+fnName)
+		// As in the runtime, the module's required_providers maps the local
+		// name to the package that serves the function.
+		pkgName := packages.ProviderPackage(ft.moduleTerraform(call.Range()), local)
+		fns, err := ft.resolver.ProviderFunctions(ctx, pkgName)
+		fn, ok := fns[fnName]
+		if err == nil && !ok {
+			err = fmt.Errorf("package %q has no function %q", pkgName, fnName)
+		}
 		if err != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -470,10 +526,10 @@ func (ft *fileTransformer) scanProviderFunctions(ctx context.Context, body *hcls
 				Detail:   fmt.Sprintf("cannot convert %q to a PCL invoke: %v", call.Name, err),
 				Subject:  call.Range().Ptr(),
 			})
-			ft.providerFunctions[call.Name] = nil
+			ft.providerFunctions[key] = nil
 			return nil
 		}
-		ft.providerFunctions[call.Name] = fn
+		ft.providerFunctions[key] = fn.Function
 		return nil
 	})
 	return diags
@@ -555,21 +611,6 @@ func sanitizeIdentifier(name string) string {
 		return "_"
 	}
 	return b.String()
-}
-
-// resolveHCLType resolves an HCL resource type label (e.g., "pulumi_stash") to a schema
-// resource, caching the result for subsequent calls.
-func (ft *fileTransformer) resolveHCLType(ctx context.Context, hclType string) (*schema.Resource, error) {
-	if res, ok := ft.resourceSchemas[hclType]; ok {
-		return res, nil
-	}
-	res, err := ft.resolver.ResolveResource(ctx, hclType)
-	if err != nil {
-		return nil, fmt.Errorf("resolving resource type %q: %w", hclType, err)
-	}
-	ft.resourceSchemas[hclType] = res
-	ft.resourceMappings[hclType] = ft.resolver.ResourceBodyMapping(ctx, hclType)
-	return res, nil
 }
 
 // invokeOptionHCLToPCL maps HCL data-block attribute names that represent invoke
@@ -793,23 +834,23 @@ func (ft *fileTransformer) emitFile(
 				pclName = rewritten
 			}
 
-			res, err := ft.resolveHCLType(ctx, hclType)
-			if err != nil {
+			bound := ft.boundResource(block.Range(), hclType, logicalName)
+			if bound.err != nil {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
 					Summary:  "unknown resource type",
-					Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", hclType, err),
+					Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", hclType, bound.err),
 					Subject:  block.TypeRange.Ptr(),
 				})
 				continue
 			}
+			res, mapping := bound.bound.Schema, bound.bound.Mapping
 
 			blk := out.AppendNewBlock("resource", []string{pclName, res.Token})
 			if pclName != logicalName {
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
 			}
 
-			mapping := ft.resourceMappings[hclType]
 			// Emit input properties first (skip resource option attributes).
 			for _, attr := range inputAttributes(block.Body, isResourceMeta) {
 				name, prop, nested := lookupProperty(attr.Name, res.InputProperties, mapping)
@@ -948,7 +989,8 @@ func (ft *fileTransformer) emitFile(
 
 			resourceName := providerResourceName(block)
 
-			pkg, perr := packages.ResolvePackage(ctx, ft.loader, ft.knownProviders, "pulumi_providers_"+pkgName)
+			pkg, perr := packages.ResolvePackage(
+				ctx, ft.loader, packages.KnownProviders(ft.moduleTerraform(block.Range())), "pulumi_providers_"+pkgName)
 			if perr != nil {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
@@ -1179,7 +1221,7 @@ func (ft *fileTransformer) transformTypedExpr(
 		// A provider-defined function call ejects as a positional invoke:
 		// provider::<local>::<fn>(a, b) → invoke("<token>", a, b).
 		if _, _, ok := ast.ParseProviderFunctionName(e.Name); ok {
-			if fn := ft.providerFunctions[e.Name]; fn != nil {
+			if fn := ft.providerFunctions[providerFunctionCall{filepath.Dir(e.Range().Filename), e.Name}]; fn != nil {
 				args := make([]hclwrite.Tokens, 0, len(e.Args)+1)
 				args = append(args, hclwrite.TokensForValue(cty.StringVal(fn.Token)))
 				for _, arg := range e.Args {
@@ -1362,7 +1404,7 @@ func (ft *fileTransformer) transformIndexExpr(e *hclsyntax.IndexExpr) hclwrite.T
 					ft.rangeSubst = plan.subst
 					defer func() { ft.rangeSubst = saved }()
 				}
-				return ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
+				return ft.invokeExprTokens(e.Range(), typeAttr.Name, nameAttr.Name)
 			}
 		}
 	}
@@ -1423,21 +1465,27 @@ func (ft *fileTransformer) relativeTraversalSourceProps(
 	if !ok || coll.Traversal.RootName() != "data" || len(coll.Traversal) < 3 {
 		return nil, nil
 	}
-	typeAttr, ok := coll.Traversal[1].(hcl.TraverseAttr)
-	if !ok {
+	typeAttr, ok1 := coll.Traversal[1].(hcl.TraverseAttr)
+	nameAttr, ok2 := coll.Traversal[2].(hcl.TraverseAttr)
+	if !ok1 || !ok2 {
 		return nil, nil
 	}
-	return ft.dataResultProps(typeAttr.Name)
+	return ft.dataResultProps(coll.Range(), typeAttr.Name, nameAttr.Name)
 }
 
 // dataResultProps returns the schema properties of the result of the data
-// source hclType and their bridge mapping.
-func (ft *fileTransformer) dataResultProps(hclType string) ([]*schema.Property, *bridge.BodyMapping) {
+// block hclType.name in the module that the source range r is in, and their
+// bridge mapping.
+func (ft *fileTransformer) dataResultProps(r hcl.Range, hclType, name string) ([]*schema.Property, *bridge.BodyMapping) {
+	bound := ft.boundDataSource(r, hclType, name).bound
+	if bound == nil {
+		return nil, nil
+	}
 	var props []*schema.Property
-	if fn := ft.functionSchemas[hclType]; fn != nil && fn.ReturnType != nil {
+	if fn := bound.Schema; fn.ReturnType != nil {
 		props = propertiesOf(fn.ReturnType)
 	}
-	return props, ft.functionMappings[hclType]
+	return props, bound.Mapping
 }
 
 // dataSteps returns the steps of the data reference trav (data.<type>.<name>
@@ -1499,16 +1547,15 @@ func (ft *fileTransformer) transformSplatExpr(e *hclsyntax.SplatExpr) hclwrite.T
 // traversal "my_res.name.detail_items" where detail_items is Array<Object>,
 // this returns the Object's properties.
 func (ft *fileTransformer) splatElementProps(trav hcl.Traversal) ([]*schema.Property, *bridge.BodyMapping) {
-	root := trav.RootName()
-	res := ft.resourceSchemas[root]
-	if res == nil {
+	bound := ft.referencedResource(trav)
+	if bound == nil {
 		return nil, nil
 	}
 
 	// Walk the traversal (skipping root + resource name) to find the type at
 	// the splat point.
-	var currentType schema.Type = &schema.ObjectType{Properties: res.Properties}
-	mapping := ft.resourceMappings[root]
+	var currentType schema.Type = &schema.ObjectType{Properties: bound.Schema.Properties}
+	mapping := bound.Mapping
 	// flattened is true when the current step is a MaxItems=1 block, which
 	// the bridge flattens to its one element.
 	var flattened bool
@@ -1719,7 +1766,7 @@ func (ft *fileTransformer) transformTraversalRef(
 	// Trailing snake_case attrs become camelCase; the synthetic provider
 	// outputs need a casing hint so `URL` doesn't get mangled to `Url`.
 	// Defer to the call-inlining path when the alias names a call block.
-	if ft.isKnownProvider(root) && len(e.Traversal) >= 2 {
+	if ft.isKnownProvider(e.Range(), root) && len(e.Traversal) >= 2 {
 		if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok &&
 			ft.providerAliases[root+"."+attr.Name] {
 			isCallMethod := false
@@ -1759,7 +1806,7 @@ func (ft *fileTransformer) transformTraversalRef(
 				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens), nil
 			}
 		}
-		converted, block := ft.traversalAttrs(stripped, root)
+		converted, block := ft.traversalAttrs(stripped, ft.referencedResource(e.Traversal))
 		return hclwrite.TokensForTraversal(converted), block
 	}
 
@@ -1783,9 +1830,9 @@ func (ft *fileTransformer) transformTraversalRef(
 					// The planner inlines a ranged data block only at a
 					// reference data.<type>.<name>[key] with no other steps.
 					contract.Assertf(idx == nil, "inlined data reference %s has an index", ref.name)
-					tokens = ft.invokeExprTokens(typeAttr.Name, nameAttr.Name)
+					tokens = ft.invokeExprTokens(e.Range(), typeAttr.Name, nameAttr.Name)
 				}
-				props, mapping := ft.dataResultProps(typeAttr.Name)
+				props, mapping := ft.dataResultProps(e.Range(), typeAttr.Name, nameAttr.Name)
 				converted, block := mapSteps(steps, props, mapping)
 				return append(tokens, hclwrite.TokensForTraversal(converted)...), block
 			}
@@ -1971,14 +2018,27 @@ func elementTypeOf(t schema.Type) schema.Type {
 }
 
 // traversalAttrs is [schemaAwareTraversalAttrs] against the schema and bridge
-// mapping cached for hclType. The root (logical resource name) is left
-// unchanged.
-func (ft *fileTransformer) traversalAttrs(trav hcl.Traversal, hclType string) (hcl.Traversal, *bridge.FieldMapping) {
-	var props []*schema.Property
-	if res := ft.resourceSchemas[hclType]; res != nil {
-		props = res.Properties
+// mapping of the resource block bound, which may be nil. The root (logical
+// resource name) is left unchanged.
+func (ft *fileTransformer) traversalAttrs(trav hcl.Traversal, bound *packages.BoundResource) (hcl.Traversal, *bridge.FieldMapping) {
+	if bound == nil {
+		return schemaAwareTraversalAttrs(trav, nil, nil)
 	}
-	return schemaAwareTraversalAttrs(trav, props, ft.resourceMappings[hclType])
+	return schemaAwareTraversalAttrs(trav, bound.Schema.Properties, bound.Mapping)
+}
+
+// referencedResource returns the binding of the resource block that the
+// traversal <type>.<name>... references, or nil when it names no resource
+// block that binds.
+func (ft *fileTransformer) referencedResource(trav hcl.Traversal) *packages.BoundResource {
+	if len(trav) < 2 {
+		return nil
+	}
+	name, ok := trav[1].(hcl.TraverseAttr)
+	if !ok {
+		return nil
+	}
+	return ft.boundResource(trav.SourceRange(), trav.RootName(), name.Name).bound
 }
 
 // stripRoot converts a traversal like var.name.field to name.field by promoting the
@@ -2015,8 +2075,10 @@ var providerSyntheticOutputs = []*schema.Property{
 	{Name: "pluginDownloadURL", Type: schema.StringType},
 }
 
-func (ft *fileTransformer) isKnownProvider(name string) bool {
-	return slices.Contains(ft.knownProviders, name)
+// isKnownProvider reports whether the module that the source range r is in
+// declares the provider local name name.
+func (ft *fileTransformer) isKnownProvider(r hcl.Range, name string) bool {
+	return slices.Contains(packages.KnownProviders(ft.moduleTerraform(r)), name)
 }
 
 // rewriteTraversalRoot replaces the root name of a traversal if the name has
@@ -2061,15 +2123,19 @@ func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclw
 
 // invokeExprTokens generates PCL tokens for invoke("token", {args...}) or
 // invoke("token", {args...}, {opts...}) when invoke options are present.
-// It looks up the matching data block to extract the argument and option objects.
-func (ft *fileTransformer) invokeExprTokens(hclType, dsName string) hclwrite.Tokens {
-	tokenTokens := hclwrite.TokensForValue(cty.StringVal(ft.dataTokens[hclType]))
-
+// It looks up the matching data block, in the module that the source range r
+// is in, to extract the argument and option objects.
+func (ft *fileTransformer) invokeExprTokens(r hcl.Range, hclType, dsName string) hclwrite.Tokens {
+	var token string
 	var inputProps []*schema.Property
-	if fn := ft.functionSchemas[hclType]; fn != nil && fn.Inputs != nil {
-		inputProps = fn.Inputs.Properties
+	var mapping *bridge.BodyMapping
+	if bound := ft.boundDataSource(r, hclType, dsName).bound; bound != nil {
+		token, mapping = bound.Schema.Token, bound.Mapping
+		if bound.Schema.Inputs != nil {
+			inputProps = bound.Schema.Inputs.Properties
+		}
 	}
-	mapping := ft.functionMappings[hclType]
+	tokenTokens := hclwrite.TokensForValue(cty.StringVal(token))
 
 	var argAttrs, optAttrs []hclwrite.ObjectAttrTokens
 	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok {
@@ -2133,7 +2199,7 @@ func (ft *fileTransformer) hoistedInvokeTokens(
 ) hclwrite.Tokens {
 	rangeAttr := rangeAttribute(body, isDataMeta)
 	if rangeAttr == nil {
-		return ft.invokeExprTokens(hclType, dsName)
+		return ft.invokeExprTokens(body.SrcRange, hclType, dsName)
 	}
 	saved := ft.rangeSubst
 	defer func() { ft.rangeSubst = saved }()
@@ -2141,12 +2207,12 @@ func (ft *fileTransformer) hoistedInvokeTokens(
 	if rangeAttr.Name == "count" {
 		coll := hclwrite.TokensForFunctionCall("range", ft.transformExpr(rangeAttr.Expr))
 		ft.rangeSubst = plan.subst
-		return forExprTokens("", plan.subst.index, coll, nil, ft.invokeExprTokens(hclType, dsName), nil, false)
+		return forExprTokens("", plan.subst.index, coll, nil, ft.invokeExprTokens(body.SrcRange, hclType, dsName), nil, false)
 	}
 	coll := ft.transformForEachExpr(rangeAttr.Expr)
 	ft.rangeSubst = plan.subst
 	key := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: plan.subst.key}})
-	return forExprTokens(plan.subst.key, plan.subst.value, coll, key, ft.invokeExprTokens(hclType, dsName), nil, false)
+	return forExprTokens(plan.subst.key, plan.subst.value, coll, key, ft.invokeExprTokens(body.SrcRange, hclType, dsName), nil, false)
 }
 
 // substRoot returns trav with its first two steps (e.g. each.key) replaced

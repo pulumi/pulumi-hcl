@@ -40,12 +40,12 @@ type Resolver struct {
 	loader             schema.ReferenceLoader
 	providerInfoSource bridge.ProviderInfoSource
 	packages           map[string]workspace.PackageDescriptor
-	knownProviders     []string
 }
 
 // NewResolver builds a Resolver. providerInfoSource and packages may be nil/empty
 // when no bridge mapper is available, in which case resolution uses only the
-// convention-based fallback.
+// convention-based fallback. knownProviders is ignored: each block binds with
+// the required_providers of its own module (see [Resolver.BindResource]).
 func NewResolver(
 	loader schema.ReferenceLoader,
 	providerInfoSource bridge.ProviderInfoSource,
@@ -56,7 +56,6 @@ func NewResolver(
 		loader:             loader,
 		providerInfoSource: providerInfoSource,
 		packages:           pkgs,
-		knownProviders:     knownProviders,
 	}
 }
 
@@ -96,6 +95,20 @@ func (r *Resolver) BindDataSource(
 	return &BoundDataSource{Schema: fn, Mapping: r.DataSourceBodyMapping(ctx, ds.Type)}, nil
 }
 
+// ProviderPackage returns the Pulumi package name of the provider with the
+// local name local, in the module whose `terraform` block is tf: the last
+// segment of its required_providers source ("hashicorp/simple" → "simple"),
+// or local when the module does not declare a source for it.
+func ProviderPackage(tf *ast.Terraform, local string) string {
+	if tf != nil {
+		if req, ok := tf.RequiredProviders[local]; ok && req.Source != "" {
+			parts := strings.Split(req.Source, "/")
+			return parts[len(parts)-1]
+		}
+	}
+	return local
+}
+
 // KnownProviders returns the local names that the required_providers of the
 // `terraform` block tf declares.
 func KnownProviders(tf *ast.Terraform) []string {
@@ -105,13 +118,10 @@ func KnownProviders(tf *ast.Terraform) []string {
 	return slices.Collect(maps.Keys(tf.RequiredProviders))
 }
 
-// ResolveResource resolves a TF resource type to a Pulumi schema.Resource,
+// resolveResource resolves a TF resource type to a Pulumi schema.Resource,
 // preferring the bridge mapping and falling back to the convention-based
-// resolver. The synthetic terraform_data type resolves to its builtin schema.
-func (r *Resolver) ResolveResource(ctx context.Context, tfType string) (*schema.Resource, error) {
-	return r.resolveResource(ctx, r.knownProviders, tfType)
-}
-
+// resolver, which splits the type by knownProviders. The synthetic
+// terraform_data type resolves to its builtin schema.
 func (r *Resolver) resolveResource(ctx context.Context, knownProviders []string, tfType string) (*schema.Resource, error) {
 	if tfType == TerraformDataType {
 		return TerraformDataSchema(), nil
@@ -128,12 +138,8 @@ func (r *Resolver) resolveResource(ctx context.Context, knownProviders []string,
 	return ResolveResource(ctx, r.loader, knownProviders, tfType)
 }
 
-// ResolveFunction mirrors ResolveResource for TF data sources and functions. The
-// synthetic terraform_remote_state type resolves to its builtin schema.
-func (r *Resolver) ResolveFunction(ctx context.Context, tfType string) (*schema.Function, error) {
-	return r.resolveFunction(ctx, r.knownProviders, tfType)
-}
-
+// resolveFunction mirrors resolveResource for TF data sources. The synthetic
+// terraform_remote_state type resolves to its builtin schema.
 func (r *Resolver) resolveFunction(ctx context.Context, knownProviders []string, tfType string) (*schema.Function, error) {
 	if tfType == RemoteStateType {
 		return TerraformRemoteStateSchema(), nil
