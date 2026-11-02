@@ -280,9 +280,8 @@ func convertTFState(
 			if d, ok := descriptors[provider]; ok {
 				desc = &d
 			}
-			// State records the provider that serves the resource, which the
-			// bridge maps under the type's prefix (hashicorp/google-beta maps
-			// under "google").
+			// State records the provider that serves the resource; the bridge
+			// maps it under the type's prefix.
 			routing := desc
 			if routing == nil {
 				routing = &workspace.PackageDescriptor{PluginDescriptor: workspace.PluginDescriptor{Name: provider}}

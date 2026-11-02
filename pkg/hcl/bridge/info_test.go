@@ -26,9 +26,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pluginMapper serves a "terraform" mapping from each plugin, under the TF
-// provider name that the plugin maps under, as a bridged provider does. It
-// records each request.
+// pluginMapper serves a mapping from each plugin under the TF provider name
+// that the plugin maps under, and records each request.
 type pluginMapper struct {
 	// mappings maps "<plugin>/<TF provider>" to the Pulumi package name of
 	// the mapping.
@@ -48,15 +47,14 @@ func (m *pluginMapper) GetMapping(
 	return json.Marshal(map[string]any{"name": name})
 }
 
-// hashicorp/google-beta maps its google_* types under "google", the same name
-// that hashicorp/google maps under. A mapping is identified by that name and
-// the package whose plugin serves it.
+// Two providers can map their types under the same prefix. A mapping is
+// identified by that prefix and the package whose plugin serves it.
 func TestMappingIsIdentifiedByPrefixAndPackage(t *testing.T) {
 	t.Parallel()
 
 	mapper := &pluginMapper{mappings: map[string]string{
-		"google/google":      "google",
-		"google-beta/google": "google-beta",
+		"prov/prov":      "prov",
+		"prov-beta/prov": "prov-beta",
 	}}
 	source := bridge.NewCache(bridge.NewMapperSource(mapper))
 	pkg := func(name string) *workspace.PackageDescriptor {
@@ -64,12 +62,12 @@ func TestMappingIsIdentifiedByPrefixAndPackage(t *testing.T) {
 	}
 
 	names := map[string]string{}
-	for _, name := range []string{"google", "google-beta", "google"} {
-		info, err := source.GetProviderInfo(t.Context(), "google", pkg(name))
+	for _, name := range []string{"prov", "prov-beta", "prov"} {
+		info, err := source.GetProviderInfo(t.Context(), "prov", pkg(name))
 		require.NoError(t, err)
 		names[name] = info.Name
 	}
 
-	assert.Equal(t, map[string]string{"google": "google", "google-beta": "google-beta"}, names)
-	assert.Equal(t, []string{"google/google", "google-beta/google"}, mapper.requests)
+	assert.Equal(t, map[string]string{"prov": "prov", "prov-beta": "prov-beta"}, names)
+	assert.Equal(t, []string{"prov/prov", "prov-beta/prov"}, mapper.requests)
 }

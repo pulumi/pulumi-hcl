@@ -331,9 +331,8 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 	}, names)
 }
 
-// A provider whose name does not prefix its resource types (google-beta
-// owning google_* resources) must resolve via the state's provider address,
-// under the prefix that the bridge maps it by.
+// A provider whose name does not prefix its resource types must resolve via
+// the state's provider address, under the prefix that the bridge maps it by.
 func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 	t.Parallel()
 

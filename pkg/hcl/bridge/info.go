@@ -31,20 +31,17 @@ import (
 )
 
 // ProviderInfoSource resolves a TF provider name to its bridged
-// tfbridge.ProviderInfo. The TF provider name is the name the bridge maps the
-// provider under: the prefix of its resource types (e.g. "google" for
-// hashicorp/google-beta). desc, when non-nil, names the Pulumi package that
-// serves the provider (for a package that `pulumi install` wrote, the on-disk
-// SDK package descriptor) and routes the mapper request to that package's
-// plugin and parameterization.
+// tfbridge.ProviderInfo. The TF provider name is the prefix of the provider's
+// resource types, which the bridge maps the provider under. desc, when
+// non-nil, names the Pulumi package that serves the provider, and routes the
+// mapper request to that package's plugin and parameterization.
 type ProviderInfoSource interface {
 	GetProviderInfo(ctx context.Context, tfProvider string, desc *workspace.PackageDescriptor) (*tfbridge.ProviderInfo, error)
 }
 
 // TypeProvider returns the TF provider name that a bridged provider maps a
 // resource or data source type under: the type's first underscore-delimited
-// segment, or the whole type for single-segment types (providers like
-// hashicorp/external whose type name equals the provider name).
+// segment, or the whole type when it has no underscore.
 func TypeProvider(tfType string) string {
 	before, _, _ := strings.Cut(tfType, "_")
 	return before
@@ -77,9 +74,8 @@ func NewCache(source ProviderInfoSource) *Cache {
 	}
 }
 
-// GetProviderInfo returns the bridged info for tfProvider served by desc;
-// subsequent calls for the same name and package reuse the first result
-// (including errors).
+// GetProviderInfo returns the bridged info for tfProvider served by desc,
+// reusing the first result (including errors) for the same name and package.
 func (c *Cache) GetProviderInfo(
 	ctx context.Context, tfProvider string, desc *workspace.PackageDescriptor,
 ) (*tfbridge.ProviderInfo, error) {
@@ -119,11 +115,9 @@ func NewMapperSource(mapper convert.Mapper) *MapperSource {
 	return &MapperSource{mapper: mapper}
 }
 
-// GetProviderInfo asks the mapper for the bridge mapping of tfProvider. The
-// request routes to the plugin that desc names, with desc's parameterization
-// attached when it has one (the SDK on disk was written by `pulumi install`
-// for a bridged provider). Without desc, the matching Pulumi plugin is hinted
-// by tfProvider name.
+// GetProviderInfo asks the mapper for the bridge mapping of tfProvider from
+// the plugin that desc names, with desc's parameterization. Without desc, the
+// plugin named tfProvider is asked.
 func (s *MapperSource) GetProviderInfo(
 	ctx context.Context, tfProvider string, desc *workspace.PackageDescriptor,
 ) (*tfbridge.ProviderInfo, error) {
