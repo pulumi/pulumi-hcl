@@ -1746,14 +1746,14 @@ func (e *Engine) registerResourceInstanceInContext(
 	opts.DependsOn = e.cellURNs.widen(opts.DependsOn)
 
 	if opts.Version == "" {
-		opts.Version = e.pinnedVersion(packageNameFromResourceType(res.Type))
+		opts.Version = e.packageVersion(schemaPackage(bound.Package, resSchema.PackageReference))
 	}
 
 	if opts.PluginDownloadURL == "" && resSchema.PackageReference != nil {
 		opts.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
 	}
 
-	opts.PackageRef = e.packageRefForResource(res.Type, resSchema)
+	opts.PackageRef = e.packageRefForSchema(bound.Package, resSchema.PackageReference)
 
 	resourceName, err := e.resourceInstanceName(res, instance, hclCtx, modInst)
 	if err != nil {
@@ -3048,34 +3048,44 @@ func packageNameFromResourceType(token string) string {
 }
 
 // pinnedVersion returns the version the program pins for the provider with
-// the required_providers local name local, or "" when it pins none. The pin
-// reaches the schema loader through the same package map, so a block is type
-// checked against the version its requests carry.
+// the required_providers local name local, or "" when it pins none.
 func (e *Engine) pinnedVersion(local string) string {
-	desc, ok := e.packages[e.providerPackageName(local)]
+	return e.packageVersion(e.providerPackageName(local))
+}
+
+// packageVersion returns the version the program pins for the provider
+// package pkgName, or "" when it pins none. The pin reaches the schema loader
+// through the same package map, so a block is type checked against the
+// version its requests carry.
+func (e *Engine) packageVersion(pkgName string) string {
+	desc, ok := e.packages[pkgName]
 	if !ok || desc.Version == nil {
 		return ""
 	}
 	return desc.Version.String()
 }
 
-// packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
-func (e *Engine) packageRefForType(hclToken string) PackageRef {
-	return e.packageRefs[packageNameFromResourceType(hclToken)]
-}
-
-// packageRefForResource returns the registered package ref for a resource. An
-// extension resource's token lives in the base provider's namespace, but its
-// resolved schema names the extension package (e.g. "myext"), which is the one
-// registered as a parameterized package — using it lets the engine record the
-// resource's ExtensionRef.
-func (e *Engine) packageRefForResource(hclToken string, resSchema *schema.Resource) PackageRef {
-	if resSchema != nil && resSchema.PackageReference != nil {
-		if ref, ok := e.packageRefs[resSchema.PackageReference.Name()]; ok {
-			return ref
+// packageRefForSchema returns the registered package ref for a resource or
+// function served by the provider package pkgName, whose resolved schema
+// belongs to the package ref. An extension's schema names the extension
+// package (e.g. "myext"), which is the one registered as a parameterized
+// package — using it lets the engine record the resource's ExtensionRef.
+func (e *Engine) packageRefForSchema(pkgName string, ref schema.PackageReference) PackageRef {
+	if ref != nil {
+		if pkgRef, ok := e.packageRefs[ref.Name()]; ok {
+			return pkgRef
 		}
 	}
-	return e.packageRefForType(hclToken)
+	return e.packageRefs[pkgName]
+}
+
+// schemaPackage returns the package of a schema, ref, that the provider
+// package pkgName serves: an extension of pkgName, or pkgName itself.
+func schemaPackage(pkgName string, ref schema.PackageReference) string {
+	if ref != nil {
+		return ref.Name()
+	}
+	return pkgName
 }
 
 func (e *Engine) providerPackageName(local string) string {
@@ -3647,8 +3657,8 @@ func (e *Engine) invokeDataSourceOnce(
 	invokeReq := InvokeRequest{
 		Token:      funcSchema.Token,
 		Args:       inputs,
-		Version:    e.pinnedVersion(packageNameFromResourceType(ds.Type)),
-		PackageRef: e.packageRefForType(ds.Type),
+		Version:    e.packageVersion(schemaPackage(bound.Package, funcSchema.PackageReference)),
+		PackageRef: e.packageRefForSchema(bound.Package, funcSchema.PackageReference),
 	}
 
 	if ds.Provider != nil {
@@ -3824,19 +3834,18 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 
 	// Find the resource or provider being called by logical name
 	var resKey string
-	var resType string
+	var resPkg string
 	var resSchema *schema.Resource
 	var isProviderResource bool // true for resource "pulumi_providers_*" blocks
 
 	for k, res := range e.config.Resources {
 		if res.Name == call.ResourceName {
 			resKey = k
-			resType = res.Type
 			bound, err := e.resolver.BindResource(ctx, e.config.Terraform, res)
 			if err != nil {
 				return unknownTokenDiag("resource", res.TypeRange, res.Type, err)
 			}
-			resSchema = bound.Schema
+			resPkg, resSchema = bound.Package, bound.Schema
 			isProviderResource = strings.HasPrefix(res.Type, "pulumi_providers_")
 			break
 		}
@@ -3854,8 +3863,8 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		}
 		if matched != nil {
 			resKey = matched.Key()
-			providerToken := "pulumi_providers_" + e.providerPackageName(matched.Name)
-			resType = providerToken
+			resPkg = e.providerPackageName(matched.Name)
+			providerToken := "pulumi_providers_" + resPkg
 			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, packages.KnownProviders(e.config.Terraform), providerToken)
 			if err != nil {
 				return fmt.Errorf("resolving provider package for call: %w", err)
@@ -3936,7 +3945,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	ret, err := e.callMethod(ctx, CallRequest{
 		Token:      method.Function.Token,
 		Args:       userArgs.Set("__self__", selfRef),
-		PackageRef: e.packageRefForType(resType),
+		PackageRef: e.packageRefForSchema(resPkg, resSchema.PackageReference),
 	})
 	if err != nil {
 		return fmt.Errorf("calling method %s.%s: %w", call.ResourceName, call.MethodName, err)

@@ -1496,3 +1496,115 @@ func TestPackageSchema(t *testing.T) {
 		require.EqualError(t, err, `modules "user-data" and "userdata" both map to Go package "userdata"`)
 	})
 }
+
+// packageResolver binds resources and data sources by the package that serves
+// them (see [packages.BlockPackage]) and their TF type, keyed as
+// "<package>/<type>".
+type packageResolver struct {
+	stubResolver
+	functions map[string]*pulumiSchema.Function
+}
+
+func (s packageResolver) BindResource(
+	_ context.Context, module *ast.Terraform, res *ast.Resource,
+) (*packages.BoundResource, error) {
+	pkgName, err := packages.BlockPackage(module, res.Provider, res.Type)
+	if err != nil {
+		return nil, err
+	}
+	resSchema, ok := s.resources[pkgName+"/"+res.Type]
+	if !ok {
+		return nil, packages.ErrNotFound
+	}
+	return &packages.BoundResource{Package: pkgName, Schema: resSchema}, nil
+}
+
+func (s packageResolver) BindDataSource(
+	_ context.Context, module *ast.Terraform, ds *ast.DataSource,
+) (*packages.BoundDataSource, error) {
+	pkgName, err := packages.BlockPackage(module, ds.Provider, ds.Type)
+	if err != nil {
+		return nil, err
+	}
+	fn, ok := s.functions[pkgName+"/"+ds.Type]
+	if !ok {
+		return nil, packages.ErrNotFound
+	}
+	return &packages.BoundDataSource{Package: pkgName, Schema: fn}, nil
+}
+
+// TestBlockOutputsAreTypedFromTheirProvider shows that a resource or data
+// source is typed from the provider that its `provider` meta-argument
+// selects, as declared by the module that holds the block, when the type's
+// prefix names another provider.
+func TestBlockOutputsAreTypedFromTheirProvider(t *testing.T) {
+	t.Parallel()
+
+	child, childDiags := parser.NewParser().ParseSource("child/main.tf", []byte(`
+terraform {
+  required_providers {
+    google-beta = {
+      source = "hashicorp/google-beta"
+    }
+  }
+}
+
+resource "google_project_service_identity" "this" {
+  provider = google-beta
+  service  = "container.googleapis.com"
+}
+
+data "google_project" "this" {
+  provider = google-beta
+}
+
+output "email" {
+  value = google_project_service_identity.this.email
+}
+
+output "number" {
+  value = data.google_project.this.number
+}
+`))
+	require.False(t, childDiags.HasErrors(), childDiags.Error())
+
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(`
+module "child" {
+  source = "./child"
+}
+
+output "email" {
+  value = module.child.email
+}
+
+output "number" {
+  value = module.child.number
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	binder := &Binder{
+		Resources: packageResolver{
+			stubResolver: stubResolver{resources: map[string]*pulumiSchema.Resource{
+				"google-beta/google_project_service_identity": {Properties: []*pulumiSchema.Property{
+					{Name: "email", Type: pulumiSchema.StringType},
+				}},
+			}},
+			functions: map[string]*pulumiSchema.Function{
+				"google-beta/google_project": {ReturnType: &pulumiSchema.ObjectType{
+					Properties: []*pulumiSchema.Property{{Name: "number", Type: pulumiSchema.IntType}},
+				}},
+			},
+		},
+		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./child": child}},
+		ModuleDir: ".",
+	}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, binder, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"email":  {Type: TypeString},
+		"number": {Type: TypeNumber},
+	}, moduleSchema.OutputProperties)
+}

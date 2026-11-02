@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: "Install, type and run a resource or data source with the provider that its `provider` meta-argument selects"
+time: 2026-11-02T12:59:53.000000+01:00
+custom:
+    Component: runtime
+    PR: "802"

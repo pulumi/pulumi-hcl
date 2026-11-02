@@ -19,6 +19,8 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -505,27 +507,44 @@ func resolveTestFunction(
 	return ResolveFunction(ctx, loader, pkgName, token)
 }
 
-func TestTypePackage(t *testing.T) {
+func TestBlockPackage(t *testing.T) {
 	t.Parallel()
 
 	tf := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
+		"google-beta": {Source: "hashicorp/google-beta"},
 		"myp":         {Source: "hashicorp/simple"},
 		"snake_names": {Source: "pulumi/snake_names"},
 	}}
 
 	tests := []struct {
-		name string
-		typ  string
-		want string
+		name     string
+		provider string // the `provider` meta-argument; "" when unset
+		typ      string
+		want     string
 	}{
 		{name: "implied provider", typ: "prov_thing", want: "prov"},
 		{name: "implied provider with underscores", typ: "snake_names_thing", want: "snake_names"},
 		{name: "implied provider renamed by its source", typ: "myp_thing", want: "simple"},
+		{name: "provider", provider: "google-beta", typ: "google_project", want: "google-beta"},
+		{name: "aliased provider", provider: "google-beta.west", typ: "google_project", want: "google-beta"},
+		{name: "keyed provider", provider: "google-beta.by_region[each.key]", typ: "google_project", want: "google-beta"},
+		{name: "provider renamed by its source", provider: "myp", typ: "google_project", want: "simple"},
+		{name: "undeclared provider", provider: "other", typ: "google_project", want: "other"},
+		{name: "keyed provider with a static key", provider: `google-beta.by_region["us"]`, typ: "google_project", want: "google-beta"},
+		{name: "provider value from a method call", provider: "call.res.method", typ: "google_project", want: "google"},
+		{name: "provider value from a module output", provider: "module.child.provider", typ: "google_project", want: "google"},
+		{name: "quoted provider", provider: `"google-beta"`, typ: "google_project", want: "google"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := TypePackage(tf, tt.typ)
+			var provider hcl.Expression
+			if tt.provider != "" {
+				expr, diags := hclsyntax.ParseExpression([]byte(tt.provider), "", hcl.InitialPos)
+				require.False(t, diags.HasErrors(), diags.Error())
+				provider = expr
+			}
+			got, err := BlockPackage(tf, provider, tt.typ)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})

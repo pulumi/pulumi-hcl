@@ -1,0 +1,27 @@
+{
+  "name": "wrapper",
+  "version": "0.0.0-dev",
+  "config": {},
+  "resources": {
+    "wrapper:index:Module": {
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "required": [
+        "result"
+      ],
+      "inputProperties": {
+        "input": {
+          "type": "string"
+        }
+      },
+      "isComponent": true
+    }
+  }
+}
