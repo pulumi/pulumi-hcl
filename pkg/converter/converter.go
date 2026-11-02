@@ -273,9 +273,9 @@ type fileTransformer struct {
 	// directory. Each block binds with the required_providers of its module.
 	modules map[string]*ast.Config
 	// resources and dataSources hold the binding of each resource and data
-	// block, or the error that binding it gave.
-	resources   map[*ast.Resource]binding[packages.BoundResource]
-	dataSources map[*ast.DataSource]binding[packages.BoundDataSource]
+	// block that binds.
+	resources   map[*ast.Resource]*packages.BoundResource
+	dataSources map[*ast.DataSource]*packages.BoundDataSource
 	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
 	// `provider` blocks; used to detect provider references in traversals.
 	providerAliases map[string]bool
@@ -345,8 +345,8 @@ func newProjectTransformer(
 		loader:            loader,
 		resolver:          packages.NewResolver(loader, providerInfoSource, pkgs, nil),
 		modules:           make(map[string]*ast.Config),
-		resources:         make(map[*ast.Resource]binding[packages.BoundResource]),
-		dataSources:       make(map[*ast.DataSource]binding[packages.BoundDataSource]),
+		resources:         make(map[*ast.Resource]*packages.BoundResource),
+		dataSources:       make(map[*ast.DataSource]*packages.BoundDataSource),
 		nameRewrites:      make(map[string]string),
 		providerFunctions: make(map[providerFunctionCall]*schema.Function),
 		providerAliases:   make(map[string]bool),
@@ -376,13 +376,6 @@ func newProjectTransformer(
 	return ft, diags
 }
 
-// binding is a block bound to the schema of its type, or the error that
-// binding it gave.
-type binding[T any] struct {
-	bound *T
-	err   error
-}
-
 // bindModules parses the bodies of each module, grouped by directory, into
 // its configuration, and binds each resource and data block with the
 // required_providers of its module.
@@ -397,6 +390,14 @@ func (ft *fileTransformer) bindModules(ctx context.Context, bodies []*hclsyntax.
 		files[dir][name] = &hcl.File{Body: body, Bytes: ft.sources[name]}
 	}
 	var diags hcl.Diagnostics
+	unknown := func(kind, typ string, typeRange hcl.Range, err error) {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("unknown %s type", kind),
+			Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", typ, err),
+			Subject:  typeRange.Ptr(),
+		})
+	}
 	for _, dir := range slices.Sorted(maps.Keys(files)) {
 		config, parseDiags := parser.NewParser().ParseFiles(files[dir])
 		diags = append(diags, parseDiags...)
@@ -406,57 +407,45 @@ func (ft *fileTransformer) bindModules(ctx context.Context, bodies []*hclsyntax.
 		ft.modules[dir] = config
 		for _, key := range slices.Sorted(maps.Keys(config.Resources)) {
 			res := config.Resources[key]
-			bound, err := ft.resolver.BindResource(ctx, config.Terraform, res)
-			ft.resources[res] = binding[packages.BoundResource]{bound, err}
+			if bound, err := ft.resolver.BindResource(ctx, config.Terraform, res); err != nil {
+				unknown("resource", res.Type, res.TypeRange, err)
+			} else {
+				ft.resources[res] = bound
+			}
 		}
 		for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
 			ds := config.DataSources[key]
-			bound, err := ft.resolver.BindDataSource(ctx, config.Terraform, ds)
-			ft.dataSources[ds] = binding[packages.BoundDataSource]{bound, err}
-			if err != nil {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "unknown data source type",
-					Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", ds.Type, err),
-					Subject:  ds.TypeRange.Ptr(),
-				})
+			if bound, err := ft.resolver.BindDataSource(ctx, config.Terraform, ds); err != nil {
+				unknown("data source", ds.Type, ds.TypeRange, err)
+			} else {
+				ft.dataSources[ds] = bound
 			}
 		}
 	}
 	return diags
 }
 
-// module returns the configuration of the module that the source range r is
-// in, or nil when that module did not parse.
-func (ft *fileTransformer) module(r hcl.Range) *ast.Config {
-	return ft.modules[filepath.Dir(r.Filename)]
-}
-
 // boundResource returns the binding of the resource block hclType.name in the
-// module that the source range r is in.
-func (ft *fileTransformer) boundResource(r hcl.Range, hclType, name string) binding[packages.BoundResource] {
-	if config := ft.module(r); config != nil {
-		if res, ok := config.Resources[ast.ResourceKey(hclType, name)]; ok {
-			return ft.resources[res]
-		}
+// module that the source range r is in, or nil when it has none.
+func (ft *fileTransformer) boundResource(r hcl.Range, hclType, name string) *packages.BoundResource {
+	if config := ft.modules[filepath.Dir(r.Filename)]; config != nil {
+		return ft.resources[config.Resources[ast.ResourceKey(hclType, name)]]
 	}
-	return binding[packages.BoundResource]{err: fmt.Errorf("no resource %s.%s in the module", hclType, name)}
+	return nil
 }
 
 // boundDataSource mirrors boundResource for the data block hclType.name.
-func (ft *fileTransformer) boundDataSource(r hcl.Range, hclType, name string) binding[packages.BoundDataSource] {
-	if config := ft.module(r); config != nil {
-		if ds, ok := config.DataSources[ast.ResourceKey(hclType, name)]; ok {
-			return ft.dataSources[ds]
-		}
+func (ft *fileTransformer) boundDataSource(r hcl.Range, hclType, name string) *packages.BoundDataSource {
+	if config := ft.modules[filepath.Dir(r.Filename)]; config != nil {
+		return ft.dataSources[config.DataSources[ast.ResourceKey(hclType, name)]]
 	}
-	return binding[packages.BoundDataSource]{err: fmt.Errorf("no data source %s.%s in the module", hclType, name)}
+	return nil
 }
 
 // moduleTerraform returns the `terraform` block of the module that the source
 // range r is in, or nil when it has none.
 func (ft *fileTransformer) moduleTerraform(r hcl.Range) *ast.Terraform {
-	if config := ft.module(r); config != nil {
+	if config := ft.modules[filepath.Dir(r.Filename)]; config != nil {
 		return config.Terraform
 	}
 	return nil
@@ -834,17 +823,12 @@ func (ft *fileTransformer) emitFile(
 				pclName = rewritten
 			}
 
+			// bindModules reported a resource type that does not bind.
 			bound := ft.boundResource(block.Range(), hclType, logicalName)
-			if bound.err != nil {
-				resultDiags = append(resultDiags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  "unknown resource type",
-					Detail:   fmt.Sprintf("cannot convert HCL type %q to PCL token: %v", hclType, bound.err),
-					Subject:  block.TypeRange.Ptr(),
-				})
+			if bound == nil {
 				continue
 			}
-			res, mapping := bound.bound.Schema, bound.bound.Mapping
+			res, mapping := bound.Schema, bound.Mapping
 
 			blk := out.AppendNewBlock("resource", []string{pclName, res.Token})
 			if pclName != logicalName {
@@ -1477,7 +1461,7 @@ func (ft *fileTransformer) relativeTraversalSourceProps(
 // block hclType.name in the module that the source range r is in, and their
 // bridge mapping.
 func (ft *fileTransformer) dataResultProps(r hcl.Range, hclType, name string) ([]*schema.Property, *bridge.BodyMapping) {
-	bound := ft.boundDataSource(r, hclType, name).bound
+	bound := ft.boundDataSource(r, hclType, name)
 	if bound == nil {
 		return nil, nil
 	}
@@ -2038,7 +2022,7 @@ func (ft *fileTransformer) referencedResource(trav hcl.Traversal) *packages.Boun
 	if !ok {
 		return nil
 	}
-	return ft.boundResource(trav.SourceRange(), trav.RootName(), name.Name).bound
+	return ft.boundResource(trav.SourceRange(), trav.RootName(), name.Name)
 }
 
 // stripRoot converts a traversal like var.name.field to name.field by promoting the
@@ -2129,7 +2113,7 @@ func (ft *fileTransformer) invokeExprTokens(r hcl.Range, hclType, dsName string)
 	var token string
 	var inputProps []*schema.Property
 	var mapping *bridge.BodyMapping
-	if bound := ft.boundDataSource(r, hclType, dsName).bound; bound != nil {
+	if bound := ft.boundDataSource(r, hclType, dsName); bound != nil {
 		token, mapping = bound.Schema.Token, bound.Mapping
 		if bound.Schema.Inputs != nil {
 			inputProps = bound.Schema.Inputs.Properties

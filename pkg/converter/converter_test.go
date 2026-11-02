@@ -527,11 +527,11 @@ func TestTransformSplatExpr(t *testing.T) {
 			require.False(t, diags.HasErrors(), diags.Error())
 
 			config := ast.NewConfig()
-			resources := map[*ast.Resource]binding[packages.BoundResource]{}
+			resources := map[*ast.Resource]*packages.BoundResource{}
 			for hclType, res := range tt.schemas {
 				block := &ast.Resource{Type: hclType, Name: "source"}
 				config.Resources[ast.ResourceKey(hclType, "source")] = block
-				resources[block] = binding[packages.BoundResource]{bound: &packages.BoundResource{Schema: res}}
+				resources[block] = &packages.BoundResource{Schema: res}
 			}
 			ft := &fileTransformer{
 				sources:       map[string][]byte{"test.tf": src},
