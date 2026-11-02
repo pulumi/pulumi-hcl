@@ -1037,7 +1037,7 @@ func (host *LanguageHost) RunPlugin(
 	}
 
 	// Create the provider (name and version are derived from the module's terraform {} block)
-	provider, err := NewLocalProvider(server.Context(), modulePath, req.LoaderTarget)
+	provider, err := NewLocalProvider(server.Context(), modulePath)
 	if err != nil {
 		errBytes := fmt.Appendf(nil, "Error creating provider: %v\n", err)
 		if err := server.Send(&pulumirpc.RunPluginResponse{

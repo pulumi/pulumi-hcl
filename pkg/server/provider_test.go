@@ -29,10 +29,24 @@ import (
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
+
+// newLocalProvider starts the locally-born provider for dir and handshakes
+// with addr as the mapper target. It returns the handshake error.
+func newLocalProvider(t *testing.T, dir, addr string) (pulumirpc.ResourceProviderServer, error) {
+	t.Helper()
+	prov, err := NewLocalProvider(t.Context(), dir)
+	require.NoError(t, err)
+	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{
+		LoaderTarget: &addr, MapperTarget: &addr, ResolverTarget: &addr,
+	})
+	return prov, err
+}
 
 // TestNewLocalProvider drives the locally-born provider — the RunPlugin path —
 // end to end over the raw gRPC surface. The loader/mapper address points at an
@@ -44,11 +58,7 @@ func TestNewLocalProvider(t *testing.T) {
 	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
 	require.NoError(t, err)
 
-	prov, err := NewLocalProvider(t.Context(), dir, "127.0.0.1:1")
-	require.NoError(t, err)
-
-	// An address-free handshake, as the RunPlugin flow sends, must succeed.
-	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{})
+	prov, err := newLocalProvider(t, dir, "127.0.0.1:1")
 	require.NoError(t, err)
 
 	info, err := prov.GetPluginInfo(t.Context(), &emptypb.Empty{})
@@ -89,6 +99,74 @@ func TestNewLocalProvider(t *testing.T) {
 	require.NotNil(t, component, "the component itself must be registered")
 	require.Equal(t, []string{"urn:pulumi:test::proj::pkg:index:Other::sibling"}, component.ReplaceWith)
 	require.Equal(t, structpb.NewStringValue("trigger"), component.ReplacementTrigger)
+}
+
+// The locally-born provider types its components through the bridge mappings,
+// so a handshake without a mapper target fails, and the provider serves no
+// schema.
+func TestNewLocalProviderRequiresMapper(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	prov, err := NewLocalProvider(t.Context(), dir)
+	require.NoError(t, err)
+
+	addr := "127.0.0.1:1"
+	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{LoaderTarget: &addr, ResolverTarget: &addr})
+	assert.EqualError(t, err, "no mapper target received during handshake")
+
+	_, err = prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})
+	assert.EqualError(t, err, "GetSchema called before a successful handshake")
+}
+
+// The package of a locally-born provider is fixed at birth.
+func TestNewLocalProviderRejectsParameterize(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	prov, err := newLocalProvider(t, dir, "127.0.0.1:1")
+	require.NoError(t, err)
+
+	_, err = prov.Parameterize(t.Context(), &pulumirpc.ParameterizeRequest{
+		Parameters: &pulumirpc.ParameterizeRequest_Args{
+			Args: &pulumirpc.ParameterizeRequest_ParametersArgs{Args: []string{"module", "./other"}},
+		},
+	})
+	assert.Equal(t, status.New(codes.FailedPrecondition,
+		"a local package provider cannot be parameterized").Proto(), status.Convert(err).Proto())
+}
+
+// The engine can send GetSchema and Construct calls in parallel, and the first
+// of them builds the components of a locally-born provider. Every concurrent
+// caller must see the one build.
+func TestNewLocalProviderConcurrentBuild(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
+	require.NoError(t, err)
+
+	prov, err := newLocalProvider(t, dir, "127.0.0.1:1")
+	require.NoError(t, err)
+
+	schemas := make([]string, 8)
+	var wg sync.WaitGroup
+	for i := range schemas {
+		wg.Go(func() {
+			out, err := prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})
+			assert.NoError(t, err)
+			schemas[i] = out.GetSchema()
+		})
+	}
+	wg.Wait()
+
+	for _, s := range schemas[1:] {
+		assert.Equal(t, schemas[0], s)
+	}
+	assert.NotEmpty(t, schemas[0])
 }
 
 // captureMonitor records registrations without invoking bound hooks, so a
@@ -147,9 +225,7 @@ func TestConstructForwardsResourceHooks(t *testing.T) {
 	dir, err := filepath.Abs(filepath.Join("testdata", "module-one-var"))
 	require.NoError(t, err)
 
-	prov, err := NewLocalProvider(t.Context(), dir, "127.0.0.1:1")
-	require.NoError(t, err)
-	_, err = prov.Handshake(t.Context(), &pulumirpc.ProviderHandshakeRequest{})
+	prov, err := newLocalProvider(t, dir, "127.0.0.1:1")
 	require.NoError(t, err)
 
 	mon := &captureMonitor{}
@@ -199,7 +275,7 @@ func TestNewLocalProviderMultiComponent(t *testing.T) {
 	pkgDir := filepath.Join(base, "mypkg")
 	require.NoError(t, os.Rename(writeMultiComponentModule(t, true), pkgDir))
 
-	prov, err := NewLocalProvider(t.Context(), pkgDir, "127.0.0.1:1")
+	prov, err := newLocalProvider(t, pkgDir, "127.0.0.1:1")
 	require.NoError(t, err)
 
 	out, err := prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})
@@ -244,7 +320,7 @@ func TestNewLocalProviderSubmodulesOnly(t *testing.T) {
 	pkgDir := filepath.Join(base, "mypkg")
 	require.NoError(t, os.Rename(writeMultiComponentModule(t, false), pkgDir))
 
-	prov, err := NewLocalProvider(t.Context(), pkgDir, "127.0.0.1:1")
+	prov, err := newLocalProvider(t, pkgDir, "127.0.0.1:1")
 	require.NoError(t, err)
 
 	out, err := prov.GetSchema(t.Context(), &pulumirpc.GetSchemaRequest{})

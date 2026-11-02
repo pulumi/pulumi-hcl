@@ -84,12 +84,13 @@ func NewModuleProvider(ctx context.Context, version string) p.Provider {
 		version:      version,
 		moduleLoader: modules.NewLoader(modules.LiveResolver(ctx)),
 	}
-	return m.asProvider()
+	return grpcerr.Wrap(m.asProvider())
 }
 
 // asProvider wires the moduleProvider into the raw pulumi-go-provider surface.
+// The caller classifies its errors with grpcerr.Wrap.
 func (m *moduleProvider) asProvider() p.Provider {
-	return grpcerr.Wrap(p.Provider{
+	return p.Provider{
 		Handshake:    m.handshake,
 		Parameterize: m.parameterize,
 		GetSchema:    m.getSchema,
@@ -102,13 +103,11 @@ func (m *moduleProvider) asProvider() p.Provider {
 		},
 		Construct: m.construct,
 		Cancel:    m.cancel,
-	})
+	}
 }
 
 // handshake captures the schema loader, bridge mapper, and package resolver the
-// engine exposes. All three are required for the dynamic provider; a
-// locally-born provider (NewLocalProvider) already carries its services, so for
-// it the handshake only negotiates capabilities.
+// engine exposes. All three are required.
 func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) (p.HandshakeResponse, error) {
 	if req.EngineAddress != "" && m.engine == nil {
 		if engineConn, err := grpc.NewClient(req.EngineAddress,
@@ -151,11 +150,14 @@ func (m *moduleProvider) handshake(ctx context.Context, req p.HandshakeRequest) 
 	return p.HandshakeResponse{}, nil
 }
 
+// handshaken reports whether a handshake has supplied the engine's services.
+func (m *moduleProvider) handshaken() bool { return m.providerInfoSource != nil }
+
 // getSchema returns the static hcl:index:Module schema, or — once the provider
 // has been parameterized — the parameterized package's typed component schemas.
 // A bundle-backed parameterization carries its Value so a generated SDK can
 // re-parameterize; a locally-born provider has no bundle.
-func (m *moduleProvider) getSchema(context.Context, p.GetSchemaRequest) (p.GetSchemaResponse, error) {
+func (m *moduleProvider) getSchema(ctx context.Context, _ p.GetSchemaRequest) (p.GetSchemaResponse, error) {
 	spec := moduleResourceSchema(m.version)
 	if m.param != nil {
 		spec = m.param.spec
@@ -305,8 +307,8 @@ func (m *moduleProvider) construct(ctx context.Context, req p.ConstructRequest) 
 // inputs to the module's HCL variables, runs the engine against the module tree
 // (bundled and offline on the parameterize path, the local directory on the
 // RunPlugin path), and exposes the module's outputs under their typed schema
-// property names. Handshake preconditions are enforced by parameterize and the
-// local birth, not here.
+// property names. Handshake preconditions are enforced by parameterize and by
+// selfParameterize, not here.
 func (m *moduleProvider) constructParameterized(ctx context.Context, req p.ConstructRequest) (p.ConstructResponse, error) {
 	param := m.param
 	comp, ok := param.components[req.Urn.Type()]

@@ -28,9 +28,9 @@ require (
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-go-provider v1.8.0
-	github.com/pulumi/pulumi-terraform-bridge/v3 v3.138.0
-	github.com/pulumi/pulumi/pkg/v3 v3.273.0
-	github.com/pulumi/pulumi/sdk/v3 v3.273.0
+	github.com/pulumi/pulumi-terraform-bridge/v3 v3.142.1-0.20261102104139-2c2d43eabd53
+	github.com/pulumi/pulumi/pkg/v3 v3.273.1-0.20261101155800-3743f12e0193
+	github.com/pulumi/pulumi/sdk/v3 v3.273.1-0.20261101155800-3743f12e0193
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.42.0
@@ -241,7 +241,6 @@ require (
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/posener/complete v1.2.3 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/pulumi-labs/pulumi-hcl v0.3.1 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
 	github.com/pulumi/inflector v0.2.1 // indirect
 	github.com/pulumi/pulumi-cloud-sdk/go v1.20261030.1400 // indirect
@@ -325,6 +324,3 @@ tool (
 	github.com/iwahbe/helpmakego
 	github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language
 )
-
-// Copy needed replace from https://github.com/pulumi/pulumi-terraform-bridge/blob/master/go.mod
-replace github.com/hashicorp/terraform-plugin-sdk/v2 => github.com/pulumi/terraform-plugin-sdk/v2 v2.0.0-20260318212141-5525259d096b

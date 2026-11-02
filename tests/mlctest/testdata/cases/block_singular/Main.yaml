@@ -1,0 +1,5 @@
+resources:
+  b:
+    type: blocks:index:Module
+outputs:
+  summary: ${b.summary}

@@ -320,8 +320,7 @@ func (m *moduleProvider) finishParameterize(
 		pkgVer = *pkgVersion
 	}
 
-	components, spec, err := buildComponents(ctx, comps, pkgName, rootToken, pkgVer,
-		m.componentBinderFactory(loader))
+	param, err := m.bind(ctx, loader, comps, pkgName, rootToken, pkgVer)
 	if err != nil {
 		// A module that loaded but cannot be typed uses something the
 		// conversion does not support, unless the chain pins a more specific
@@ -329,21 +328,34 @@ func (m *moduleProvider) finishParameterize(
 		return p.ParameterizeResponse{}, grpcerr.Classify(err, codes.Unimplemented)
 	}
 
-	value, err := makeValue()
+	param.value, err = makeValue()
 	if err != nil {
 		return p.ParameterizeResponse{}, err
 	}
+	param.versionConstraint = versionConstraint
+	param.tempDir = tempDir
 
-	m.param = &parameterizedModule{
-		spec:              spec,
-		components:        components,
-		loader:            loader,
-		versionConstraint: versionConstraint,
-		value:             value,
-		name:              pkgName,
-		tempDir:           tempDir,
-	}
+	m.param = param
 	return p.ParameterizeResponse{Name: pkgName, Version: pkgVer}, nil
+}
+
+// bind types comps as the components of the package pkgName, through the
+// services the handshake supplied.
+func (m *moduleProvider) bind(
+	ctx context.Context, loader *modules.Loader, comps []loadedComponent,
+	pkgName string, rootToken tokens.Type, version semver.Version,
+) (*parameterizedModule, error) {
+	components, spec, err := buildComponents(ctx, comps, pkgName, rootToken, version,
+		m.componentBinderFactory(loader))
+	if err != nil {
+		return nil, err
+	}
+	return &parameterizedModule{
+		spec:       spec,
+		components: components,
+		loader:     loader,
+		name:       pkgName,
+	}, nil
 }
 
 // resolvePackages resolves every provider the module tree rooted at config
