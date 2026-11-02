@@ -1533,3 +1533,33 @@ output "joined" {
 
 `, string(out.Bytes()))
 }
+
+// A program that does not bind does not convert: the converter reports the
+// parser's errors and the types that do not resolve, as the runtime does.
+func TestConvertReportsProgramsThatDoNotBind(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, multiFileTestSchema)
+	summaries := func(src string) []string {
+		f, parseDiags := hclsyntax.ParseConfig([]byte(src), "main.tf", hcl.Pos{Line: 1, Column: 1})
+		require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+		_, diags := newProjectTransformer(t.Context(), loader, nil, nil, []*hclsyntax.Body{f.Body.(*hclsyntax.Body)},
+			map[string][]byte{"main.tf": []byte(src)})
+		var out []string
+		for _, d := range diags {
+			out = append(out, d.Summary)
+		}
+		return out
+	}
+
+	assert.Equal(t, []string{"unknown resource type", "unknown data source type"}, summaries(`
+resource "test_missing" "r" {}
+
+data "test_missing" "d" {}
+`))
+	assert.Equal(t, []string{"Duplicate resource"}, summaries(`
+resource "test_item" "r" {}
+
+resource "test_item" "r" {}
+`))
+}
