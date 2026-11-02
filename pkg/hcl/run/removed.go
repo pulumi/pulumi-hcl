@@ -45,7 +45,7 @@ func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
 			Provisioners: rem.Provisioners,
 			DeclRange:    rem.DeclRange,
 		}
-		bound, err := e.resolver.BindResource(ctx, e.config.Terraform, res)
+		bound, err := e.resolver.BindResource(ctx, e.graph.ModuleTerraform(rem.From.Module), res)
 		if err != nil {
 			return fmt.Errorf("removed block for %s: resolving resource type: %w", rem.From, err)
 		}

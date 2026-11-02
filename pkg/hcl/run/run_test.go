@@ -6464,3 +6464,84 @@ func TestPropertyDependencies(t *testing.T) {
 		property.Path{}.AppendKey("ref"):     {"urn:id"},
 	}, deps)
 }
+
+// A block binds against the required_providers of the module that declares
+// it, and the prior object of a `moved` block binds against the module that
+// it was in. The root module does not declare snake_x, so a split at the first
+// underscore would ask for a package named "snake".
+func TestEngine_BlocksBindInTheirModule(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(tmpDir+"/a", 0o755))
+	require.NoError(t, os.WriteFile(tmpDir+"/a/main.tf", []byte(`
+terraform {
+  required_providers {
+    snake_x = { source = "pulumi/snake_x" }
+  }
+}
+
+resource "snake_x_thing" "u" {}
+`), 0o644))
+	require.NoError(t, os.WriteFile(tmpDir+"/main.tf", []byte(`
+terraform {
+  required_providers {
+    snake_names = { source = "pulumi/snake_names" }
+  }
+}
+
+module "a" {
+  source = "./a"
+}
+
+resource "snake_names_thing" "t" {}
+
+moved {
+  from = module.a.snake_x_old.t
+  to   = snake_names_thing.t
+}
+`), 0o644))
+
+	config, diags := parser.NewParser().ParseDirectory(tmpDir)
+	require.False(t, diags.HasErrors(), "parse error: %s", diags.Error())
+
+	resource := schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}}
+	mock := &testutil.MockResourceMonitor{}
+	engine := newTestEngine(t, config, &run.EngineOptions{
+		ModuleLoader:    testLiveModuleLoader(t),
+		ProjectName:     "test-project",
+		StackName:       "dev",
+		ResourceMonitor: mock,
+		WorkDir:         tmpDir,
+		RootDir:         tmpDir,
+		SchemaLoader: schemaloader.New(t,
+			schema.PackageSpec{
+				Name:      "snake_names",
+				Resources: map[string]schema.ResourceSpec{"snake_names:index:Thing": resource},
+			},
+			schema.PackageSpec{
+				Name: "snake_x",
+				Resources: map[string]schema.ResourceSpec{
+					"snake_x:index:Thing": resource,
+					"snake_x:index:Old":   resource,
+				},
+			},
+		),
+	})
+	require.NoError(t, engine.Run(t.Context()))
+
+	aliases := map[string][]run.Alias{}
+	for _, req := range mock.RegisteredResources {
+		if strings.HasPrefix(req.Type, "snake") {
+			aliases[req.Type] = req.Aliases
+		}
+	}
+	assert.Equal(t, map[string][]run.Alias{
+		"snake_x:index:Thing": nil,
+		"snake_names:index:Thing": {{Spec: &run.AliasSpec{
+			Name:      "a.t",
+			Type:      "snake_x:index:Old",
+			ParentURN: "urn:pulumi:test::project::components:index:A::a",
+		}}},
+	}, aliases)
+}

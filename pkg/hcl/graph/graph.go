@@ -425,6 +425,23 @@ func (g *Graph) MovedBlocks(path modulepath.Path) []*ast.Moved {
 	return g.moved[path]
 }
 
+// ModuleTerraform returns the `terraform` block of the module at path, a
+// configuration path, or of its nearest ancestor that the configuration has.
+// An address that a `moved` or `removed` block names can be in a module that
+// the configuration no longer has.
+func (g *Graph) ModuleTerraform(path modulepath.Path) *ast.Terraform {
+	for {
+		if scope, ok := g.scopes[path]; ok {
+			return scope.config.Terraform
+		}
+		parent, _, ok := path.Parent()
+		if !ok {
+			return nil
+		}
+		path = parent
+	}
+}
+
 // recordRef records that key was referenced from the given source range.
 // Multiple references to the same key accumulate; this is used by Validate
 // to anchor errors about unknown nodes back to the offending source.

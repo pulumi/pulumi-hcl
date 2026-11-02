@@ -366,15 +366,6 @@ func unknownTokenDiag(kind string, typeRange hcl.Range, typ string, err error) e
 	return hcl.Diagnostics{d}
 }
 
-// moduleTerraform returns the `terraform` block of the module modInfo, or of
-// the root module when modInfo is nil.
-func (e *Engine) moduleTerraform(modInfo *graph.ModuleInfo) *ast.Terraform {
-	if modInfo == nil {
-		return e.config.Terraform
-	}
-	return modInfo.Terraform
-}
-
 // Engine executes HCL programs against the Pulumi engine.
 type Engine struct {
 	// config is the parsed HCL configuration.
@@ -2426,9 +2417,8 @@ func (e *Engine) resolveMovedAliases(
 	// resPath is the resource's module instance path (with any count/for_each
 	// keys), which is what a resolved moved address is matched against.
 	resPath := modulepath.Root()
-	var modInfo *graph.ModuleInfo
 	if modInst != nil {
-		resPath, modInfo = modInst.Path, modInst.ModuleInfo
+		resPath = modInst.Path
 	}
 
 	// A resource address at some point along the chain of moves.
@@ -2508,8 +2498,9 @@ func (e *Engine) resolveMovedAliases(
 				// carries the prior type's token so the engine matches the old URN.
 				if from.Type != res.Type {
 					// No configuration declares the prior object, so it binds
-					// with no meta-arguments.
-					priorRes, err := e.resolver.BindResource(ctx, e.moduleTerraform(modInfo), &ast.Resource{Type: from.Type})
+					// with no meta-arguments in the module it was in.
+					priorRes, err := e.resolver.BindResource(
+						ctx, e.graph.ModuleTerraform(fromPath.Config()), &ast.Resource{Type: from.Type})
 					if err != nil {
 						logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
 						continue

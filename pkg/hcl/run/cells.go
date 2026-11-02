@@ -377,7 +377,7 @@ func (e *Engine) expandResourceCell(
 	}
 	evalCtx, parentURN, modInst := cellEvalState(e, mi)
 
-	bound, err := e.resolver.BindResource(ctx, e.moduleTerraform(node.ModuleInfo), res)
+	bound, err := e.resolver.BindResource(ctx, e.graph.ModuleTerraform(node.Key.Module), res)
 	if err != nil {
 		return unknownTokenDiag("resource", res.TypeRange, res.Type, err)
 	}
@@ -456,7 +456,7 @@ func (e *Engine) expandDataCell(
 	}
 	evalCtx, _, _ := cellEvalState(e, mi)
 
-	bound, err := e.resolver.BindDataSource(ctx, e.moduleTerraform(node.ModuleInfo), ds)
+	bound, err := e.resolver.BindDataSource(ctx, e.graph.ModuleTerraform(node.Key.Module), ds)
 	if err != nil {
 		return unknownTokenDiag("data source", ds.TypeRange, ds.Type, err)
 	}

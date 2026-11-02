@@ -1,5 +1,5 @@
 kind: bug-fixes
-body: Resolve the block types of a child module with the module's own `required_providers`
+body: Resolve the block types of a child module with the module's own `required_providers`, not the root module's
 time: 2026-11-02T12:00:00.000000+01:00
 custom:
     Component: runtime
