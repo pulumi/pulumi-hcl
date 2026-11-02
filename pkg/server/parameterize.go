@@ -385,25 +385,11 @@ func (m *moduleProvider) componentBinderFactory(
 		cachedLoader := pulumiSchema.NewCachedLoader(
 			packages.NewParameterizationAwareLoader(m.schemaLoader, c.packages))
 		return &schema.Binder{
-			Resources: packages.NewResolver(cachedLoader, m.providerInfoSource, c.packages, knownProviderNames(c.loaded.Config)),
+			Resources: packages.NewResolver(cachedLoader, m.providerInfoSource, c.packages, nil),
 			Modules:   moduleLoaderAdapter{loader},
 			ModuleDir: c.loaded.SourcePath,
 		}
 	}
-}
-
-// knownProviderNames lists the local names the module's terraform block declares,
-// so resource/data type tokens split on the declared provider rather than the
-// first underscore.
-func knownProviderNames(config *ast.Config) []string {
-	if config.Terraform == nil {
-		return nil
-	}
-	names := make([]string, 0, len(config.Terraform.RequiredProviders))
-	for name := range config.Terraform.RequiredProviders {
-		names = append(names, name)
-	}
-	return names
 }
 
 // resolveRecorder wraps a resolver, recording where every module source resolves

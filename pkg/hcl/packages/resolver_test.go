@@ -20,6 +20,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -167,4 +168,35 @@ func TestResolver_MappedTokenMissingFromSchema(t *testing.T) {
 	fn, err = r.ResolveFunction(t.Context(), "random_uuid4")
 	assert.Nil(t, fn)
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// A block binds against the required_providers of the module that declares
+// it, so a provider local name with an underscore splits the type correctly
+// even when no other module declares that provider.
+func TestResolver_BindResourceUsesItsModule(t *testing.T) {
+	t.Parallel()
+
+	thing := schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}}
+	loader := schemaloader.New(t,
+		schema.PackageSpec{
+			Name:      "snake",
+			Resources: map[string]schema.ResourceSpec{"snake:index:namesThing": thing},
+		},
+		schema.PackageSpec{
+			Name:      "snake_names",
+			Resources: map[string]schema.ResourceSpec{"snake_names:index:thing": thing},
+		},
+	)
+	r := NewResolver(loader, nil, nil, nil)
+	module := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
+		"snake_names": {Name: "snake_names"},
+	}}
+
+	bound, err := r.BindResource(t.Context(), module, &ast.Resource{Type: "snake_names_thing"})
+	require.NoError(t, err)
+	assert.Equal(t, "snake_names:index:thing", bound.Schema.Token)
+
+	bound, err = r.BindResource(t.Context(), nil, &ast.Resource{Type: "snake_names_thing"})
+	require.NoError(t, err)
+	assert.Equal(t, "snake:index:namesThing", bound.Schema.Token)
 }
