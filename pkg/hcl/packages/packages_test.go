@@ -19,9 +19,11 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,6 +127,7 @@ func TestResolveResource(t *testing.T) {
 	tests := []struct {
 		name           string
 		knownProviders []string
+		pkgName        string // the package to resolve in; by default, the one the token implies
 		token          string
 		wantToken      string
 		wantErr        error
@@ -197,6 +200,12 @@ func TestResolveResource(t *testing.T) {
 			wantToken:      "fail_on_create:index:Resource",
 		},
 		{
+			name:    "token without the package prefix is not found",
+			pkgName: "bridged",
+			token:   "fail_on_create_resource",
+			wantErr: ErrNotFound,
+		},
+		{
 			name:           "ambiguous token",
 			knownProviders: []string{"foo", "foo_bar"},
 			token:          "foo_bar_thing",
@@ -213,7 +222,7 @@ func TestResolveResource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			res, err := ResolveResource(ctx, loader, tt.knownProviders, tt.token)
+			res, err := resolveTestResource(ctx, loader, tt.knownProviders, tt.pkgName, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
@@ -308,6 +317,7 @@ func TestResolveFunction(t *testing.T) {
 	tests := []struct {
 		name           string
 		knownProviders []string
+		pkgName        string // the package to resolve in; by default, the one the token implies
 		token          string
 		wantToken      string
 		wantErr        error
@@ -402,7 +412,7 @@ func TestResolveFunction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			fn, err := ResolveFunction(ctx, loader, tt.knownProviders, tt.token)
+			fn, err := resolveTestFunction(ctx, loader, tt.knownProviders, tt.pkgName, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
@@ -464,4 +474,60 @@ func TestParameterizationAwareLoader_PlainPackageVersionAndURL(t *testing.T) {
 		Version:     &v,
 		DownloadURL: "git://github.com/pulumi/component-test-providers/test-provider",
 	}, inner.got)
+}
+
+// testPackage returns pkgName, or else the package of the provider that token
+// implies among knownProviders.
+func testPackage(knownProviders []string, pkgName, token string) (string, error) {
+	if pkgName != "" {
+		return pkgName, nil
+	}
+	return PackageFromToken(knownProviders, token)
+}
+
+func resolveTestResource(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, pkgName, token string,
+) (*schema.Resource, error) {
+	pkgName, err := testPackage(knownProviders, pkgName, token)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveResource(ctx, loader, pkgName, token)
+}
+
+func resolveTestFunction(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, pkgName, token string,
+) (*schema.Function, error) {
+	pkgName, err := testPackage(knownProviders, pkgName, token)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveFunction(ctx, loader, pkgName, token)
+}
+
+func TestTypePackage(t *testing.T) {
+	t.Parallel()
+
+	tf := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
+		"myp":         {Source: "hashicorp/simple"},
+		"snake_names": {Source: "pulumi/snake_names"},
+	}}
+
+	tests := []struct {
+		name string
+		typ  string
+		want string
+	}{
+		{name: "implied provider", typ: "prov_thing", want: "prov"},
+		{name: "implied provider with underscores", typ: "snake_names_thing", want: "snake_names"},
+		{name: "implied provider renamed by its source", typ: "myp_thing", want: "simple"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := TypePackage(tf, tt.typ)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

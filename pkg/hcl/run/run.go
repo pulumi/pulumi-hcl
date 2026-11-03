@@ -2091,7 +2091,7 @@ func (e *Engine) buildResourceOptions(
 			opts.Provider = ref
 		}
 	} else {
-		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(res.Type)); ok {
+		if ref, ok := e.defaultProviders.Get(e.providerPackageName(packageNameFromResourceType(res.Type))); ok {
 			opts.Provider = ref
 		}
 	}
@@ -3671,7 +3671,7 @@ func (e *Engine) invokeDataSourceOnce(
 			invokeReq.Provider = ref
 		}
 	} else {
-		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(ds.Type)); ok {
+		if ref, ok := e.defaultProviders.Get(e.providerPackageName(packageNameFromResourceType(ds.Type))); ok {
 			invokeReq.Provider = ref
 		}
 	}
