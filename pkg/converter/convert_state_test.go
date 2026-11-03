@@ -62,6 +62,17 @@ func (f fakeInfoSource) GetProviderInfo(
 	return f.infos[tfProvider], nil
 }
 
+// routedInfoSource is an in-memory bridge.ProviderInfoSource keyed as
+// "<package>/<TF provider>": the mapper routes a request to the package's
+// plugin and matches the TF provider name that the plugin maps under.
+type routedInfoSource map[string]*tfbridge.ProviderInfo
+
+func (s routedInfoSource) GetProviderInfo(
+	_ context.Context, tfProvider string, desc *workspace.PackageDescriptor,
+) (*tfbridge.ProviderInfo, error) {
+	return s[desc.PackageName()+"/"+tfProvider], nil
+}
+
 // roundtrip mirrors what the mapper delivers in production: the info is
 // marshalled with its schema-only shim and unmarshalled back, so value
 // translation runs against the same ProviderShim it would in the CLI.
@@ -320,8 +331,8 @@ func TestConvertTFState_CountAndForEach(t *testing.T) {
 	}, names)
 }
 
-// A provider whose name does not prefix its resource types (google-beta
-// owning google_* resources) must resolve via the state's provider address.
+// A provider whose name does not prefix its resource types must resolve via
+// the state's provider address, under the prefix that the bridge maps it by.
 func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -335,8 +346,8 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 		]
 	}`)
 
-	src := fakeInfoSource{infos: map[string]*tfbridge.ProviderInfo{
-		"confounding-beta": roundtrip(t, tfbridge.ProviderInfo{
+	src := routedInfoSource{
+		"confounding-beta/confounding": roundtrip(t, tfbridge.ProviderInfo{
 			P: shimv2.NewProvider(&sdkschema.Provider{
 				ResourcesMap: map[string]*sdkschema.Resource{
 					"confounding_provider_resource": {Schema: map[string]*sdkschema.Schema{
@@ -349,7 +360,7 @@ func TestConvertTFState_ProviderNamePrefixMismatch(t *testing.T) {
 				"confounding_provider_resource": {Tok: "confounding:index/resource:Resource"},
 			},
 		}),
-	}}
+	}
 	loader := schemaloader.New(t, schema.PackageSpec{
 		Name:    "confounding",
 		Version: "1.0.0",
