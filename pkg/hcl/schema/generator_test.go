@@ -163,24 +163,28 @@ output "count" {
 	assert.Equal(t, &PropertySpec{Type: TypeAny}, moduleSchema.OutputProperties["count"])
 }
 
-// stubResolver resolves a fixed set of resources by TF type, plus optionally a
-// fixed set of provider-defined functions, so reference typing can be tested
-// without a provider schema.
+// stubResolver binds a fixed set of resources and mappings by TF type, and
+// serves a fixed set of provider-defined functions.
 type stubResolver struct {
 	resources         map[string]*pulumiSchema.Resource
+	mappings          map[string]*bridge.BodyMapping
 	providerFunctions map[string]map[string]packages.ProviderFunction
 }
 
-func (s stubResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
-	return s.resources[tfType], nil
+func (s stubResolver) BindResource(
+	_ context.Context, _ *ast.Terraform, res *ast.Resource,
+) (*packages.BoundResource, error) {
+	resSchema, ok := s.resources[res.Type]
+	if !ok {
+		return nil, fmt.Errorf("no schema for type %q", res.Type)
+	}
+	return &packages.BoundResource{Schema: resSchema, Mapping: s.mappings[res.Type]}, nil
 }
 
-func (stubResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.Function, error) {
-	return nil, nil
-}
-func (stubResolver) ResourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping { return nil }
-func (stubResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
-	return nil
+func (stubResolver) BindDataSource(
+	_ context.Context, _ *ast.Terraform, ds *ast.DataSource,
+) (*packages.BoundDataSource, error) {
+	return nil, fmt.Errorf("no schema for type %q", ds.Type)
 }
 
 func (s stubResolver) ProviderFunctions(
@@ -696,36 +700,6 @@ output "missing" {
 	require.EqualError(t, err, `typing output "missing": main.tf:10,40-48: Unsupported attribute; This object does not have an attribute named "missing"., and 1 other diagnostic(s)`)
 }
 
-// mappingResolver resolves resources and their bridge body mappings by TF type,
-// so output typing that depends on the mapping (e.g. MaxItemsOne block shape)
-// can be tested without a live provider.
-type mappingResolver struct {
-	resources map[string]*pulumiSchema.Resource
-	mappings  map[string]*bridge.BodyMapping
-}
-
-func (s mappingResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
-	return s.resources[tfType], nil
-}
-
-func (mappingResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.Function, error) {
-	return nil, nil
-}
-
-func (s mappingResolver) ResourceBodyMapping(_ context.Context, tfType string) *bridge.BodyMapping {
-	return s.mappings[tfType]
-}
-
-func (mappingResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
-	return nil
-}
-
-func (mappingResolver) ProviderFunctions(
-	_ context.Context, providerName string,
-) (map[string]packages.ProviderFunction, error) {
-	return nil, fmt.Errorf("unknown provider %q", providerName)
-}
-
 // a MaxItems:1 block is flattened to a single object on the Pulumi side, but TF/OpenTofu
 // models it as a list, so HCL indexes it as `block[0].attr`. Output typing must re-wrap
 // the flattened object as a list — mirroring the runtime — so the numeric index types
@@ -744,7 +718,7 @@ output "mode" {
 	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), diags.Error())
 
-	resolver := mappingResolver{
+	resolver := stubResolver{
 		resources: map[string]*pulumiSchema.Resource{
 			"blocky_thing": {Properties: []*pulumiSchema.Property{
 				{Name: "settings", Type: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{

@@ -39,24 +39,22 @@ func (e *Engine) recordRemovedBlockEntries(ctx context.Context) error {
 		if !rem.Destroy || len(rem.Provisioners) == 0 {
 			continue
 		}
-		resSchema, err := e.resolver.ResolveResource(ctx, rem.From.Type)
-		if err != nil {
-			return fmt.Errorf("removed block for %s: resolving resource type: %w", rem.From, err)
-		}
 		res := &ast.Resource{
 			Type:         rem.From.Type,
 			Name:         rem.From.Name,
 			Provisioners: rem.Provisioners,
 			DeclRange:    rem.DeclRange,
 		}
-		probeURN, probeName := e.resmon.ResolveURN(e.stackURN, resSchema.Token, "probe")
+		bound, err := e.resolver.BindResource(ctx, e.graph.ModuleTerraform(rem.From.Module), res)
+		if err != nil {
+			return fmt.Errorf("removed block for %s: resolving resource type: %w", rem.From, err)
+		}
+		probeURN, probeName := e.resmon.ResolveURN(e.stackURN, bound.Schema.Token, "probe")
 		entry := &blockEntry{
 			resmon:       e.resmon,
 			dryRun:       e.dryRun,
 			res:          res,
-			resSchema:    resSchema,
-			mapping:      e.resolver.ResourceBodyMapping(ctx, rem.From.Type),
-			token:        resSchema.Token,
+			bound:        bound,
 			prefix:       strings.TrimSuffix(probeName, "probe"),
 			evalCtx:      e.evaluator.Context(),
 			config:       modulepath.NewAddress(rem.From.Module, modulepath.NewStep(rem.From.Name)),

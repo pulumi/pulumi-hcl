@@ -17,8 +17,11 @@ package packages
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
@@ -57,10 +60,59 @@ func NewResolver(
 	}
 }
 
+// BoundResource is a resource block bound to the Pulumi schema of its type.
+type BoundResource struct {
+	Schema *schema.Resource
+	// Mapping is the bridge mapping of the type, or nil when it has none.
+	Mapping *bridge.BodyMapping
+}
+
+// BoundDataSource is a data block bound to the Pulumi schema of its type.
+type BoundDataSource struct {
+	Schema *schema.Function
+	// Mapping is the bridge mapping of the type, or nil when it has none.
+	Mapping *bridge.BodyMapping
+}
+
+// BindResource binds the resource block res, declared in the module whose
+// `terraform` block is module, to the schema of its type.
+func (r *Resolver) BindResource(ctx context.Context, module *ast.Terraform, res *ast.Resource) (*BoundResource, error) {
+	resSchema, err := r.resolveResource(ctx, KnownProviders(module), res.Type)
+	if err != nil {
+		return nil, err
+	}
+	return &BoundResource{Schema: resSchema, Mapping: r.ResourceBodyMapping(ctx, res.Type)}, nil
+}
+
+// BindDataSource binds the data block ds, declared in the module whose
+// `terraform` block is module, to the schema of its type.
+func (r *Resolver) BindDataSource(
+	ctx context.Context, module *ast.Terraform, ds *ast.DataSource,
+) (*BoundDataSource, error) {
+	fn, err := r.resolveFunction(ctx, KnownProviders(module), ds.Type)
+	if err != nil {
+		return nil, err
+	}
+	return &BoundDataSource{Schema: fn, Mapping: r.DataSourceBodyMapping(ctx, ds.Type)}, nil
+}
+
+// KnownProviders returns the local names that the required_providers of the
+// `terraform` block tf declares.
+func KnownProviders(tf *ast.Terraform) []string {
+	if tf == nil {
+		return nil
+	}
+	return slices.Collect(maps.Keys(tf.RequiredProviders))
+}
+
 // ResolveResource resolves a TF resource type to a Pulumi schema.Resource,
 // preferring the bridge mapping and falling back to the convention-based
 // resolver. The synthetic terraform_data type resolves to its builtin schema.
 func (r *Resolver) ResolveResource(ctx context.Context, tfType string) (*schema.Resource, error) {
+	return r.resolveResource(ctx, r.knownProviders, tfType)
+}
+
+func (r *Resolver) resolveResource(ctx context.Context, knownProviders []string, tfType string) (*schema.Resource, error) {
 	if tfType == TerraformDataType {
 		return TerraformDataSchema(), nil
 	}
@@ -73,12 +125,16 @@ func (r *Resolver) ResolveResource(ctx context.Context, tfType string) (*schema.
 			logging.V(5).Infof("bridge resource token %q (from %q) not loadable: %v", res.Tok, tfType, err)
 		}
 	}
-	return ResolveResource(ctx, r.loader, r.knownProviders, tfType)
+	return ResolveResource(ctx, r.loader, knownProviders, tfType)
 }
 
 // ResolveFunction mirrors ResolveResource for TF data sources and functions. The
 // synthetic terraform_remote_state type resolves to its builtin schema.
 func (r *Resolver) ResolveFunction(ctx context.Context, tfType string) (*schema.Function, error) {
+	return r.resolveFunction(ctx, r.knownProviders, tfType)
+}
+
+func (r *Resolver) resolveFunction(ctx context.Context, knownProviders []string, tfType string) (*schema.Function, error) {
 	if tfType == RemoteStateType {
 		return TerraformRemoteStateSchema(), nil
 	}
@@ -91,7 +147,7 @@ func (r *Resolver) ResolveFunction(ctx context.Context, tfType string) (*schema.
 			logging.V(5).Infof("bridge data source token %q (from %q) not loadable: %v", d.Tok, tfType, err)
 		}
 	}
-	return ResolveFunction(ctx, r.loader, r.knownProviders, tfType)
+	return ResolveFunction(ctx, r.loader, knownProviders, tfType)
 }
 
 // ResourceBodyMapping returns the bridge BodyMapping for a TF resource type, or

@@ -20,6 +20,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -167,4 +168,42 @@ func TestResolver_MappedTokenMissingFromSchema(t *testing.T) {
 	fn, err = r.ResolveFunction(t.Context(), "random_uuid4")
 	assert.Nil(t, fn)
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// A block binds against the required_providers of its own module.
+func TestResolver_BindResourceUsesItsModule(t *testing.T) {
+	t.Parallel()
+
+	thing := schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}}
+	loader := schemaloader.New(t,
+		schema.PackageSpec{
+			Name:      "snake",
+			Resources: map[string]schema.ResourceSpec{"snake:index:namesThing": thing},
+		},
+		schema.PackageSpec{
+			Name:      "snake_names",
+			Resources: map[string]schema.ResourceSpec{"snake_names:index:thing": thing},
+		},
+	)
+	r := NewResolver(loader, nil, nil, nil)
+	module := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
+		"snake_names": {Name: "snake_names"},
+	}}
+
+	resourceSchema := func(pkgName, token string) *schema.Resource {
+		pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: pkgName})
+		require.NoError(t, err)
+		res, ok, err := pkg.Resources().Get(token)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return res
+	}
+
+	bound, err := r.BindResource(t.Context(), module, &ast.Resource{Type: "snake_names_thing"})
+	require.NoError(t, err)
+	assert.Equal(t, &BoundResource{Schema: resourceSchema("snake_names", "snake_names:index:thing")}, bound)
+
+	bound, err = r.BindResource(t.Context(), nil, &ast.Resource{Type: "snake_names_thing"})
+	require.NoError(t, err)
+	assert.Equal(t, &BoundResource{Schema: resourceSchema("snake", "snake:index:namesThing")}, bound)
 }

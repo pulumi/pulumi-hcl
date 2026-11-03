@@ -19,15 +19,14 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/graph"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
 	"github.com/pulumi/pulumi-hcl/pkg/provisioner/runtime"
 )
@@ -42,8 +41,7 @@ import (
 func (e *Engine) bindGlobalHooks(
 	ctx context.Context,
 	res *ast.Resource,
-	resSchema *schema.Resource,
-	mapping *bridge.BodyMapping,
+	bound *packages.BoundResource,
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
@@ -56,7 +54,7 @@ func (e *Engine) bindGlobalHooks(
 		opts.Hooks = &ResourceHookBinding{}
 	}
 
-	destroyProvisioners, err := e.bindProvisionerHooks(ctx, res, resSchema, mapping, instance, evalCtx, opts, instanceURN)
+	destroyProvisioners, err := e.bindProvisionerHooks(ctx, res, bound, instance, evalCtx, opts, instanceURN)
 	if err != nil {
 		return err
 	}
@@ -111,8 +109,7 @@ func preventDestroyHook(opts *ResourceOptions, instance *graph.ExpandedResource)
 func (e *Engine) bindProvisionerHooks(
 	ctx context.Context,
 	res *ast.Resource,
-	resSchema *schema.Resource,
-	mapping *bridge.BodyMapping,
+	bound *packages.BoundResource,
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
@@ -132,7 +129,7 @@ func (e *Engine) bindProvisionerHooks(
 		// old outputs too: their {type, value} wrappers carry the
 		// state-stored types, so a destroy-time self keeps them.
 		outputs = lowerTerraformDataOutputs(res.Type, outputs, opts)
-		selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, id, urn, res.Type, resSchema, mapping, dryRun)
+		selfCtx, err := selfBoundEvalCtx(hclSnapshot, outputs, id, urn, res.Type, bound, dryRun)
 		if err != nil {
 			return fmt.Errorf("provisioner %d for %s: %w", index, instance.Key, err)
 		}
@@ -199,12 +196,12 @@ func effectiveConnectionBody(prov *ast.Provisioner, res *ast.Resource) hcl.Body 
 // the engine injects elsewhere (see registerResourceInstanceInContext).
 func selfBoundEvalCtx(
 	parent *hcl.EvalContext, outputs property.Map, id, urn, tfType string,
-	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool,
+	bound *packages.BoundResource, dryRun bool,
 ) (*hcl.EvalContext, error) {
 	if outputs.Len() == 0 && id == "" && urn == "" {
 		return parent, nil
 	}
-	outputObj, err := transform.ResourceOutputToCty(outputs, resSchema, mapping, dryRun)
+	outputObj, err := transform.ResourceOutputToCty(outputs, bound.Schema, bound.Mapping, dryRun)
 	if err != nil {
 		return nil, fmt.Errorf("converting outputs: %w", err)
 	}
