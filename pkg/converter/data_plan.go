@@ -394,7 +394,7 @@ func (w *refWalker) Enter(n hclsyntax.Node) hcl.Diagnostics {
 func (w *refWalker) wrapped(ref dataReference, trav *hclsyntax.ScopeTraversalExpr) bool {
 	ft := w.p.ft
 	_, steps := ft.dataSteps(ref, trav.Traversal)
-	props, mapping := ft.dataResultProps(ref.hclType)
+	props, mapping := ft.dataResultProps(trav.Range(), ref.hclType, ref.name)
 	if _, block := mapSteps(steps, props, mapping); block != nil {
 		return true
 	}

@@ -48,7 +48,14 @@ func NewParser() *Parser {
 // parser recovered, so that a caller can find more errors in them.
 func (p *Parser) ParseDirectory(dir string) (*ast.Config, hcl.Diagnostics) {
 	files, diags := p.loader.LoadDirectory(dir)
+	config, d := p.ParseFiles(files)
+	return config, diags.Extend(d)
+}
 
+// ParseFiles parses the files of one module, keyed by path, into a
+// configuration. The blocks of override files amend the blocks that the other
+// files declare.
+func (p *Parser) ParseFiles(files map[string]*hcl.File) (*ast.Config, hcl.Diagnostics) {
 	primary, override := map[string]*hcl.File{}, map[string]*hcl.File{}
 	for path, file := range files {
 		if isOverrideFile(path) {
@@ -57,9 +64,7 @@ func (p *Parser) ParseDirectory(dir string) (*ast.Config, hcl.Diagnostics) {
 			primary[path] = file
 		}
 	}
-
-	config, d := p.parseFiles(primary, override)
-	return config, diags.Extend(d)
+	return p.parseFiles(primary, override)
 }
 
 // ParseFile parses a single HCL file into a configuration.

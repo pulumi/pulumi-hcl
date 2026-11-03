@@ -135,38 +135,40 @@ func TestResolver_MappedTokenMissingFromSchema(t *testing.T) {
 	t.Parallel()
 
 	loader := schemaloader.New(t, schema.PackageSpec{
-		Name:      "random",
+		Name:      "pinned",
 		Meta:      &schema.MetadataSpec{ModuleFormat: `(.*)(?:/[^/]*)`},
-		Resources: map[string]schema.ResourceSpec{"random:index/uuid:Uuid": {}},
-		Functions: map[string]schema.FunctionSpec{"random:index/getUuid:getUuid": {}},
+		Resources: map[string]schema.ResourceSpec{"pinned:index/uuid:Uuid": {}},
+		Functions: map[string]schema.FunctionSpec{"pinned:index/getUuid:getUuid": {}},
 	})
 	info := &tfbridge.ProviderInfo{
-		Name: "random",
+		Name: "pinned",
 		Resources: map[string]*tfbridge.ResourceInfo{
-			"random_uuid4": {Tok: "random:index/randomUuid4:RandomUuid4"},
+			"pinned_uuid4": {Tok: "pinned:index/pinnedUuid4:PinnedUuid4"},
 		},
 		DataSources: map[string]*tfbridge.DataSourceInfo{
-			"random_uuid4": {Tok: "random:index/getRandomUuid4:getRandomUuid4"},
+			"pinned_uuid4": {Tok: "pinned:index/getPinnedUuid4:getPinnedUuid4"},
 		},
 	}
-	r := NewResolver(loader, staticInfoSource{info}, nil, []string{"random"})
+	r := NewResolver(loader, staticInfoSource{info}, nil, nil)
+	res := &ast.Resource{Type: "pinned_uuid4"}
+	ds := &ast.DataSource{Type: "pinned_uuid4"}
 
-	res, err := r.ResolveResource(t.Context(), "random_uuid4")
-	assert.Nil(t, res)
+	boundRes, err := r.BindResource(t.Context(), nil, res)
+	assert.Nil(t, boundRes)
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	fn, err := r.ResolveFunction(t.Context(), "random_uuid4")
-	assert.Nil(t, fn)
+	boundDS, err := r.BindDataSource(t.Context(), nil, ds)
+	assert.Nil(t, boundDS)
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	// A mapping whose package the loader cannot serve at all is not-found too.
 	info.Name = "missing"
-	res, err = r.ResolveResource(t.Context(), "random_uuid4")
-	assert.Nil(t, res)
+	boundRes, err = r.BindResource(t.Context(), nil, res)
+	assert.Nil(t, boundRes)
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	fn, err = r.ResolveFunction(t.Context(), "random_uuid4")
-	assert.Nil(t, fn)
+	boundDS, err = r.BindDataSource(t.Context(), nil, ds)
+	assert.Nil(t, boundDS)
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 

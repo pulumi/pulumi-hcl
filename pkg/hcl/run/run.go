@@ -3078,21 +3078,8 @@ func (e *Engine) packageRefForResource(hclToken string, resSchema *schema.Resour
 	return e.packageRefForType(hclToken)
 }
 
-// providerPackageName maps a provider's required_providers local name to its
-// Pulumi package name: the basename of the entry's source ("hashicorp/simple"
-// → "simple"), or the local name itself when no entry renames it.
-func providerPackageName(tfBlock *ast.Terraform, local string) string {
-	if tfBlock != nil {
-		if req, ok := tfBlock.RequiredProviders[local]; ok && req.Source != "" {
-			parts := strings.Split(req.Source, "/")
-			return parts[len(parts)-1]
-		}
-	}
-	return local
-}
-
 func (e *Engine) providerPackageName(local string) string {
-	return providerPackageName(e.config.Terraform, local)
+	return packages.ProviderPackage(e.config.Terraform, local)
 }
 
 // nodeOutputs returns the outputs of a block's single (suffixless) instance.
@@ -4033,7 +4020,7 @@ func (e *Engine) providerFunctionTable(
 				continue
 			}
 		}
-		fns, err := e.resolver.ProviderFunctions(ctx, providerPackageName(config.Terraform, providerName))
+		fns, err := e.resolver.ProviderFunctions(ctx, packages.ProviderPackage(config.Terraform, providerName))
 		if err != nil {
 			if lenient {
 				logging.V(5).Infof("provider functions for %q unavailable: %v", providerName, err)
