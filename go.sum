@@ -740,8 +740,8 @@ github.com/pulumi/inflector v0.2.1 h1:bqyiish3tq//vLeLiEstSFE5K7RNjy/ce47ed4QATu
 github.com/pulumi/inflector v0.2.1/go.mod h1:HUFCjcPTz96YtTuUlwG3i3EZG4WlniBvR9bd+iJxCUY=
 github.com/pulumi/providertest v0.7.0 h1:nXydemrnkJfil6sd8AtvO81gJOTzYc1wFfgtco4zWDc=
 github.com/pulumi/providertest v0.7.0/go.mod h1:R7nigJF1sE3yUtNQSozNSfsUl/gK4xIDW0Mxmacl6IY=
-github.com/pulumi/pulumi-cloud-sdk/go v1.20261030.1400 h1:Ow6Nvp/i75srcu9JJgMpGmrclC4GOpW+4aPOmVjwKnM=
-github.com/pulumi/pulumi-cloud-sdk/go v1.20261030.1400/go.mod h1:NPA79X6Wmyr5zNKd+N+RiVJN8duwIrRmIaed8HCL9EM=
+github.com/pulumi/pulumi-cloud-sdk/go v1.20261102.1427 h1:ep8o1R0KrjwTf/OTab7ci+j3uQGc9ihX8J3dfE1PFbo=
+github.com/pulumi/pulumi-cloud-sdk/go v1.20261102.1427/go.mod h1:NPA79X6Wmyr5zNKd+N+RiVJN8duwIrRmIaed8HCL9EM=
 github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.117.0 h1:jlIMsGAn8ZzqLJKJ4G32m73oAx945UBCVMrgL7e4Dw4=
 github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.117.0/go.mod h1:g84QZQkfRpghbUFVGNlkFEmlmeZsqOUrVGMZZ9RcPdA=
 github.com/pulumi/pulumi-go-provider v1.8.0 h1:Fp24jhdu5px0gEho0ACamwj4kAPbDysYTPVO+KjsN4Y=
@@ -752,8 +752,8 @@ github.com/pulumi/pulumi-terraform-bridge/v3 v3.142.1-0.20261102104139-2c2d43eab
 github.com/pulumi/pulumi-terraform-bridge/v3 v3.142.1-0.20261102104139-2c2d43eabd53/go.mod h1:QUnXpkUaeZ8j0Yzn5Gi+0f5eKPs5OPaaakjF7C9j7/k=
 github.com/pulumi/pulumi-yaml v1.38.16 h1:IU90KS6q8RgErOYebj6nq8Dijg/guISiqaid2zMrxU0=
 github.com/pulumi/pulumi-yaml v1.38.16/go.mod h1:2ml5PlE7rhPFpK8QqUcPPEJXC21AIefeWS/2DyJHV7M=
-github.com/pulumi/pulumi/pkg/v3 v3.273.1-0.20261102192111-f37709c6876b h1:DBlk1EwKxvmLOOOVkuIyI+Hulh1cdGVNup5H81rWDwU=
-github.com/pulumi/pulumi/pkg/v3 v3.273.1-0.20261102192111-f37709c6876b/go.mod h1:Y3t9u4C2r72dw2aUgbcdjUJ82zA/vyB25SsSfo1YGtg=
+github.com/pulumi/pulumi/pkg/v3 v3.273.1-0.20261102205446-e0b0a88a35d6 h1:I96BkV5iGR2OLeBK2rUNBfRe4d6p7KzDH33alrvky2U=
+github.com/pulumi/pulumi/pkg/v3 v3.273.1-0.20261102205446-e0b0a88a35d6/go.mod h1:Y3t9u4C2r72dw2aUgbcdjUJ82zA/vyB25SsSfo1YGtg=
 github.com/pulumi/pulumi/sdk/v3 v3.273.1-0.20261101155800-3743f12e0193 h1:nH/eaBkjG0NYwBUo6o7poP94qK1uc9FfdVK9fTgXUX0=
 github.com/pulumi/pulumi/sdk/v3 v3.273.1-0.20261101155800-3743f12e0193/go.mod h1:OOGpSXKEdPGkwN/iXJf7x40KRLbjINKP5E3OiR0dtes=
 github.com/pulumi/terraform-diff-reader v0.0.2 h1:kTE4nEXU3/SYXESvAIem+wyHMI3abqkI3OhJ0G04LLI=
