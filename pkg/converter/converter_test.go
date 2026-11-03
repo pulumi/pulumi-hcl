@@ -1150,6 +1150,71 @@ resource "other" "test:index:Thing" {
 	assert.Equal(t, expected, string(out.Bytes()))
 }
 
+// TestEjectSameNameAcrossKinds checks that a variable, a resource, and a module
+// sharing a logical name (valid in HCL, where names are scoped per kind) get
+// distinct PCL names, with references following the right declaration.
+func TestEjectSameNameAcrossKinds(t *testing.T) {
+	t.Parallel()
+
+	testSchema := schema.PackageSpec{
+		Name:    "test",
+		Version: "1.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"test:index:Thing": {
+				InputProperties: map[string]schema.PropertySpec{
+					"value": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, testSchema)
+
+	src := []byte(`terraform {
+  required_providers {
+    test = {
+      source  = "pulumi/test"
+      version = "1.0.0"
+    }
+  }
+}
+
+variable "x" {
+  type = string
+}
+
+resource "test_thing" "x" {
+  value = var.x
+}
+
+module "x" {
+  source = "./x"
+  input  = var.x
+}
+
+output "out" {
+  value = test_thing.x.value
+}
+
+output "mod" {
+  value = module.x.result
+}
+`)
+
+	out := hclwrite.NewEmptyFile()
+	diags := transformSingleFile(t, src, "main.tf", out.Body(), loader, nil)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	got := string(out.Bytes())
+	assert.Contains(t, got, `config "x" "string" {`)
+	assert.Contains(t, got, `resource "x_" "test:index:Thing" {`)
+	assert.Contains(t, got, `__logicalName = "x"`)
+	assert.Contains(t, got, `value         = x`)
+	assert.Contains(t, got, `component "x__" "./x" {`)
+	assert.Contains(t, got, `input         = x`)
+	assert.Contains(t, got, `value = x_.value`)
+	assert.Contains(t, got, `value = x__.result`)
+}
+
 // TestEjectTopLevelOptionNamesAreInputs checks that the converter reserves
 // the same top-level names as the parser: an attribute named after an option
 // that lives in the `pulumi` block (`version`, `protect`, ...) is an input

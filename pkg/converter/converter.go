@@ -255,14 +255,6 @@ func (ft *fileTransformer) defaultProviderRef(hclType string, body *hclsyntax.Bo
 	return hclwrite.TokensForIdentifier(pkg)
 }
 
-// resourceReference identifies a resource block by module directory, HCL type
-// and logical name.
-type resourceReference struct {
-	dir     string
-	hclType string
-	name    string
-}
-
 // dataReference identifies a data block by HCL type and logical name.
 type dataReference struct {
 	hclType string
@@ -296,10 +288,7 @@ type fileTransformer struct {
 	// providerFunctions holds the schema of each provider-defined function
 	// call; nil marks a call that falls back to notImplemented.
 	providerFunctions map[providerFunctionCall]*schema.Function
-	nameRewrites      map[string]string // logical name → sanitized PCL identifier (only for invalid names)
-	// resourceRewrites gives a resource its own PCL name when its logical name
-	// is already taken: HCL scopes resource names per type, PCL does not.
-	resourceRewrites map[resourceReference]string
+	nameRewrites      map[declReference]string // declaration → PCL identifier (only when it differs from the logical name)
 	// dataPlans records, for each data block, if its invoke is inlined or
 	// hoisted to a local.
 	dataPlans map[dataReference]*dataPlan
@@ -354,8 +343,7 @@ func newProjectTransformer(
 		modules:           make(map[string]*ast.Config),
 		resources:         make(map[*ast.Resource]*packages.BoundResource),
 		dataSources:       make(map[*ast.DataSource]*packages.BoundDataSource),
-		nameRewrites:      make(map[string]string),
-		resourceRewrites:  make(map[resourceReference]string),
+		nameRewrites:      make(map[declReference]string),
 		providerFunctions: make(map[providerFunctionCall]*schema.Function),
 		providerAliases:   make(map[string]bool),
 		defaultProviders:  make(map[defaultProvider]bool),
@@ -543,93 +531,115 @@ func blockLogicalName(block *hclsyntax.Block) string {
 	return ""
 }
 
-func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
-	usedNames := make(map[string]bool)
-	// First pass: collect all names that are already valid identifiers.
-	for _, body := range bodies {
-		for _, block := range body.Blocks {
-			if name := blockLogicalName(block); name != "" && parser.ValidIdentifier(name) {
-				usedNames[name] = true
-			}
-		}
-	}
-	// Second pass: generate sanitized names for invalid identifiers.
-	for _, body := range bodies {
-		for _, block := range body.Blocks {
-			// Outputs are never referenced in expressions, so they don't need rewriting.
-			if block.Type == "output" {
-				continue
-			}
-			name := blockLogicalName(block)
-			if name == "" || parser.ValidIdentifier(name) {
-				continue
-			}
-			if _, seen := ft.nameRewrites[name]; seen {
-				continue
-			}
-			sanitized := sanitizeIdentifier(name)
-			for usedNames[sanitized] {
-				sanitized = sanitized + "_"
-			}
-			usedNames[sanitized] = true
-			ft.nameRewrites[name] = sanitized
-		}
-	}
-	ft.computeResourceRewrites(bodies, usedNames)
+// declReference identifies a top-level declaration by the module directory it
+// is in, the root name its references use ("var", "module", or the HCL
+// resource type), and its logical name.
+type declReference struct {
+	dir  string
+	root string
+	name string
 }
 
-// computeResourceRewrites gives resources that would share a PCL name with
-// another block a distinct one. HCL scopes resource names per type, so
-// `a_thing.r` and `a_single.r` are legal, but PCL declares every resource,
-// config, and component in one namespace. Non-resource blocks keep their name;
-// of the resources, the first to claim a name keeps it and later ones get a
-// trailing "_" (the `__logicalName` attribute preserves the Pulumi name).
-func (ft *fileTransformer) computeResourceRewrites(bodies []*hclsyntax.Body, usedNames map[string]bool) {
-	// Each module directory is converted to its own PCL file, so names only
-	// collide within a directory.
-	claimedByDir := make(map[string]map[string]bool)
-	claimedIn := func(dir string) map[string]bool {
-		if claimedByDir[dir] == nil {
-			claimedByDir[dir] = make(map[string]bool)
-		}
-		return claimedByDir[dir]
+// blockDeclReference returns the declReference of a resource, variable, or
+// module block.
+func blockDeclReference(block *hclsyntax.Block) (declReference, bool) {
+	name := blockLogicalName(block)
+	if name == "" {
+		return declReference{}, false
 	}
-	for _, body := range bodies {
-		for _, block := range body.Blocks {
-			if block.Type == "output" || block.Type == "resource" {
-				continue
-			}
-			if name := blockLogicalName(block); name != "" {
-				claimedIn(filepath.Dir(block.Range().Filename))[ft.pclName(name)] = true
-			}
-		}
+	dir := filepath.Dir(block.Range().Filename)
+	switch block.Type {
+	case "resource":
+		return declReference{dir, block.Labels[0], name}, true
+	case "variable":
+		return declReference{dir, "var", name}, true
+	case "module":
+		return declReference{dir, "module", name}, true
 	}
-	for _, body := range bodies {
-		for _, block := range body.Blocks {
-			if block.Type != "resource" || len(block.Labels) < 2 {
-				continue
-			}
-			dir := filepath.Dir(block.Range().Filename)
-			claimed := claimedIn(dir)
-			name := ft.pclName(block.Labels[1])
-			if claimed[name] {
-				for claimed[name] || usedNames[name] {
-					name += "_"
-				}
-				ft.resourceRewrites[resourceReference{dir, block.Labels[0], block.Labels[1]}] = name
-			}
-			claimed[name] = true
-		}
-	}
+	return declReference{}, false
 }
 
-// pclName returns the PCL identifier for a logical name, ignoring any
-// per-resource rewrite.
-func (ft *fileTransformer) pclName(logicalName string) string {
-	if rewritten, ok := ft.nameRewrites[logicalName]; ok {
+// declName returns the PCL identifier for a declaration.
+func (ft *fileTransformer) declName(dir, root, name string) string {
+	if rewritten, ok := ft.nameRewrites[declReference{dir, root, name}]; ok {
 		return rewritten
 	}
-	return logicalName
+	return name
+}
+
+// computeNameRewrites gives every resource, variable, and module a PCL
+// identifier that is valid and unique within its module directory. HCL scopes
+// names per kind (`var.x`, `module.x`, and `a_thing.x` can all coexist), but
+// PCL declares every resource, config, and component in a single namespace.
+// Each module directory is converted to its own PCL file, so names only collide
+// within a directory. The first declaration to claim a valid name keeps it;
+// the others get a distinct one (the `__logicalName` attribute preserves the
+// Pulumi name).
+func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
+	reserved := make(map[string]map[string]bool) // names no rewrite may take, by dir
+	claimed := make(map[string]map[string]bool)  // names held by a declaration, by dir
+	in := func(m map[string]map[string]bool, dir string) map[string]bool {
+		if m[dir] == nil {
+			m[dir] = make(map[string]bool)
+		}
+		return m[dir]
+	}
+	var decls []declReference
+	for _, body := range bodies {
+		dir := filepath.Dir(body.SrcRange.Filename)
+		// Locals and providers are never renamed, so they keep their names.
+		for name := range body.Attributes {
+			in(reserved, dir)[name] = true
+			in(claimed, dir)[name] = true
+		}
+		for _, block := range body.Blocks {
+			switch block.Type {
+			case "locals":
+				for name := range block.Body.Attributes {
+					in(reserved, dir)[name] = true
+					in(claimed, dir)[name] = true
+				}
+			case "provider":
+				if len(block.Labels) >= 1 {
+					in(reserved, dir)[providerResourceName(block)] = true
+					in(claimed, dir)[providerResourceName(block)] = true
+				}
+			case "output":
+				// Outputs are never referenced in expressions, so they don't
+				// need rewriting, but no rewrite may take their name.
+				if name := blockLogicalName(block); name != "" {
+					in(reserved, dir)[name] = true
+				}
+			}
+			if ref, ok := blockDeclReference(block); ok {
+				decls = append(decls, ref)
+				if parser.ValidIdentifier(ref.name) {
+					in(reserved, dir)[ref.name] = true
+				}
+			}
+		}
+	}
+	// Valid names first, so that a sanitized name never takes one that a later
+	// declaration is entitled to.
+	for _, ref := range decls {
+		if !parser.ValidIdentifier(ref.name) {
+			continue
+		}
+		if c := in(claimed, ref.dir); !c[ref.name] {
+			c[ref.name] = true
+			continue
+		}
+		ft.nameRewrites[ref] = uniqueName(ref.name, in(reserved, ref.dir))
+	}
+	for _, ref := range decls {
+		if parser.ValidIdentifier(ref.name) {
+			continue
+		}
+		if _, seen := ft.nameRewrites[ref]; seen {
+			continue
+		}
+		ft.nameRewrites[ref] = uniqueName(ref.name, in(reserved, ref.dir))
+	}
 }
 
 // sanitizeIdentifier converts a string into a valid HCL identifier by replacing
@@ -748,10 +758,7 @@ func (ft *fileTransformer) emitFile(
 				continue
 			}
 			name := block.Labels[0]
-			pclName := name
-			if rewritten, ok := ft.nameRewrites[name]; ok {
-				pclName = rewritten
-			}
+			pclName := ft.declName(filepath.Dir(block.Range().Filename), "var", name)
 			labels := []string{pclName}
 
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
@@ -804,10 +811,7 @@ func (ft *fileTransformer) emitFile(
 				continue
 			}
 			logicalName := block.Labels[0]
-			pclName := logicalName
-			if rewritten, ok := ft.nameRewrites[logicalName]; ok {
-				pclName = rewritten
-			}
+			pclName := ft.declName(filepath.Dir(block.Range().Filename), "module", logicalName)
 			sourceAttr, ok := block.Body.Attributes["source"]
 			if !ok {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
@@ -876,10 +880,7 @@ func (ft *fileTransformer) emitFile(
 			}
 			hclType := block.Labels[0]
 			logicalName := block.Labels[1]
-			pclName := ft.pclName(logicalName)
-			if rewritten, ok := ft.resourceRewrites[resourceReference{filepath.Dir(block.Range().Filename), hclType, logicalName}]; ok {
-				pclName = rewritten
-			}
+			pclName := ft.declName(filepath.Dir(block.Range().Filename), hclType, logicalName)
 
 			// bindModules reported a resource type that does not bind.
 			bound := ft.boundResource(block.Range(), hclType, logicalName)
@@ -1835,11 +1836,7 @@ func (ft *fileTransformer) transformTraversalRef(
 	// and convert property attribute names from snake_case to camelCase.
 	if ft.knownHCLTypes[root] {
 		stripped := stripRoot(e.Traversal)
-		if rewritten, ok := ft.resourceRewrites[resourceReference{filepath.Dir(e.Range().Filename), root, stripped.RootName()}]; ok {
-			stripped = append(hcl.Traversal{hcl.TraverseRoot{Name: rewritten}}, stripped[1:]...)
-		} else {
-			stripped = ft.rewriteTraversalRoot(stripped)
-		}
+		stripped = ft.rewriteTraversalRoot(e.Range(), root, stripped)
 		// StackReference: <type>.<name>.outputs["key"] → getOutput(<name>, "key")
 		if len(stripped) == 3 {
 			logicalName, ok1 := stripped[0].(hcl.TraverseRoot)
@@ -1931,8 +1928,10 @@ func (ft *fileTransformer) transformTraversalRef(
 		trav[0] = hcl.TraverseRoot{Name: "range"}
 		copy(trav[1:], e.Traversal[1:])
 		return hclwrite.TokensForTraversal(trav), nil
-	case "var", "local", "module":
-		return hclwrite.TokensForTraversal(ft.rewriteTraversalRoot(stripRoot(e.Traversal))), nil
+	case "var", "module":
+		return hclwrite.TokensForTraversal(ft.rewriteTraversalRoot(e.Range(), root, stripRoot(e.Traversal))), nil
+	case "local":
+		return hclwrite.TokensForTraversal(stripRoot(e.Traversal)), nil
 	case "pulumi":
 		if len(e.Traversal) >= 2 {
 			if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
@@ -2125,13 +2124,14 @@ func (ft *fileTransformer) isKnownProvider(r hcl.Range, name string) bool {
 	return slices.Contains(packages.KnownProviders(ft.moduleTerraform(r)), name)
 }
 
-// rewriteTraversalRoot replaces the root name of a traversal if the name has
-// a rewrite mapping (i.e. it was not a valid PCL identifier).
-func (ft *fileTransformer) rewriteTraversalRoot(trav hcl.Traversal) hcl.Traversal {
+// rewriteTraversalRoot replaces the root name of a traversal found at r if the
+// declaration it refers to has a rewrite mapping. root is the HCL root of the
+// reference: "var", "module", or the resource type.
+func (ft *fileTransformer) rewriteTraversalRoot(r hcl.Range, root string, trav hcl.Traversal) hcl.Traversal {
 	if len(trav) == 0 {
 		return trav
 	}
-	if rewritten, ok := ft.nameRewrites[trav.RootName()]; ok {
+	if rewritten, ok := ft.nameRewrites[declReference{filepath.Dir(r.Filename), root, trav.RootName()}]; ok {
 		result := make(hcl.Traversal, len(trav))
 		copy(result, trav)
 		result[0] = hcl.TraverseRoot{Name: rewritten}

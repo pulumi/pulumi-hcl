@@ -422,12 +422,7 @@ func (w *refWalker) Exit(hclsyntax.Node) hcl.Diagnostics {
 // pclNames returns the names that the PCL program declares at the top level.
 func (ft *fileTransformer) pclNames(bodies []*hclsyntax.Body) map[string]bool {
 	names := make(map[string]bool)
-	add := func(name string) {
-		if rewritten, ok := ft.nameRewrites[name]; ok {
-			name = rewritten
-		}
-		names[name] = true
-	}
+	add := func(name string) { names[name] = true }
 	for _, body := range bodies {
 		for name := range body.Attributes {
 			add(name)
@@ -443,7 +438,9 @@ func (ft *fileTransformer) pclNames(bodies []*hclsyntax.Body) map[string]bool {
 					add(providerResourceName(block))
 				}
 			default:
-				if name := blockLogicalName(block); name != "" {
+				if ref, ok := blockDeclReference(block); ok {
+					add(ft.declName(ref.dir, ref.root, ref.name))
+				} else if name := blockLogicalName(block); name != "" {
 					add(name)
 				}
 			}
