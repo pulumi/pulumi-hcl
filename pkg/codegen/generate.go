@@ -46,8 +46,9 @@ import (
 type GenerateProgramOption func(*generateProgramOptions)
 
 type generateProgramOptions struct {
-	skipRequiredProvidersVersion bool
-	insideComponent              bool
+	skipRequiredProvidersVersion   bool
+	skipDefaultCreateBeforeDestroy bool
+	insideComponent                bool
 }
 
 // insideComponentSource marks the generated program as a component's module
@@ -65,6 +66,17 @@ func insideComponentSource() GenerateProgramOption {
 // bake the SDK's in-development version into every regenerated docstring.
 func SkipRequiredProvidersVersion() GenerateProgramOption {
 	return func(o *generateProgramOptions) { o.skipRequiredProvidersVersion = true }
+}
+
+// SkipDefaultCreateBeforeDestroy omits the `create_before_destroy = true`
+// that GenerateProgram writes for each resource that leaves
+// `deleteBeforeReplace` unset. An explicit `deleteBeforeReplace` still
+// controls `create_before_destroy`. Use for snippets embedded in SDK
+// documentation, where the attribute adds noise to every example. The
+// generated program then replaces resources delete-then-create, which is the
+// Terraform default.
+func SkipDefaultCreateBeforeDestroy() GenerateProgramOption {
+	return func(o *generateProgramOptions) { o.skipDefaultCreateBeforeDestroy = true }
 }
 
 // GenerateProgram generates Terraform HCL source code from a bound PCL program.
@@ -91,13 +103,14 @@ func GenerateProgram(
 	var diags hcl.Diagnostics
 
 	gen := &generator{
-		program:                      program,
-		mappings:                     mappings,
-		comments:                     buildProgramComments(program),
-		skipRequiredProvidersVersion: o.skipRequiredProvidersVersion,
-		insideComponent:              o.insideComponent,
-		resourceMappings:             map[*pcl.Resource]*bridge.BodyMapping{},
-		invokeMappings:               map[*model.FunctionCallExpression]*bridge.BodyMapping{},
+		program:                        program,
+		mappings:                       mappings,
+		comments:                       buildProgramComments(program),
+		skipRequiredProvidersVersion:   o.skipRequiredProvidersVersion,
+		skipDefaultCreateBeforeDestroy: o.skipDefaultCreateBeforeDestroy,
+		insideComponent:                o.insideComponent,
+		resourceMappings:               map[*pcl.Resource]*bridge.BodyMapping{},
+		invokeMappings:                 map[*model.FunctionCallExpression]*bridge.BodyMapping{},
 	}
 
 	for _, node := range program.Nodes {
@@ -349,6 +362,9 @@ type generator struct {
 	// skipRequiredProvidersVersion suppresses the `version` attribute on
 	// each `required_providers` entry. See SkipRequiredProvidersVersion.
 	skipRequiredProvidersVersion bool
+	// skipDefaultCreateBeforeDestroy suppresses `create_before_destroy` when
+	// `deleteBeforeReplace` is unset. See SkipDefaultCreateBeforeDestroy.
+	skipDefaultCreateBeforeDestroy bool
 	// insideComponent marks this program as a component's module source.
 	// See insideComponentSource.
 	insideComponent bool
@@ -1903,6 +1919,9 @@ func propertyPathTraversal(elem model.Expression) (hcl.Traversal, bool) {
 // emitted (TF default already matches the user's request).
 func createBeforeDestroyTokens(g *generator, opts *pcl.ResourceOptions, diags *hcl.Diagnostics) hclwrite.Tokens {
 	if opts == nil || opts.DeleteBeforeReplace == nil {
+		if g.skipDefaultCreateBeforeDestroy {
+			return nil
+		}
 		return hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("true")}}
 	}
 	if lit, ok := opts.DeleteBeforeReplace.(*model.LiteralValueExpression); ok && lit.Value.Type() == cty.Bool {

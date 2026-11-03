@@ -2709,6 +2709,76 @@ resource web "aws:index:Instance" {
 	assert.Equal(t, "web", mock.RegisteredResources[1].Name)
 }
 
+// TestGenerateProgramSkipDefaultCreateBeforeDestroy verifies that the codegen
+// option drops `create_before_destroy` only where `deleteBeforeReplace` is
+// unset: an explicit `deleteBeforeReplace = false` still writes it.
+func TestGenerateProgramSkipDefaultCreateBeforeDestroy(t *testing.T) {
+	t.Parallel()
+
+	const pclSrc = `resource implicit "aws:index:Instance" {
+  ami = "ami-1"
+}
+
+resource explicit "aws:index:Instance" {
+  ami = "ami-2"
+  options {
+    deleteBeforeReplace = false
+  }
+}
+`
+
+	awsSchema := schema.PackageSpec{
+		Name:    "aws",
+		Version: "6.0.0",
+		Resources: map[string]schema.ResourceSpec{
+			"aws:index:Instance": {
+				InputProperties: map[string]schema.PropertySpec{
+					"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+				},
+				ObjectTypeSpec: schema.ObjectTypeSpec{
+					Properties: map[string]schema.PropertySpec{
+						"ami": {TypeSpec: schema.TypeSpec{Type: "string"}},
+					},
+				},
+			},
+		},
+	}
+	loader := schemaloader.New(t, awsSchema)
+
+	p := syntax.NewParser()
+	require.NoError(t, p.ParseFile(strings.NewReader(pclSrc), "main.pp"))
+	require.False(t, p.Diagnostics.HasErrors(), p.Diagnostics.Error())
+
+	program, bindDiags, err := pcl.BindProgram(p.Files, loader, pcl.SkipResourceTypechecking)
+	require.NoError(t, err)
+	require.False(t, bindDiags.HasErrors(), bindDiags.Error())
+
+	files, diags, err := codegen.GenerateProgram(t.Context(), program, packages.NewResolver(nil, nil, nil, nil),
+		codegen.SkipRequiredProvidersVersion(), codegen.SkipDefaultCreateBeforeDestroy())
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	require.Len(t, files, 1)
+	assert.Equal(t, `terraform {
+  required_providers {
+    aws = {
+      source = "pulumi/aws"
+    }
+  }
+}
+
+resource "aws_instance" "implicit" {
+  ami = "ami-1"
+}
+resource "aws_instance" "explicit" {
+  lifecycle {
+    create_before_destroy = true
+  }
+  ami = "ami-2"
+}
+`, string(files["main.tf"]))
+}
+
 // TestReplaceOnChangesPathTranslated verifies that a `pulumi { }` block's
 // replace_on_changes, written with the TF (snake_case) attribute name, reaches
 // the engine as the Pulumi property name. The engine matches replace_on_changes
