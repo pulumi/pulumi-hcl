@@ -20,6 +20,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -203,9 +206,61 @@ func TestResolver_BindResourceUsesItsModule(t *testing.T) {
 
 	bound, err := r.BindResource(t.Context(), module, &ast.Resource{Type: "snake_names_thing"})
 	require.NoError(t, err)
-	assert.Equal(t, &BoundResource{Schema: resourceSchema("snake_names", "snake_names:index:thing")}, bound)
+	assert.Equal(t, &BoundResource{Package: "snake_names", Schema: resourceSchema("snake_names", "snake_names:index:thing")}, bound)
 
 	bound, err = r.BindResource(t.Context(), nil, &ast.Resource{Type: "snake_names_thing"})
 	require.NoError(t, err)
-	assert.Equal(t, &BoundResource{Schema: resourceSchema("snake", "snake:index:namesThing")}, bound)
+	assert.Equal(t, &BoundResource{Package: "snake", Schema: resourceSchema("snake", "snake:index:namesThing")}, bound)
+}
+
+// An extension's resources are served by its base provider, so a block that
+// the base provider serves binds a type that the base package lacks in an
+// extension of it. An extension's types use the extension's own namespace, so
+// the base-prefixed spelling of an extension type is not a type.
+func TestResolver_TypeServedByAnExtension(t *testing.T) {
+	t.Parallel()
+
+	baseVersion, extVersion := semver.MustParse("1.0.0"), semver.MustParse("2.0.0")
+	pkgs := map[string]workspace.PackageDescriptor{
+		"myext": {
+			PluginDescriptor:          workspace.PluginDescriptor{Name: "extbase", Version: &baseVersion},
+			ExtensionParameterization: &workspace.Parameterization{Name: "myext", Version: extVersion},
+		},
+	}
+	loader := NewParameterizationAwareLoader(schemaloader.New(t,
+		schema.PackageSpec{
+			Name:      "extbase",
+			Version:   "45.0.0",
+			Resources: map[string]schema.ResourceSpec{"extbase:index:Base": {}},
+		},
+		schema.PackageSpec{
+			Name:      "myext",
+			Version:   "2.0.0",
+			Resources: map[string]schema.ResourceSpec{"myext:index:Greeting": {}},
+		},
+	), pkgs)
+	r := NewResolver(loader, nil, pkgs, nil)
+	provider, diags := hclsyntax.ParseExpression([]byte("extbase.prov"), "", hcl.InitialPos)
+	require.False(t, diags.HasErrors(), diags.Error())
+	bind := func(typ string) (string, error) {
+		bound, err := r.BindResource(t.Context(), nil, &ast.Resource{Type: typ, Provider: provider})
+		if err != nil {
+			return "", err
+		}
+		return bound.Schema.Token, nil
+	}
+
+	token, err := bind("myext_greeting")
+	require.NoError(t, err)
+	assert.Equal(t, "myext:index:Greeting", token)
+
+	token, err = bind("extbase_base")
+	require.NoError(t, err)
+	assert.Equal(t, "extbase:index:Base", token)
+
+	_, err = bind("extbase_greeting")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	_, err = bind("other_greeting")
+	assert.ErrorIs(t, err, ErrNotFound)
 }

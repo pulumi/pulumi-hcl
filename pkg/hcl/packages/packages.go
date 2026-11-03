@@ -214,13 +214,6 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, pkgName
 	}
 
 	res, err := findResource(pkg, pkgName, token)
-	if errors.Is(err, ErrNotFound) {
-		if extPkg, ok := extensionReference(ctx, loader, pkgName); ok {
-			if extRes, extErr := findResource(extPkg, pkgName, token); !errors.Is(extErr, ErrNotFound) {
-				res, err = extRes, extErr
-			}
-		}
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -228,31 +221,6 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, pkgName
 		return nil, &ProviderAsResourceError{Token: res.Token}
 	}
 	return res, nil
-}
-
-// extensionAwareLoader is implemented by loaders that can supply the schema an
-// extension contributes to a base provider's namespace.
-type extensionAwareLoader interface {
-	LoadExtensionReference(ctx context.Context, baseName string) (schema.PackageReference, bool, error)
-}
-
-// extensionReference returns the extension schema for the package pkgName, when
-// the loader knows of an extension applied to that base provider. An extension's
-// resources and functions share the base provider's namespace but are served
-// only via the extension parameterization, so a token missing from the base
-// schema may still be defined by an extension.
-func extensionReference(
-	ctx context.Context, loader schema.ReferenceLoader, pkgName string,
-) (schema.PackageReference, bool) {
-	el, ok := loader.(extensionAwareLoader)
-	if !ok {
-		return nil, false
-	}
-	ref, found, err := el.LoadExtensionReference(ctx, pkgName)
-	if err != nil || !found {
-		return nil, false
-	}
-	return ref, true
 }
 
 // resolvePackageForToken collapses package-load failures to ErrNotFound;
@@ -455,27 +423,6 @@ func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescripto
 	}
 }
 
-// LoadExtensionReference loads the schema an extension contributes to baseName's
-// namespace, or (nil, false) when no extension applies. An extension's resource
-// tokens live in the base provider's namespace but are served only when the base
-// provider is parameterized with the extension, so the extension schema is loaded
-// by treating the extension as a parameterization of the base provider.
-func (l *ParameterizationAwareLoader) LoadExtensionReference(
-	ctx context.Context, baseName string,
-) (schema.PackageReference, bool, error) {
-	for _, desc := range l.aliases {
-		if desc.ExtensionParameterization == nil || desc.Name != baseName {
-			continue
-		}
-		ref, err := l.inner.LoadPackageReferenceV2(ctx, extensionDescriptor(desc))
-		if err != nil {
-			return nil, false, err
-		}
-		return ref, true, nil
-	}
-	return nil, false, nil
-}
-
 func extensionDescriptor(desc workspace.PackageDescriptor) *schema.PackageDescriptor {
 	return &schema.PackageDescriptor{
 		Name:    desc.Name,
@@ -524,13 +471,6 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, pkgName
 	}
 
 	fn, err := findFunction(pkg, pkgName, token)
-	if errors.Is(err, ErrNotFound) {
-		if extPkg, ok := extensionReference(ctx, loader, pkgName); ok {
-			if extFn, extErr := findFunction(extPkg, pkgName, token); !errors.Is(extErr, ErrNotFound) {
-				fn, err = extFn, extErr
-			}
-		}
-	}
 	return fn, err
 }
 

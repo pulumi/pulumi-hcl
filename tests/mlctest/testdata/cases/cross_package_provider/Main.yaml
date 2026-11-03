@@ -1,0 +1,7 @@
+resources:
+  w:
+    type: wrapper:index:Module
+    properties:
+      input: hello
+outputs:
+  result: ${w.result}

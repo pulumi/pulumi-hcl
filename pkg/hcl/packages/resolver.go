@@ -16,11 +16,14 @@ package packages
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -61,23 +64,27 @@ func NewResolver(
 
 // BoundResource is a resource block bound to the Pulumi schema of its type.
 type BoundResource struct {
-	Schema *schema.Resource
+	// Package is the package of the provider that serves the block.
+	Package string
+	Schema  *schema.Resource
 	// Mapping is the bridge mapping of the type, or nil when it has none.
 	Mapping *bridge.BodyMapping
 }
 
 // BoundDataSource is a data block bound to the Pulumi schema of its type.
 type BoundDataSource struct {
-	Schema *schema.Function
+	// Package is the package of the provider that serves the block.
+	Package string
+	Schema  *schema.Function
 	// Mapping is the bridge mapping of the type, or nil when it has none.
 	Mapping *bridge.BodyMapping
 }
 
 // BindResource binds the resource block res, declared in the module whose
 // `terraform` block is module, to the schema of its type in the package that
-// serves it (see [TypePackage]).
+// serves it.
 func (r *Resolver) BindResource(ctx context.Context, module *ast.Terraform, res *ast.Resource) (*BoundResource, error) {
-	pkgName, err := TypePackage(module, res.Type)
+	pkgName, err := BlockPackage(module, res.Provider, res.Type)
 	if err != nil {
 		return nil, err
 	}
@@ -85,16 +92,20 @@ func (r *Resolver) BindResource(ctx context.Context, module *ast.Terraform, res 
 	if err != nil {
 		return nil, err
 	}
-	return &BoundResource{Schema: resSchema, Mapping: r.ResourceBodyMapping(ctx, pkgName, res.Type)}, nil
+	return &BoundResource{
+		Package: pkgName,
+		Schema:  resSchema,
+		Mapping: r.ResourceBodyMapping(ctx, pkgName, res.Type),
+	}, nil
 }
 
 // BindDataSource binds the data block ds, declared in the module whose
 // `terraform` block is module, to the schema of its type in the package that
-// serves it (see [TypePackage]).
+// serves it.
 func (r *Resolver) BindDataSource(
 	ctx context.Context, module *ast.Terraform, ds *ast.DataSource,
 ) (*BoundDataSource, error) {
-	pkgName, err := TypePackage(module, ds.Type)
+	pkgName, err := BlockPackage(module, ds.Provider, ds.Type)
 	if err != nil {
 		return nil, err
 	}
@@ -102,18 +113,60 @@ func (r *Resolver) BindDataSource(
 	if err != nil {
 		return nil, err
 	}
-	return &BoundDataSource{Schema: fn, Mapping: r.DataSourceBodyMapping(ctx, pkgName, ds.Type)}, nil
+	return &BoundDataSource{
+		Package: pkgName,
+		Schema:  fn,
+		Mapping: r.DataSourceBodyMapping(ctx, pkgName, ds.Type),
+	}, nil
 }
 
-// TypePackage returns the package of the provider that the type typ implies:
-// the declared local name that prefixes typ, mapped to its package by the
-// module's required_providers.
-func TypePackage(module *ast.Terraform, typ string) (string, error) {
-	local, err := PackageFromToken(KnownProviders(module), typ)
+// BlockPackage returns the package of the provider that serves a block of
+// type typ in the module tf. provider is the block's `provider`
+// meta-argument, or nil.
+func BlockPackage(tf *ast.Terraform, provider hcl.Expression, typ string) (string, error) {
+	local, err := ProviderLocalName(tf, provider, typ)
 	if err != nil {
 		return "", err
 	}
-	return ProviderPackage(module, local), nil
+	return ProviderPackage(tf, local), nil
+}
+
+// ProviderLocalName returns the local name of the provider that serves a
+// block of type typ in the module tf: the configuration that provider
+// references, or else the provider that typ implies.
+func ProviderLocalName(tf *ast.Terraform, provider hcl.Expression, typ string) (string, error) {
+	if name, ok := providerConfigName(provider); ok {
+		return name, nil
+	}
+	return PackageFromToken(KnownProviders(tf), typ)
+}
+
+// providerConfigName returns the local name that expr references when expr is
+// a provider configuration reference: name, name.alias or name.alias[key].
+// Other values, such as call.<resource>.<method>, carry their own provider.
+func providerConfigName(expr hcl.Expression) (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	maxSteps := 3
+	if index, ok := expr.(*hclsyntax.IndexExpr); ok {
+		expr, maxSteps = index.Collection, 2
+	}
+	traversal, diags := hcl.AbsTraversalForExpr(expr)
+	if diags.HasErrors() || len(traversal) > maxSteps {
+		return "", false
+	}
+	if len(traversal) > 1 {
+		if _, ok := traversal[1].(hcl.TraverseAttr); !ok {
+			return "", false
+		}
+	}
+	if len(traversal) > 2 {
+		if _, ok := traversal[2].(hcl.TraverseIndex); !ok {
+			return "", false
+		}
+	}
+	return traversal.RootName(), true
 }
 
 // ProviderPackage returns the Pulumi package name of the provider with the
@@ -139,14 +192,31 @@ func KnownProviders(tf *ast.Terraform) []string {
 	return slices.Collect(maps.Keys(tf.RequiredProviders))
 }
 
-// resolveResource resolves a TF resource type to a Pulumi schema.Resource in
-// the package pkgName, preferring the bridge mapping and falling back to the
-// convention-based resolver. The synthetic terraform_data type resolves to its
-// builtin schema.
+// resolveResource resolves a TF resource type to a Pulumi schema.Resource
+// that the provider package pkgName serves: from pkgName itself, else from an
+// extension of it. The synthetic terraform_data type resolves to its builtin
+// schema.
 func (r *Resolver) resolveResource(ctx context.Context, pkgName, tfType string) (*schema.Resource, error) {
 	if tfType == TerraformDataType {
 		return TerraformDataSchema(), nil
 	}
+	res, err := r.resolveResourceIn(ctx, pkgName, tfType)
+	for _, ext := range r.extensionsOf(pkgName) {
+		if !errors.Is(err, ErrNotFound) {
+			break
+		}
+		// The base package's not-found error carries its suggestion.
+		if extRes, extErr := r.resolveResourceIn(ctx, ext, tfType); !errors.Is(extErr, ErrNotFound) {
+			res, err = extRes, extErr
+		}
+	}
+	return res, err
+}
+
+// resolveResourceIn resolves a TF resource type in the package pkgName,
+// preferring the bridge mapping and falling back to the convention-based
+// resolver.
+func (r *Resolver) resolveResourceIn(ctx context.Context, pkgName, tfType string) (*schema.Resource, error) {
 	if info := r.providerInfoForType(ctx, pkgName, tfType); info != nil {
 		if res, ok := info.Resources[tfType]; ok && res != nil && string(res.Tok) != "" {
 			schemaRes, err := r.loadResourceByToken(ctx, info.Name, string(res.Tok))
@@ -165,6 +235,20 @@ func (r *Resolver) resolveFunction(ctx context.Context, pkgName, tfType string) 
 	if tfType == RemoteStateType {
 		return TerraformRemoteStateSchema(), nil
 	}
+	fn, err := r.resolveFunctionIn(ctx, pkgName, tfType)
+	for _, ext := range r.extensionsOf(pkgName) {
+		if !errors.Is(err, ErrNotFound) {
+			break
+		}
+		if extFn, extErr := r.resolveFunctionIn(ctx, ext, tfType); !errors.Is(extErr, ErrNotFound) {
+			fn, err = extFn, extErr
+		}
+	}
+	return fn, err
+}
+
+// resolveFunctionIn mirrors resolveResourceIn for TF data sources.
+func (r *Resolver) resolveFunctionIn(ctx context.Context, pkgName, tfType string) (*schema.Function, error) {
 	if info := r.providerInfoForType(ctx, pkgName, tfType); info != nil {
 		if d, ok := info.DataSources[tfType]; ok && d != nil && string(d.Tok) != "" {
 			fn, err := r.loadFunctionByToken(ctx, info.Name, string(d.Tok))
@@ -204,6 +288,20 @@ func (r *Resolver) ProviderConfigBodyMapping(ctx context.Context, providerName s
 		return nil
 	}
 	return bridge.ProviderConfigBodyMapping(info)
+}
+
+// extensionsOf returns, sorted, the extension packages whose base is the
+// package pkgName. The base provider serves the resources and functions of
+// its extensions.
+func (r *Resolver) extensionsOf(pkgName string) []string {
+	var exts []string
+	for name, desc := range r.packages {
+		if desc.ExtensionParameterization != nil && desc.Name == pkgName {
+			exts = append(exts, name)
+		}
+	}
+	slices.Sort(exts)
+	return exts
 }
 
 // providerInfoForType fetches the bridge info that the package pkgName serves
