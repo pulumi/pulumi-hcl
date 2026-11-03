@@ -280,8 +280,14 @@ func convertTFState(
 			if d, ok := descriptors[provider]; ok {
 				desc = &d
 			}
+			// State records the provider that serves the resource; the bridge
+			// maps it under the type's prefix.
+			routing := desc
+			if routing == nil {
+				routing = &workspace.PackageDescriptor{PluginDescriptor: workspace.PluginDescriptor{Name: provider}}
+			}
 			var err error
-			info, err = providerInfoSource.GetProviderInfo(ctx, provider, desc)
+			info, err = providerInfoSource.GetProviderInfo(ctx, bridge.TypeProvider(tfType), routing)
 			if err != nil || info == nil {
 				warn("Failed to resolve provider", fmt.Sprintf(
 					"could not resolve bridge mapping for provider %q: %v", provider, err))

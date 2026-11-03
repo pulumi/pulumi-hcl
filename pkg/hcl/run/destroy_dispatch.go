@@ -21,12 +21,10 @@ import (
 	"sync"
 
 	"github.com/hashicorp/hcl/v2"
-	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/urn"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/modulepath"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
@@ -143,16 +141,14 @@ func (e *Engine) registerDestroyDispatcher(ctx context.Context) {
 // blockEntry runs a still-configured block's destroy provisioners for an
 // orphaned instance, matched by static config address.
 type blockEntry struct {
-	resmon    ResourceMonitor
-	dryRun    bool
-	res       *ast.Resource
-	resSchema *schema.Resource
-	mapping   *bridge.BodyMapping
+	resmon ResourceMonitor
+	dryRun bool
+	res    *ast.Resource
+	bound  *packages.BoundResource
 
-	// token and parentChain pin the orphan URN's type and parent-type chain:
-	// a name shape alone collides across types and across dynamic modules,
-	// which share one component token.
-	token       string
+	// The token of bound.Schema and parentChain pin the orphan URN's type and
+	// parent-type chain: a name shape alone collides across types and across
+	// dynamic modules, which share one component token.
 	parentChain string
 	// prefix is the monitor's name prefix (the component name on the MLC
 	// path), stripped from args.Name before shape matching.
@@ -192,7 +188,7 @@ func (b *blockEntry) matches(args *ResourceHookArgs) bool {
 		return false
 	}
 	typ, parentChain := urnTypes(args.URN)
-	if typ != b.token || (!b.moduleTarget && parentChain != b.parentChain) {
+	if typ != b.bound.Schema.Token || (!b.moduleTarget && parentChain != b.parentChain) {
 		return false
 	}
 	name := args.Name
@@ -268,7 +264,7 @@ func (b *blockEntry) run(ctx context.Context, args *ResourceHookArgs) error {
 	if b.res.Type == packages.TerraformDataType {
 		outputs = outputs.Set("output", outputs.Get("input"))
 	}
-	selfCtx, err := selfBoundEvalCtx(hclCtx, outputs, args.ID, args.URN, b.res.Type, b.resSchema, b.mapping, b.dryRun)
+	selfCtx, err := selfBoundEvalCtx(hclCtx, outputs, args.ID, args.URN, b.res.Type, b.bound, b.dryRun)
 	if err != nil {
 		return fmt.Errorf("destroy provisioners for %s.%s: %w", b.res.Type, b.res.Name, err)
 	}
@@ -336,7 +332,7 @@ func checkBodyReferences(ctx *hcl.EvalContext, bodies ...hcl.Body) error {
 // recordBlockEntry records the dispatch entry for one resource block × live
 // module instance, whether or not the block expands to any instances.
 func (e *Engine) recordBlockEntry(
-	ctx context.Context, res *ast.Resource, resSchema *schema.Resource,
+	res *ast.Resource, bound *packages.BoundResource,
 	evalCtx *eval.Context, parentURN urn.URN, modInst *moduleInstance,
 ) {
 	// Per-instance symbols are rejected by evalPreventDestroy, so the block's
@@ -346,16 +342,14 @@ func (e *Engine) recordBlockEntry(
 		return
 	}
 
-	probeURN, probeName := e.resmon.ResolveURN(parentURN, resSchema.Token, "probe")
+	probeURN, probeName := e.resmon.ResolveURN(parentURN, bound.Schema.Token, "probe")
 	prefix := strings.TrimSuffix(probeName, "probe")
 
 	entry := &blockEntry{
 		resmon:         e.resmon,
 		dryRun:         e.dryRun,
 		res:            res,
-		resSchema:      resSchema,
-		mapping:        e.resolver.ResourceBodyMapping(ctx, res.Type),
-		token:          resSchema.Token,
+		bound:          bound,
 		prefix:         prefix,
 		evalCtx:        evalCtx,
 		preventDestroy: guard,

@@ -16,9 +16,15 @@ package packages
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
@@ -37,12 +43,12 @@ type Resolver struct {
 	loader             schema.ReferenceLoader
 	providerInfoSource bridge.ProviderInfoSource
 	packages           map[string]workspace.PackageDescriptor
-	knownProviders     []string
 }
 
 // NewResolver builds a Resolver. providerInfoSource and packages may be nil/empty
 // when no bridge mapper is available, in which case resolution uses only the
-// convention-based fallback.
+// convention-based fallback. knownProviders is ignored; it remains for
+// existing callers.
 func NewResolver(
 	loader schema.ReferenceLoader,
 	providerInfoSource bridge.ProviderInfoSource,
@@ -53,18 +59,165 @@ func NewResolver(
 		loader:             loader,
 		providerInfoSource: providerInfoSource,
 		packages:           pkgs,
-		knownProviders:     knownProviders,
 	}
 }
 
-// ResolveResource resolves a TF resource type to a Pulumi schema.Resource,
-// preferring the bridge mapping and falling back to the convention-based
-// resolver. The synthetic terraform_data type resolves to its builtin schema.
-func (r *Resolver) ResolveResource(ctx context.Context, tfType string) (*schema.Resource, error) {
+// BoundResource is a resource block bound to the Pulumi schema of its type.
+type BoundResource struct {
+	// Package is the package of the provider that serves the block.
+	Package string
+	Schema  *schema.Resource
+	// Mapping is the bridge mapping of the type, or nil when it has none.
+	Mapping *bridge.BodyMapping
+}
+
+// BoundDataSource is a data block bound to the Pulumi schema of its type.
+type BoundDataSource struct {
+	// Package is the package of the provider that serves the block.
+	Package string
+	Schema  *schema.Function
+	// Mapping is the bridge mapping of the type, or nil when it has none.
+	Mapping *bridge.BodyMapping
+}
+
+// BindResource binds the resource block res, declared in the module whose
+// `terraform` block is module, to the schema of its type in the package that
+// serves it.
+func (r *Resolver) BindResource(ctx context.Context, module *ast.Terraform, res *ast.Resource) (*BoundResource, error) {
+	pkgName, err := BlockPackage(module, res.Provider, res.Type)
+	if err != nil {
+		return nil, err
+	}
+	resSchema, err := r.resolveResource(ctx, pkgName, res.Type)
+	if err != nil {
+		return nil, err
+	}
+	return &BoundResource{
+		Package: pkgName,
+		Schema:  resSchema,
+		Mapping: r.ResourceBodyMapping(ctx, pkgName, res.Type),
+	}, nil
+}
+
+// BindDataSource binds the data block ds, declared in the module whose
+// `terraform` block is module, to the schema of its type in the package that
+// serves it.
+func (r *Resolver) BindDataSource(
+	ctx context.Context, module *ast.Terraform, ds *ast.DataSource,
+) (*BoundDataSource, error) {
+	pkgName, err := BlockPackage(module, ds.Provider, ds.Type)
+	if err != nil {
+		return nil, err
+	}
+	fn, err := r.resolveFunction(ctx, pkgName, ds.Type)
+	if err != nil {
+		return nil, err
+	}
+	return &BoundDataSource{
+		Package: pkgName,
+		Schema:  fn,
+		Mapping: r.DataSourceBodyMapping(ctx, pkgName, ds.Type),
+	}, nil
+}
+
+// BlockPackage returns the package of the provider that serves a block of
+// type typ in the module tf. provider is the block's `provider`
+// meta-argument, or nil.
+func BlockPackage(tf *ast.Terraform, provider hcl.Expression, typ string) (string, error) {
+	local, err := ProviderLocalName(tf, provider, typ)
+	if err != nil {
+		return "", err
+	}
+	return ProviderPackage(tf, local), nil
+}
+
+// ProviderLocalName returns the local name of the provider that serves a
+// block of type typ in the module tf: the configuration that provider
+// references, or else the provider that typ implies.
+func ProviderLocalName(tf *ast.Terraform, provider hcl.Expression, typ string) (string, error) {
+	if name, ok := providerConfigName(provider); ok {
+		return name, nil
+	}
+	return PackageFromToken(KnownProviders(tf), typ)
+}
+
+// providerConfigName returns the local name that expr references when expr is
+// a provider configuration reference: name, name.alias or name.alias[key].
+// Other values, such as call.<resource>.<method>, carry their own provider.
+func providerConfigName(expr hcl.Expression) (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	maxSteps := 3
+	if index, ok := expr.(*hclsyntax.IndexExpr); ok {
+		expr, maxSteps = index.Collection, 2
+	}
+	traversal, diags := hcl.AbsTraversalForExpr(expr)
+	if diags.HasErrors() || len(traversal) > maxSteps {
+		return "", false
+	}
+	if len(traversal) > 1 {
+		if _, ok := traversal[1].(hcl.TraverseAttr); !ok {
+			return "", false
+		}
+	}
+	if len(traversal) > 2 {
+		if _, ok := traversal[2].(hcl.TraverseIndex); !ok {
+			return "", false
+		}
+	}
+	return traversal.RootName(), true
+}
+
+// ProviderPackage returns the Pulumi package name of the provider with the
+// local name local, in the module whose `terraform` block is tf: the last
+// segment of its required_providers source ("hashicorp/simple" → "simple"),
+// or local when the module does not declare a source for it.
+func ProviderPackage(tf *ast.Terraform, local string) string {
+	if tf != nil {
+		if req, ok := tf.RequiredProviders[local]; ok && req.Source != "" {
+			parts := strings.Split(req.Source, "/")
+			return parts[len(parts)-1]
+		}
+	}
+	return local
+}
+
+// KnownProviders returns the local names that the required_providers of the
+// `terraform` block tf declares.
+func KnownProviders(tf *ast.Terraform) []string {
+	if tf == nil {
+		return nil
+	}
+	return slices.Collect(maps.Keys(tf.RequiredProviders))
+}
+
+// resolveResource resolves a TF resource type to a Pulumi schema.Resource
+// that the provider package pkgName serves: from pkgName itself, else from an
+// extension of it. The synthetic terraform_data type resolves to its builtin
+// schema.
+func (r *Resolver) resolveResource(ctx context.Context, pkgName, tfType string) (*schema.Resource, error) {
 	if tfType == TerraformDataType {
 		return TerraformDataSchema(), nil
 	}
-	if info := r.providerInfoForType(ctx, tfType); info != nil {
+	res, err := r.resolveResourceIn(ctx, pkgName, tfType)
+	for _, ext := range r.extensionsOf(pkgName) {
+		if !errors.Is(err, ErrNotFound) {
+			break
+		}
+		// The base package's not-found error carries its suggestion.
+		if extRes, extErr := r.resolveResourceIn(ctx, ext, tfType); !errors.Is(extErr, ErrNotFound) {
+			res, err = extRes, extErr
+		}
+	}
+	return res, err
+}
+
+// resolveResourceIn resolves a TF resource type in the package pkgName,
+// preferring the bridge mapping and falling back to the convention-based
+// resolver.
+func (r *Resolver) resolveResourceIn(ctx context.Context, pkgName, tfType string) (*schema.Resource, error) {
+	if info := r.providerInfoForType(ctx, pkgName, tfType); info != nil {
 		if res, ok := info.Resources[tfType]; ok && res != nil && string(res.Tok) != "" {
 			schemaRes, err := r.loadResourceByToken(ctx, info.Name, string(res.Tok))
 			if err == nil {
@@ -73,16 +226,30 @@ func (r *Resolver) ResolveResource(ctx context.Context, tfType string) (*schema.
 			logging.V(5).Infof("bridge resource token %q (from %q) not loadable: %v", res.Tok, tfType, err)
 		}
 	}
-	return ResolveResource(ctx, r.loader, r.knownProviders, tfType)
+	return ResolveResource(ctx, r.loader, pkgName, tfType)
 }
 
-// ResolveFunction mirrors ResolveResource for TF data sources and functions. The
-// synthetic terraform_remote_state type resolves to its builtin schema.
-func (r *Resolver) ResolveFunction(ctx context.Context, tfType string) (*schema.Function, error) {
+// resolveFunction mirrors resolveResource for TF data sources. The synthetic
+// terraform_remote_state type resolves to its builtin schema.
+func (r *Resolver) resolveFunction(ctx context.Context, pkgName, tfType string) (*schema.Function, error) {
 	if tfType == RemoteStateType {
 		return TerraformRemoteStateSchema(), nil
 	}
-	if info := r.providerInfoForType(ctx, tfType); info != nil {
+	fn, err := r.resolveFunctionIn(ctx, pkgName, tfType)
+	for _, ext := range r.extensionsOf(pkgName) {
+		if !errors.Is(err, ErrNotFound) {
+			break
+		}
+		if extFn, extErr := r.resolveFunctionIn(ctx, ext, tfType); !errors.Is(extErr, ErrNotFound) {
+			fn, err = extFn, extErr
+		}
+	}
+	return fn, err
+}
+
+// resolveFunctionIn mirrors resolveResourceIn for TF data sources.
+func (r *Resolver) resolveFunctionIn(ctx context.Context, pkgName, tfType string) (*schema.Function, error) {
+	if info := r.providerInfoForType(ctx, pkgName, tfType); info != nil {
 		if d, ok := info.DataSources[tfType]; ok && d != nil && string(d.Tok) != "" {
 			fn, err := r.loadFunctionByToken(ctx, info.Name, string(d.Tok))
 			if err == nil {
@@ -91,14 +258,13 @@ func (r *Resolver) ResolveFunction(ctx context.Context, tfType string) (*schema.
 			logging.V(5).Infof("bridge data source token %q (from %q) not loadable: %v", d.Tok, tfType, err)
 		}
 	}
-	return ResolveFunction(ctx, r.loader, r.knownProviders, tfType)
+	return ResolveFunction(ctx, r.loader, pkgName, tfType)
 }
 
-// ResourceBodyMapping returns the bridge BodyMapping for a TF resource type, or
-// nil when the mapper is unavailable, the provider isn't known, or the type
-// isn't in its schema.
-func (r *Resolver) ResourceBodyMapping(ctx context.Context, tfResourceType string) *bridge.BodyMapping {
-	info := r.providerInfoForType(ctx, tfResourceType)
+// ResourceBodyMapping returns the bridge BodyMapping for a TF resource type
+// that the package pkgName serves, or nil.
+func (r *Resolver) ResourceBodyMapping(ctx context.Context, pkgName, tfResourceType string) *bridge.BodyMapping {
+	info := r.providerInfoForType(ctx, pkgName, tfResourceType)
 	if info == nil {
 		return nil
 	}
@@ -106,8 +272,8 @@ func (r *Resolver) ResourceBodyMapping(ctx context.Context, tfResourceType strin
 }
 
 // DataSourceBodyMapping mirrors ResourceBodyMapping for a TF data source.
-func (r *Resolver) DataSourceBodyMapping(ctx context.Context, tfType string) *bridge.BodyMapping {
-	info := r.providerInfoForType(ctx, tfType)
+func (r *Resolver) DataSourceBodyMapping(ctx context.Context, pkgName, tfType string) *bridge.BodyMapping {
+	info := r.providerInfoForType(ctx, pkgName, tfType)
 	if info == nil {
 		return nil
 	}
@@ -117,42 +283,46 @@ func (r *Resolver) DataSourceBodyMapping(ctx context.Context, tfType string) *br
 // ProviderConfigBodyMapping returns the BodyMapping for a provider block by TF
 // provider local name (e.g. "aws").
 func (r *Resolver) ProviderConfigBodyMapping(ctx context.Context, providerName string) *bridge.BodyMapping {
-	info := r.providerInfoFor(ctx, providerName)
+	info := r.providerInfoFor(ctx, providerName, providerName)
 	if info == nil {
 		return nil
 	}
 	return bridge.ProviderConfigBodyMapping(info)
 }
 
-// providerInfoForType resolves the TF provider that owns a resource or data
-// source token (split on first underscore) and fetches its bridge info. For
-// single-segment tokens — providers like hashicorp/external whose type name
-// equals the provider name — the whole token is the provider name.
-func (r *Resolver) providerInfoForType(ctx context.Context, tfType string) *tfbridge.ProviderInfo {
-	if idx := strings.IndexByte(tfType, '_'); idx > 0 {
-		return r.providerInfoFor(ctx, tfType[:idx])
+// extensionsOf returns, sorted, the extension packages whose base is the
+// package pkgName. The base provider serves the resources and functions of
+// its extensions.
+func (r *Resolver) extensionsOf(pkgName string) []string {
+	var exts []string
+	for name, desc := range r.packages {
+		if desc.ExtensionParameterization != nil && desc.Name == pkgName {
+			exts = append(exts, name)
+		}
 	}
-	if tfType == "" {
-		return nil
-	}
-	return r.providerInfoFor(ctx, tfType)
+	slices.Sort(exts)
+	return exts
 }
 
-// providerInfoFor fetches the bridge ProviderInfo for a TF provider local
-// name, threading the SDK-on-disk descriptor (when present) through to the
-// mapper so dynamically bridged providers route via the correct
-// parameterization. Returns nil on miss.
-func (r *Resolver) providerInfoFor(ctx context.Context, tfProvider string) *tfbridge.ProviderInfo {
+// providerInfoForType fetches the bridge info that the package pkgName serves
+// for a type, under the type's prefix.
+func (r *Resolver) providerInfoForType(ctx context.Context, pkgName, tfType string) *tfbridge.ProviderInfo {
+	return r.providerInfoFor(ctx, pkgName, bridge.TypeProvider(tfType))
+}
+
+// providerInfoFor fetches the bridge ProviderInfo that the package pkgName
+// serves under the TF provider name tfProvider, or nil.
+func (r *Resolver) providerInfoFor(ctx context.Context, pkgName, tfProvider string) *tfbridge.ProviderInfo {
 	if r.providerInfoSource == nil {
 		return nil
 	}
-	var desc *workspace.PackageDescriptor
-	if d, ok := r.packages[tfProvider]; ok {
-		desc = &d
+	desc, ok := r.packages[pkgName]
+	if !ok {
+		desc = workspace.PackageDescriptor{PluginDescriptor: workspace.PluginDescriptor{Name: pkgName}}
 	}
-	info, err := r.providerInfoSource.GetProviderInfo(ctx, tfProvider, desc)
+	info, err := r.providerInfoSource.GetProviderInfo(ctx, tfProvider, &desc)
 	if err != nil {
-		logging.V(5).Infof("bridge mapping unavailable for %q: %v", tfProvider, err)
+		logging.V(5).Infof("bridge mapping of %q unavailable for %q: %v", tfProvider, pkgName, err)
 		return nil
 	}
 	return info
@@ -181,7 +351,7 @@ func (r *Resolver) ProviderFunctions(ctx context.Context, providerName string) (
 	out := map[string]ProviderFunction{}
 
 	pkgName := providerName
-	if info := r.providerInfoFor(ctx, providerName); info != nil {
+	if info := r.providerInfoFor(ctx, providerName, providerName); info != nil {
 		if info.Name != "" {
 			pkgName = info.Name
 		}

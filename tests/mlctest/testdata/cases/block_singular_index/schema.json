@@ -1,0 +1,16 @@
+{
+  "name": "blocks",
+  "version": "0.0.0-dev",
+  "config": {},
+  "resources": {
+    "blocks:index:Module": {
+      "properties": {
+        "mode": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "isComponent": true
+    }
+  }
+}

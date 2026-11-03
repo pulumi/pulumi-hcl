@@ -377,12 +377,9 @@ func (e *Engine) expandResourceCell(
 	}
 	evalCtx, parentURN, modInst := cellEvalState(e, mi)
 
-	resSchema, err := e.resolver.ResolveResource(ctx, res.Type)
+	bound, err := e.resolver.BindResource(ctx, e.graph.ModuleTerraform(node.Key.Module), res)
 	if err != nil {
-		if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
-			return diag
-		}
-		return fmt.Errorf("resolving resource type %s: %w", res.Type, err)
+		return unknownTokenDiag("resource", res.TypeRange, res.Type, err)
 	}
 
 	expander := graph.NewResourceExpander()
@@ -408,7 +405,7 @@ func (e *Engine) expandResourceCell(
 	// Orphaned instances need the block's destroy provisioners even when the
 	// block expands to zero instances this run.
 	if !e.hasFailedDependency(res) {
-		e.recordBlockEntry(ctx, res, resSchema, evalCtx, parentURN, modInst)
+		e.recordBlockEntry(res, bound, evalCtx, parentURN, modInst)
 	}
 
 	result := expander.Expand(node)
@@ -435,7 +432,7 @@ func (e *Engine) expandResourceCell(
 				return nil
 			}
 			if err := e.registerResourceInstanceInContext(
-				ctx, node, res, resSchema, inst, evalCtx, parentURN, modInst, meta.deps,
+				ctx, node, res, bound, inst, evalCtx, parentURN, modInst, meta.deps,
 			); err != nil {
 				return fmt.Errorf("registering %s: %w", inst.Key, err)
 			}
@@ -459,19 +456,16 @@ func (e *Engine) expandDataCell(
 	}
 	evalCtx, _, _ := cellEvalState(e, mi)
 
-	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
+	bound, err := e.resolver.BindDataSource(ctx, e.graph.ModuleTerraform(node.Key.Module), ds)
 	if err != nil {
-		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
-			return diag
-		}
-		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
+		return unknownTokenDiag("data source", ds.TypeRange, ds.Type, err)
 	}
 
 	dsKey := strings.TrimPrefix(node.Key.ID, "data.")
 
 	if ds.Count == nil && ds.ForEach == nil {
 		return b.AddInstance("", func(ctx context.Context) error {
-			ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, mi)
+			ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, bound, evalCtx, mi)
 			if err != nil {
 				return err
 			}
@@ -511,7 +505,7 @@ func (e *Engine) expandDataCell(
 		inst := instance
 		err := b.AddInstance(inst.Key.Suffix, func(ctx context.Context) error {
 			instCtx := evalCtx.WithIteration(inst.Index, inst.EachKey, inst.EachValue)
-			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, instCtx, mi)
+			ctyOut, err := e.invokeDataSourceOnce(ctx, node, ds, bound, instCtx, mi)
 			if err != nil {
 				return err
 			}

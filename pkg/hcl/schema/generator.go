@@ -29,7 +29,6 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
-	"github.com/pulumi/pulumi-hcl/pkg/hcl/bridge"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/eval"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/transform"
@@ -41,14 +40,11 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 )
 
-// ResourceTypeResolver resolves a TF resource or data source type to its Pulumi
-// schema and bridge mapping, so an output expression that references a resource
-// or data source can be typed. It is satisfied by *packages.Resolver.
+// ResourceTypeResolver binds resource and data blocks so that an output that
+// references them can be typed. *packages.Resolver satisfies it.
 type ResourceTypeResolver interface {
-	ResolveResource(ctx context.Context, tfType string) (*pulumischema.Resource, error)
-	ResolveFunction(ctx context.Context, tfType string) (*pulumischema.Function, error)
-	ResourceBodyMapping(ctx context.Context, tfType string) *bridge.BodyMapping
-	DataSourceBodyMapping(ctx context.Context, tfType string) *bridge.BodyMapping
+	BindResource(ctx context.Context, module *ast.Terraform, res *ast.Resource) (*packages.BoundResource, error)
+	BindDataSource(ctx context.Context, module *ast.Terraform, ds *ast.DataSource) (*packages.BoundDataSource, error)
 	ProviderFunctions(ctx context.Context, providerName string) (map[string]packages.ProviderFunction, error)
 }
 
@@ -380,31 +376,23 @@ func seedResourceTypes(
 	}
 	for _, key := range slices.Sorted(maps.Keys(config.Resources)) {
 		res := config.Resources[key]
-		schemaRes, err := resolver.ResolveResource(ctx, res.Type)
+		bound, err := resolver.BindResource(ctx, config.Terraform, res)
 		if err != nil {
 			return fmt.Errorf("resolving resource %q: %w", key, err)
 		}
-		if schemaRes == nil {
-			return fmt.Errorf("resolving resource %q: no schema for type %q", key, res.Type)
-		}
-		mapping := resolver.ResourceBodyMapping(ctx, res.Type)
 		ranged := res.Count != nil || res.ForEach != nil
-		ty := rangedType(transform.ResourceReferenceType(schemaRes, mapping), res.Count != nil, res.ForEach != nil)
+		ty := rangedType(transform.ResourceReferenceType(bound.Schema, bound.Mapping), res.Count != nil, res.ForEach != nil)
 		scope.SetResource(key, urn.URN(""), markRangedRef(transform.RefinedUnknown(ty, false), ranged))
 	}
 
 	for _, key := range slices.Sorted(maps.Keys(config.DataSources)) {
 		ds := config.DataSources[key]
-		fn, err := resolver.ResolveFunction(ctx, ds.Type)
+		bound, err := resolver.BindDataSource(ctx, config.Terraform, ds)
 		if err != nil {
 			return fmt.Errorf("resolving data source %q: %w", key, err)
 		}
-		if fn == nil {
-			return fmt.Errorf("resolving data source %q: no schema for type %q", key, ds.Type)
-		}
-		mapping := resolver.DataSourceBodyMapping(ctx, ds.Type)
 		ranged := ds.Count != nil || ds.ForEach != nil
-		ty := rangedType(transform.DataSourceReferenceType(fn, mapping), ds.Count != nil, ds.ForEach != nil)
+		ty := rangedType(transform.DataSourceReferenceType(bound.Schema, bound.Mapping), ds.Count != nil, ds.ForEach != nil)
 		scope.SetDataSource(key, markRangedRef(transform.RefinedUnknown(ty, false), ranged))
 	}
 	return nil

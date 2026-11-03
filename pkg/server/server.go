@@ -693,18 +693,6 @@ func collectRequirementsRec(
 		required = config.Terraform.RequiredProviders
 	}
 
-	// known scopes resource/data type splitting to the providers this module
-	// declares so that local names containing underscores (e.g. "snake_names")
-	// aren't mis-split at the first underscore. Undeclared (implicit) providers
-	// fall back to the first underscore-delimited segment inside PackageFromToken.
-	known := make([]string, 0, len(required)+len(config.Providers))
-	for alias := range required {
-		known = append(known, alias)
-	}
-	for _, p := range config.Providers {
-		known = append(known, p.Name)
-	}
-
 	add := func(alias string) {
 		req := required[alias]
 		if _, seen := aliases[alias]; !seen || req != nil {
@@ -742,16 +730,18 @@ func collectRequirementsRec(
 	for _, p := range config.Providers {
 		add(p.Name)
 	}
-	addType := func(tfType string) {
-		if name, err := packages.PackageFromToken(known, tfType); err == nil && name != "" {
+	// A block whose provider cannot be resolved adds no requirement; running
+	// the program reports the error.
+	addBlock := func(provider hcl.Expression, tfType string) {
+		if name, err := packages.ProviderLocalName(config.Terraform, provider, tfType); err == nil && name != "" {
 			add(name)
 		}
 	}
 	for _, r := range config.Resources {
-		addType(r.Type)
+		addBlock(r.Provider, r.Type)
 	}
 	for _, d := range config.DataSources {
-		addType(d.Type)
+		addBlock(d.Provider, d.Type)
 		// terraform_remote_state is served by the external pulumi-terraform
 		// package, not the builtin `terraform` provider that add() skips.
 		if d.Type == "terraform_remote_state" {
@@ -764,7 +754,7 @@ func collectRequirementsRec(
 	// the type falls back to this config's provider names.
 	for _, rem := range config.Removed {
 		if rem.From.Type != "" {
-			addType(rem.From.Type)
+			addBlock(nil, rem.From.Type)
 		}
 	}
 
@@ -1037,7 +1027,7 @@ func (host *LanguageHost) RunPlugin(
 	}
 
 	// Create the provider (name and version are derived from the module's terraform {} block)
-	provider, err := NewLocalProvider(server.Context(), modulePath, req.LoaderTarget)
+	provider, err := NewLocalProvider(server.Context(), modulePath)
 	if err != nil {
 		errBytes := fmt.Appendf(nil, "Error creating provider: %v\n", err)
 		if err := server.Send(&pulumirpc.RunPluginResponse{

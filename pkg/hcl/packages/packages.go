@@ -205,20 +205,15 @@ func isStackReferenceToken(token string) bool {
 	return token == "pulumi_stack_reference" || token == "pulumi_stackreference"
 }
 
-func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Resource, error) {
-	pkg, err := resolvePackageForToken(ctx, loader, knownProviders, token)
+// ResolveResource resolves the HCL resource type token to its schema in the
+// package pkgName, the package of the provider that serves the resource.
+func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, pkgName, token string) (*schema.Resource, error) {
+	pkg, err := resolvePackageForToken(ctx, loader, pkgName, token)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := findResource(pkg, knownProviders, token)
-	if errors.Is(err, ErrNotFound) {
-		if extPkg, ok := extensionReference(ctx, loader, knownProviders, token); ok {
-			if extRes, extErr := findResource(extPkg, knownProviders, token); !errors.Is(extErr, ErrNotFound) {
-				res, err = extRes, extErr
-			}
-		}
-	}
+	res, err := findResource(pkg, pkgName, token)
 	if err != nil {
 		return nil, err
 	}
@@ -228,39 +223,10 @@ func ResolveResource(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	return res, nil
 }
 
-// extensionAwareLoader is implemented by loaders that can supply the schema an
-// extension contributes to a base provider's namespace.
-type extensionAwareLoader interface {
-	LoadExtensionReference(ctx context.Context, baseName string) (schema.PackageReference, bool, error)
-}
-
-// extensionReference returns the extension schema for token's package, when the
-// loader knows of an extension applied to that base provider. An extension's
-// resources and functions share the base provider's namespace but are served
-// only via the extension parameterization, so a token missing from the base
-// schema may still be defined by an extension.
-func extensionReference(
-	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
-) (schema.PackageReference, bool) {
-	el, ok := loader.(extensionAwareLoader)
-	if !ok {
-		return nil, false
-	}
-	pkgName, err := PackageFromToken(knownProviders, token)
-	if err != nil {
-		return nil, false
-	}
-	ref, found, err := el.LoadExtensionReference(ctx, pkgName)
-	if err != nil || !found {
-		return nil, false
-	}
-	return ref, true
-}
-
 // resolvePackageForToken collapses package-load failures to ErrNotFound;
 // structural errors (InvalidToken, ambiguous matches) propagate.
 func resolvePackageForToken(
-	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string,
+	ctx context.Context, loader schema.ReferenceLoader, pkgName, token string,
 ) (schema.PackageReference, error) {
 	if token == "" {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
@@ -279,10 +245,6 @@ func resolvePackageForToken(
 		}
 		return pkg, nil
 	}
-	pkgName, err := PackageFromToken(knownProviders, token)
-	if err != nil {
-		return nil, err
-	}
 	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
 	if err != nil {
 		return nil, ErrNotFound
@@ -290,7 +252,7 @@ func resolvePackageForToken(
 	return pkg, nil
 }
 
-func findResource(pkg schema.PackageReference, knownProviders []string, token string) (*schema.Resource, error) {
+func findResource(pkg schema.PackageReference, pkgName, token string) (*schema.Resource, error) {
 	if strings.HasPrefix(token, "pulumi_providers_") {
 		return pkg.Provider()
 	}
@@ -299,11 +261,10 @@ func findResource(pkg schema.PackageReference, knownProviders []string, token st
 		contract.Assertf(ok, "stack references are there")
 		return r, err
 	}
-	pkgName, err := PackageFromToken(knownProviders, token)
-	if err != nil {
-		return nil, err
+	key, ok := hclSearchKey(pkgName, token)
+	if !ok {
+		return nil, notFoundWithSuggestion(pkg, token, false)
 	}
-	key := hclSearchKey(pkgName, token)
 	var matches []string
 	for iter := pkg.Resources().Range(); iter.Next(); {
 		if tokenSearchKey(pkg, iter.Token()) == key {
@@ -323,13 +284,19 @@ func findResource(pkg schema.PackageReference, knownProviders []string, token st
 
 // hclSearchKey returns the normalized member-name key used to match an HCL
 // token against tokenSearchKey-derived keys. For multi-segment tokens it's the
-// suffix after the provider prefix; for single-segment tokens (where the type
-// name equals the provider name) the whole token is the member name.
-func hclSearchKey(pkgName, token string) string {
-	if token != pkgName {
-		token = token[len(pkgName)+1:]
+// suffix after the package prefix; for single-segment tokens (where the type
+// name equals the package name) the whole token is the member name. A token
+// without the package prefix has no key: the package's schema names no member
+// for it.
+func hclSearchKey(pkgName, token string) (string, bool) {
+	if token == pkgName {
+		return searchKey(token), true
 	}
-	return searchKey(token)
+	member, ok := strings.CutPrefix(token, pkgName+"_")
+	if !ok {
+		return "", false
+	}
+	return searchKey(member), true
 }
 
 // ambiguousMatchError reports an HCL token whose search key matches more than
@@ -456,27 +423,6 @@ func (l *ParameterizationAwareLoader) enrich(descriptor *schema.PackageDescripto
 	}
 }
 
-// LoadExtensionReference loads the schema an extension contributes to baseName's
-// namespace, or (nil, false) when no extension applies. An extension's resource
-// tokens live in the base provider's namespace but are served only when the base
-// provider is parameterized with the extension, so the extension schema is loaded
-// by treating the extension as a parameterization of the base provider.
-func (l *ParameterizationAwareLoader) LoadExtensionReference(
-	ctx context.Context, baseName string,
-) (schema.PackageReference, bool, error) {
-	for _, desc := range l.aliases {
-		if desc.ExtensionParameterization == nil || desc.Name != baseName {
-			continue
-		}
-		ref, err := l.inner.LoadPackageReferenceV2(ctx, extensionDescriptor(desc))
-		if err != nil {
-			return nil, false, err
-		}
-		return ref, true, nil
-	}
-	return nil, false, nil
-}
-
 func extensionDescriptor(desc workspace.PackageDescriptor) *schema.PackageDescriptor {
 	return &schema.PackageDescriptor{
 		Name:    desc.Name,
@@ -511,14 +457,12 @@ func (l *ParameterizationAwareLoader) LoadPackageReferenceV2(ctx context.Context
 
 var _ schema.ReferenceLoader = (*ParameterizationAwareLoader)(nil)
 
-func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, token string) (*schema.Function, error) {
+// ResolveFunction resolves the HCL data source or function type token to its
+// schema in the package pkgName, the package of the provider that serves it
+// (see [BlockPackage]).
+func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, pkgName, token string) (*schema.Function, error) {
 	if token == "" {
 		return nil, InvalidToken{token: token, reason: "Pulumi HCL tokens must be non-empty"}
-	}
-
-	pkgName, err := PackageFromToken(knownProviders, token)
-	if err != nil {
-		return nil, err
 	}
 
 	pkg, err := resolvePackage(ctx, loader, &schema.PackageDescriptor{Name: pkgName})
@@ -527,20 +471,16 @@ func ResolveFunction(ctx context.Context, loader schema.ReferenceLoader, knownPr
 	}
 
 	fn, err := findFunction(pkg, pkgName, token)
-	if errors.Is(err, ErrNotFound) {
-		if extPkg, ok := extensionReference(ctx, loader, knownProviders, token); ok {
-			if extFn, extErr := findFunction(extPkg, pkgName, token); !errors.Is(extErr, ErrNotFound) {
-				fn, err = extFn, extErr
-			}
-		}
-	}
 	return fn, err
 }
 
 // findFunction matches token against pkg's functions by the full member name
 // first, then with the member's "get" prefix omitted, as data sources may.
 func findFunction(pkg schema.PackageReference, pkgName, token string) (*schema.Function, error) {
-	key := hclSearchKey(pkgName, token)
+	key, ok := hclSearchKey(pkgName, token)
+	if !ok {
+		return nil, notFoundWithSuggestion(pkg, token, true)
+	}
 	for _, searchKey := range []func(schema.PackageReference, string) string{tokenSearchKey, getlessSearchKey} {
 		var matches []string
 		for iter := pkg.Functions().Range(); iter.Next(); {

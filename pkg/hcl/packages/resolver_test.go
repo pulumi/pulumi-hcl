@@ -20,6 +20,10 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
@@ -134,37 +138,129 @@ func TestResolver_MappedTokenMissingFromSchema(t *testing.T) {
 	t.Parallel()
 
 	loader := schemaloader.New(t, schema.PackageSpec{
-		Name:      "random",
+		Name:      "pinned",
 		Meta:      &schema.MetadataSpec{ModuleFormat: `(.*)(?:/[^/]*)`},
-		Resources: map[string]schema.ResourceSpec{"random:index/uuid:Uuid": {}},
-		Functions: map[string]schema.FunctionSpec{"random:index/getUuid:getUuid": {}},
+		Resources: map[string]schema.ResourceSpec{"pinned:index/uuid:Uuid": {}},
+		Functions: map[string]schema.FunctionSpec{"pinned:index/getUuid:getUuid": {}},
 	})
 	info := &tfbridge.ProviderInfo{
-		Name: "random",
+		Name: "pinned",
 		Resources: map[string]*tfbridge.ResourceInfo{
-			"random_uuid4": {Tok: "random:index/randomUuid4:RandomUuid4"},
+			"pinned_uuid4": {Tok: "pinned:index/pinnedUuid4:PinnedUuid4"},
 		},
 		DataSources: map[string]*tfbridge.DataSourceInfo{
-			"random_uuid4": {Tok: "random:index/getRandomUuid4:getRandomUuid4"},
+			"pinned_uuid4": {Tok: "pinned:index/getPinnedUuid4:getPinnedUuid4"},
 		},
 	}
-	r := NewResolver(loader, staticInfoSource{info}, nil, []string{"random"})
+	r := NewResolver(loader, staticInfoSource{info}, nil, nil)
+	res := &ast.Resource{Type: "pinned_uuid4"}
+	ds := &ast.DataSource{Type: "pinned_uuid4"}
 
-	res, err := r.ResolveResource(t.Context(), "random_uuid4")
-	assert.Nil(t, res)
+	boundRes, err := r.BindResource(t.Context(), nil, res)
+	assert.Nil(t, boundRes)
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	fn, err := r.ResolveFunction(t.Context(), "random_uuid4")
-	assert.Nil(t, fn)
+	boundDS, err := r.BindDataSource(t.Context(), nil, ds)
+	assert.Nil(t, boundDS)
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	// A mapping whose package the loader cannot serve at all is not-found too.
 	info.Name = "missing"
-	res, err = r.ResolveResource(t.Context(), "random_uuid4")
-	assert.Nil(t, res)
+	boundRes, err = r.BindResource(t.Context(), nil, res)
+	assert.Nil(t, boundRes)
 	assert.ErrorIs(t, err, ErrNotFound)
 
-	fn, err = r.ResolveFunction(t.Context(), "random_uuid4")
-	assert.Nil(t, fn)
+	boundDS, err = r.BindDataSource(t.Context(), nil, ds)
+	assert.Nil(t, boundDS)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// A block binds against the required_providers of its own module.
+func TestResolver_BindResourceUsesItsModule(t *testing.T) {
+	t.Parallel()
+
+	thing := schema.ResourceSpec{ObjectTypeSpec: schema.ObjectTypeSpec{Type: "object"}}
+	loader := schemaloader.New(t,
+		schema.PackageSpec{
+			Name:      "snake",
+			Resources: map[string]schema.ResourceSpec{"snake:index:namesThing": thing},
+		},
+		schema.PackageSpec{
+			Name:      "snake_names",
+			Resources: map[string]schema.ResourceSpec{"snake_names:index:thing": thing},
+		},
+	)
+	r := NewResolver(loader, nil, nil, nil)
+	module := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
+		"snake_names": {Name: "snake_names"},
+	}}
+
+	resourceSchema := func(pkgName, token string) *schema.Resource {
+		pkg, err := loader.LoadPackageReferenceV2(t.Context(), &schema.PackageDescriptor{Name: pkgName})
+		require.NoError(t, err)
+		res, ok, err := pkg.Resources().Get(token)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return res
+	}
+
+	bound, err := r.BindResource(t.Context(), module, &ast.Resource{Type: "snake_names_thing"})
+	require.NoError(t, err)
+	assert.Equal(t, &BoundResource{Package: "snake_names", Schema: resourceSchema("snake_names", "snake_names:index:thing")}, bound)
+
+	bound, err = r.BindResource(t.Context(), nil, &ast.Resource{Type: "snake_names_thing"})
+	require.NoError(t, err)
+	assert.Equal(t, &BoundResource{Package: "snake", Schema: resourceSchema("snake", "snake:index:namesThing")}, bound)
+}
+
+// An extension's resources are served by its base provider, so a block that
+// the base provider serves binds a type that the base package lacks in an
+// extension of it. An extension's types use the extension's own namespace, so
+// the base-prefixed spelling of an extension type is not a type.
+func TestResolver_TypeServedByAnExtension(t *testing.T) {
+	t.Parallel()
+
+	baseVersion, extVersion := semver.MustParse("1.0.0"), semver.MustParse("2.0.0")
+	pkgs := map[string]workspace.PackageDescriptor{
+		"myext": {
+			PluginDescriptor:          workspace.PluginDescriptor{Name: "extbase", Version: &baseVersion},
+			ExtensionParameterization: &workspace.Parameterization{Name: "myext", Version: extVersion},
+		},
+	}
+	loader := NewParameterizationAwareLoader(schemaloader.New(t,
+		schema.PackageSpec{
+			Name:      "extbase",
+			Version:   "45.0.0",
+			Resources: map[string]schema.ResourceSpec{"extbase:index:Base": {}},
+		},
+		schema.PackageSpec{
+			Name:      "myext",
+			Version:   "2.0.0",
+			Resources: map[string]schema.ResourceSpec{"myext:index:Greeting": {}},
+		},
+	), pkgs)
+	r := NewResolver(loader, nil, pkgs, nil)
+	provider, diags := hclsyntax.ParseExpression([]byte("extbase.prov"), "", hcl.InitialPos)
+	require.False(t, diags.HasErrors(), diags.Error())
+	bind := func(typ string) (string, error) {
+		bound, err := r.BindResource(t.Context(), nil, &ast.Resource{Type: typ, Provider: provider})
+		if err != nil {
+			return "", err
+		}
+		return bound.Schema.Token, nil
+	}
+
+	token, err := bind("myext_greeting")
+	require.NoError(t, err)
+	assert.Equal(t, "myext:index:Greeting", token)
+
+	token, err = bind("extbase_base")
+	require.NoError(t, err)
+	assert.Equal(t, "extbase:index:Base", token)
+
+	_, err = bind("extbase_greeting")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	_, err = bind("other_greeting")
 	assert.ErrorIs(t, err, ErrNotFound)
 }

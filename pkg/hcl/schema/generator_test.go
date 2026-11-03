@@ -163,24 +163,28 @@ output "count" {
 	assert.Equal(t, &PropertySpec{Type: TypeAny}, moduleSchema.OutputProperties["count"])
 }
 
-// stubResolver resolves a fixed set of resources by TF type, plus optionally a
-// fixed set of provider-defined functions, so reference typing can be tested
-// without a provider schema.
+// stubResolver binds a fixed set of resources and mappings by TF type, and
+// serves a fixed set of provider-defined functions.
 type stubResolver struct {
 	resources         map[string]*pulumiSchema.Resource
+	mappings          map[string]*bridge.BodyMapping
 	providerFunctions map[string]map[string]packages.ProviderFunction
 }
 
-func (s stubResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
-	return s.resources[tfType], nil
+func (s stubResolver) BindResource(
+	_ context.Context, _ *ast.Terraform, res *ast.Resource,
+) (*packages.BoundResource, error) {
+	resSchema, ok := s.resources[res.Type]
+	if !ok {
+		return nil, fmt.Errorf("no schema for type %q", res.Type)
+	}
+	return &packages.BoundResource{Schema: resSchema, Mapping: s.mappings[res.Type]}, nil
 }
 
-func (stubResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.Function, error) {
-	return nil, nil
-}
-func (stubResolver) ResourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping { return nil }
-func (stubResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
-	return nil
+func (stubResolver) BindDataSource(
+	_ context.Context, _ *ast.Terraform, ds *ast.DataSource,
+) (*packages.BoundDataSource, error) {
+	return nil, fmt.Errorf("no schema for type %q", ds.Type)
 }
 
 func (s stubResolver) ProviderFunctions(
@@ -696,36 +700,6 @@ output "missing" {
 	require.EqualError(t, err, `typing output "missing": main.tf:10,40-48: Unsupported attribute; This object does not have an attribute named "missing"., and 1 other diagnostic(s)`)
 }
 
-// mappingResolver resolves resources and their bridge body mappings by TF type,
-// so output typing that depends on the mapping (e.g. MaxItemsOne block shape)
-// can be tested without a live provider.
-type mappingResolver struct {
-	resources map[string]*pulumiSchema.Resource
-	mappings  map[string]*bridge.BodyMapping
-}
-
-func (s mappingResolver) ResolveResource(_ context.Context, tfType string) (*pulumiSchema.Resource, error) {
-	return s.resources[tfType], nil
-}
-
-func (mappingResolver) ResolveFunction(_ context.Context, _ string) (*pulumiSchema.Function, error) {
-	return nil, nil
-}
-
-func (s mappingResolver) ResourceBodyMapping(_ context.Context, tfType string) *bridge.BodyMapping {
-	return s.mappings[tfType]
-}
-
-func (mappingResolver) DataSourceBodyMapping(_ context.Context, _ string) *bridge.BodyMapping {
-	return nil
-}
-
-func (mappingResolver) ProviderFunctions(
-	_ context.Context, providerName string,
-) (map[string]packages.ProviderFunction, error) {
-	return nil, fmt.Errorf("unknown provider %q", providerName)
-}
-
 // a MaxItems:1 block is flattened to a single object on the Pulumi side, but TF/OpenTofu
 // models it as a list, so HCL indexes it as `block[0].attr`. Output typing must re-wrap
 // the flattened object as a list — mirroring the runtime — so the numeric index types
@@ -744,7 +718,7 @@ output "mode" {
 	config, diags := parser.NewParser().ParseSource("main.tf", []byte(src))
 	require.False(t, diags.HasErrors(), diags.Error())
 
-	resolver := mappingResolver{
+	resolver := stubResolver{
 		resources: map[string]*pulumiSchema.Resource{
 			"blocky_thing": {Properties: []*pulumiSchema.Property{
 				{Name: "settings", Type: &pulumiSchema.ObjectType{Properties: []*pulumiSchema.Property{
@@ -1521,4 +1495,115 @@ func TestPackageSchema(t *testing.T) {
 		_, err := PackageSchema(nil, []*ModuleSchema{makeComponent("user-data"), makeComponent("userdata")})
 		require.EqualError(t, err, `modules "user-data" and "userdata" both map to Go package "userdata"`)
 	})
+}
+
+// packageResolver binds resources and data sources keyed as
+// "<serving package>/<type>".
+type packageResolver struct {
+	stubResolver
+	functions map[string]*pulumiSchema.Function
+}
+
+func (s packageResolver) BindResource(
+	_ context.Context, module *ast.Terraform, res *ast.Resource,
+) (*packages.BoundResource, error) {
+	pkgName, err := packages.BlockPackage(module, res.Provider, res.Type)
+	if err != nil {
+		return nil, err
+	}
+	resSchema, ok := s.resources[pkgName+"/"+res.Type]
+	if !ok {
+		return nil, packages.ErrNotFound
+	}
+	return &packages.BoundResource{Package: pkgName, Schema: resSchema}, nil
+}
+
+func (s packageResolver) BindDataSource(
+	_ context.Context, module *ast.Terraform, ds *ast.DataSource,
+) (*packages.BoundDataSource, error) {
+	pkgName, err := packages.BlockPackage(module, ds.Provider, ds.Type)
+	if err != nil {
+		return nil, err
+	}
+	fn, ok := s.functions[pkgName+"/"+ds.Type]
+	if !ok {
+		return nil, packages.ErrNotFound
+	}
+	return &packages.BoundDataSource{Package: pkgName, Schema: fn}, nil
+}
+
+// TestBlockOutputsAreTypedFromTheirProvider shows that a resource or data
+// source is typed from the provider that its `provider` meta-argument
+// selects, as declared by the module that holds the block, when the type's
+// prefix names another provider.
+func TestBlockOutputsAreTypedFromTheirProvider(t *testing.T) {
+	t.Parallel()
+
+	child, childDiags := parser.NewParser().ParseSource("child/main.tf", []byte(`
+terraform {
+  required_providers {
+    prov-beta = {
+      source = "hashicorp/prov-beta"
+    }
+  }
+}
+
+resource "prov_identity" "this" {
+  provider = prov-beta
+  service  = "api.example.com"
+}
+
+data "prov_thing" "this" {
+  provider = prov-beta
+}
+
+output "email" {
+  value = prov_identity.this.email
+}
+
+output "number" {
+  value = data.prov_thing.this.number
+}
+`))
+	require.False(t, childDiags.HasErrors(), childDiags.Error())
+
+	config, diags := parser.NewParser().ParseSource("main.tf", []byte(`
+module "child" {
+  source = "./child"
+}
+
+output "email" {
+  value = module.child.email
+}
+
+output "number" {
+  value = module.child.number
+}
+`))
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	binder := &Binder{
+		Resources: packageResolver{
+			stubResolver: stubResolver{resources: map[string]*pulumiSchema.Resource{
+				"prov-beta/prov_identity": {Properties: []*pulumiSchema.Property{
+					{Name: "email", Type: pulumiSchema.StringType},
+				}},
+			}},
+			functions: map[string]*pulumiSchema.Function{
+				"prov-beta/prov_thing": {ReturnType: &pulumiSchema.ObjectType{
+					Properties: []*pulumiSchema.Property{{Name: "number", Type: pulumiSchema.IntType}},
+				}},
+			},
+		},
+		Modules:   stubModuleLoader{configs: map[string]*ast.Config{"./child": child}},
+		ModuleDir: ".",
+	}
+	moduleSchema, err := GenerateModuleSchema(
+		t.Context(), config, binder, componentToken("pkg", "index", "pkg"), semver.MustParse("0.0.0-dev"))
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]*PropertySpec{
+		"email":  {Type: TypeString},
+		"number": {Type: TypeNumber},
+	}, moduleSchema.OutputProperties)
 }

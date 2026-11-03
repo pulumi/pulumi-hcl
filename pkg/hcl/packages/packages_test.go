@@ -19,9 +19,13 @@ import (
 	"testing"
 
 	"github.com/blang/semver"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,6 +129,7 @@ func TestResolveResource(t *testing.T) {
 	tests := []struct {
 		name           string
 		knownProviders []string
+		pkgName        string // the package to resolve in; by default, the one the token implies
 		token          string
 		wantToken      string
 		wantErr        error
@@ -197,6 +202,12 @@ func TestResolveResource(t *testing.T) {
 			wantToken:      "fail_on_create:index:Resource",
 		},
 		{
+			name:    "token without the package prefix is not found",
+			pkgName: "bridged",
+			token:   "fail_on_create_resource",
+			wantErr: ErrNotFound,
+		},
+		{
 			name:           "ambiguous token",
 			knownProviders: []string{"foo", "foo_bar"},
 			token:          "foo_bar_thing",
@@ -213,7 +224,7 @@ func TestResolveResource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			res, err := ResolveResource(ctx, loader, tt.knownProviders, tt.token)
+			res, err := resolveTestResource(ctx, loader, tt.knownProviders, tt.pkgName, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
@@ -308,6 +319,7 @@ func TestResolveFunction(t *testing.T) {
 	tests := []struct {
 		name           string
 		knownProviders []string
+		pkgName        string // the package to resolve in; by default, the one the token implies
 		token          string
 		wantToken      string
 		wantErr        error
@@ -402,7 +414,7 @@ func TestResolveFunction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			fn, err := ResolveFunction(ctx, loader, tt.knownProviders, tt.token)
+			fn, err := resolveTestFunction(ctx, loader, tt.knownProviders, tt.pkgName, tt.token)
 
 			if tt.errAsInvalid {
 				require.Error(t, err)
@@ -464,4 +476,77 @@ func TestParameterizationAwareLoader_PlainPackageVersionAndURL(t *testing.T) {
 		Version:     &v,
 		DownloadURL: "git://github.com/pulumi/component-test-providers/test-provider",
 	}, inner.got)
+}
+
+// testPackage returns pkgName, or else the package of the provider that token
+// implies among knownProviders.
+func testPackage(knownProviders []string, pkgName, token string) (string, error) {
+	if pkgName != "" {
+		return pkgName, nil
+	}
+	return PackageFromToken(knownProviders, token)
+}
+
+func resolveTestResource(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, pkgName, token string,
+) (*schema.Resource, error) {
+	pkgName, err := testPackage(knownProviders, pkgName, token)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveResource(ctx, loader, pkgName, token)
+}
+
+func resolveTestFunction(
+	ctx context.Context, loader schema.ReferenceLoader, knownProviders []string, pkgName, token string,
+) (*schema.Function, error) {
+	pkgName, err := testPackage(knownProviders, pkgName, token)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveFunction(ctx, loader, pkgName, token)
+}
+
+func TestBlockPackage(t *testing.T) {
+	t.Parallel()
+
+	tf := &ast.Terraform{RequiredProviders: map[string]*ast.RequiredProvider{
+		"prov-beta":   {Source: "hashicorp/prov-beta"},
+		"myp":         {Source: "hashicorp/simple"},
+		"snake_names": {Source: "pulumi/snake_names"},
+	}}
+
+	tests := []struct {
+		name     string
+		provider string // the `provider` meta-argument; "" when unset
+		typ      string
+		want     string
+	}{
+		{name: "implied provider", typ: "prov_thing", want: "prov"},
+		{name: "implied provider with underscores", typ: "snake_names_thing", want: "snake_names"},
+		{name: "implied provider renamed by its source", typ: "myp_thing", want: "simple"},
+		{name: "provider", provider: "prov-beta", typ: "prov_thing", want: "prov-beta"},
+		{name: "aliased provider", provider: "prov-beta.west", typ: "prov_thing", want: "prov-beta"},
+		{name: "keyed provider", provider: "prov-beta.by_region[each.key]", typ: "prov_thing", want: "prov-beta"},
+		{name: "provider renamed by its source", provider: "myp", typ: "prov_thing", want: "simple"},
+		{name: "undeclared provider", provider: "other", typ: "prov_thing", want: "other"},
+		{name: "keyed provider with a static key", provider: `prov-beta.by_region["us"]`, typ: "prov_thing", want: "prov-beta"},
+		{name: "provider value from a method call", provider: "call.res.method", typ: "prov_thing", want: "prov"},
+		{name: "provider value from a module output", provider: "module.child.provider", typ: "prov_thing", want: "prov"},
+		{name: "quoted provider", provider: `"prov-beta"`, typ: "prov_thing", want: "prov"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var provider hcl.Expression
+			if tt.provider != "" {
+				expr, diags := hclsyntax.ParseExpression([]byte(tt.provider), "", hcl.InitialPos)
+				require.False(t, diags.HasErrors(), diags.Error())
+				provider = expr
+			}
+			got, err := BlockPackage(tf, provider, tt.typ)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

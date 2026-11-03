@@ -373,9 +373,10 @@ func (g *generator) collectMappings(ctx context.Context) {
 			g.resourceMappings[r] = g.mappings.ProviderConfigBodyMapping(ctx, providerPackageName(token))
 			continue
 		}
-		hclType, d := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(r.Schema), resourceSchemaToken(r.Schema, token))
+		schemaToken := resourceSchemaToken(r.Schema, token)
+		hclType, d := packages.PulumiResourceTokenToHCL(resourceSchemaPackage(r.Schema), schemaToken)
 		if !d.HasErrors() {
-			g.resourceMappings[r] = g.mappings.ResourceBodyMapping(ctx, hclType)
+			g.resourceMappings[r] = g.mappings.ResourceBodyMapping(ctx, tokenPackageName(schemaToken), hclType)
 		}
 	}
 	for _, ds := range g.invokeDataSources {
@@ -384,11 +385,17 @@ func (g *generator) collectMappings(ctx context.Context) {
 			continue
 		}
 		invokeSchema, schemaToken, _ := g.lookupInvokeSchema(token)
-		dsType, d := packages.PulumiFunctionTokenToHCL(invokeSchemaPackage(invokeSchema), invokeSchemaToken(invokeSchema, schemaToken))
+		fnToken := invokeSchemaToken(invokeSchema, schemaToken)
+		dsType, d := packages.PulumiFunctionTokenToHCL(invokeSchemaPackage(invokeSchema), fnToken)
 		if !d.HasErrors() {
-			g.invokeMappings[ds.expr] = g.mappings.DataSourceBodyMapping(ctx, dsType)
+			g.invokeMappings[ds.expr] = g.mappings.DataSourceBodyMapping(ctx, tokenPackageName(fnToken), dsType)
 		}
 	}
+}
+
+// tokenPackageName returns the package of a Pulumi resource or function token.
+func tokenPackageName(token string) string {
+	return string(tokens.Type(token).Package().Name())
 }
 
 // providerPackageName returns the package name of the provider resource token

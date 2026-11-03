@@ -338,9 +338,10 @@ type inheritableOpts struct {
 	RetainOnDelete *bool
 }
 
-// unknownTokenDiag turns a packages.NotFoundError or ProviderAsResourceError
-// into an hcl.Diagnostic anchored at typeRange. Other errors pass through.
-func unknownTokenDiag(kind string, typeRange hcl.Range, err error) error {
+// unknownTokenDiag reports err, the failure to bind a block of the given kind
+// and type typ. A packages.NotFoundError or ProviderAsResourceError becomes an
+// hcl.Diagnostic anchored at typeRange.
+func unknownTokenDiag(kind string, typeRange hcl.Range, typ string, err error) error {
 	var pae *packages.ProviderAsResourceError
 	if errors.As(err, &pae) {
 		return hcl.Diagnostics{{
@@ -352,7 +353,7 @@ func unknownTokenDiag(kind string, typeRange hcl.Range, err error) error {
 	}
 	var nfe *packages.NotFoundError
 	if !errors.As(err, &nfe) {
-		return err
+		return fmt.Errorf("resolving %s type %s: %w", kind, typ, err)
 	}
 	d := &hcl.Diagnostic{
 		Severity: hcl.DiagError,
@@ -660,7 +661,7 @@ func NewEngine(ctx context.Context, config *ast.Config, opts *EngineOptions) (*E
 		failedNodes:             util.NewSyncMap[graph.InstanceKey, error](),
 		alwaysRegisterProviders: opts.AlwaysRegisterProviders,
 		resolver: packages.NewResolver(
-			opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, knownProviders(config.Terraform)),
+			opts.SchemaLoader, opts.ProviderInfoSource, opts.Packages, nil),
 	}, nil
 }
 
@@ -1481,7 +1482,7 @@ func (e *Engine) registerProviderInContext(
 	hclCtx := evalCtx.HCLContext()
 
 	// Schema-aware eval is needed so schema.Property.Secret marks survive.
-	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), "pulumi_providers_"+pkgName)
+	pkg, perr := packages.ResolvePackage(ctx, e.pkgLoader, packages.KnownProviders(e.config.Terraform), "pulumi_providers_"+pkgName)
 	if perr != nil {
 		return fmt.Errorf("resolving provider package %s: %w", provider.Name, perr)
 	}
@@ -1649,7 +1650,7 @@ func (e *Engine) registerResourceInstanceInContext(
 	ctx context.Context,
 	node *graph.Node,
 	res *ast.Resource,
-	resSchema *schema.Resource,
+	bound *packages.BoundResource,
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	parentURN urn.URN,
@@ -1660,7 +1661,7 @@ func (e *Engine) registerResourceInstanceInContext(
 
 	hclCtx := evalCtx.HCLContext()
 
-	resourceMapping := e.resolver.ResourceBodyMapping(ctx, res.Type)
+	resSchema, resourceMapping := bound.Schema, bound.Mapping
 	// terraform_data's attributes are dynamically typed, so their cty types
 	// (e.g. set-ness) survive the Pulumi property round-trip only via the
 	// evaluated values captured here; see wrapTerraformDataInputs.
@@ -1745,14 +1746,14 @@ func (e *Engine) registerResourceInstanceInContext(
 	opts.DependsOn = e.cellURNs.widen(opts.DependsOn)
 
 	if opts.Version == "" {
-		opts.Version = e.pinnedVersion(packageNameFromResourceType(res.Type))
+		opts.Version = e.packageVersion(schemaPackage(bound.Package, resSchema.PackageReference))
 	}
 
 	if opts.PluginDownloadURL == "" && resSchema.PackageReference != nil {
 		opts.PluginDownloadURL = resSchema.PackageReference.PluginDownloadURL()
 	}
 
-	opts.PackageRef = e.packageRefForResource(res.Type, resSchema)
+	opts.PackageRef = e.packageRefForSchema(bound.Package, resSchema.PackageReference)
 
 	resourceName, err := e.resourceInstanceName(res, instance, hclCtx, modInst)
 	if err != nil {
@@ -1771,13 +1772,13 @@ func (e *Engine) registerResourceInstanceInContext(
 	}
 
 	if len(res.Postconditions) > 0 {
-		if err := e.bindPostconditionHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, instanceURN); err != nil {
+		if err := e.bindPostconditionHooks(ctx, res, bound, instance, evalCtx, opts, instanceURN); err != nil {
 			return err
 		}
 	}
 
 	if len(res.Provisioners) > 0 || opts.PreventDestroy != preventDestroyAllow {
-		if err := e.bindGlobalHooks(ctx, res, resSchema, resourceMapping, instance, evalCtx, opts, instanceURN); err != nil {
+		if err := e.bindGlobalHooks(ctx, res, bound, instance, evalCtx, opts, instanceURN); err != nil {
 			return err
 		}
 	}
@@ -2090,7 +2091,7 @@ func (e *Engine) buildResourceOptions(
 			opts.Provider = ref
 		}
 	} else {
-		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(res.Type)); ok {
+		if ref, ok := e.defaultProviders.Get(e.providerPackageName(packageNameFromResourceType(res.Type))); ok {
 			opts.Provider = ref
 		}
 	}
@@ -2496,12 +2497,15 @@ func (e *Engine) resolveMovedAliases(
 				// A `moved` may also change the resource's type; the alias then
 				// carries the prior type's token so the engine matches the old URN.
 				if from.Type != res.Type {
-					priorRes, err := e.resolver.ResolveResource(ctx, from.Type)
+					// No configuration declares the prior object, so it binds
+					// with no meta-arguments in the module it was in.
+					priorRes, err := e.resolver.BindResource(
+						ctx, e.graph.ModuleTerraform(fromPath.Config()), &ast.Resource{Type: from.Type})
 					if err != nil {
 						logging.V(5).Infof("moved: cannot resolve prior type %q: %v", from.Type, err)
 						continue
 					}
-					prior.token = priorRes.Token
+					prior.token = priorRes.Schema.Token
 				}
 
 				seen[mkAddrKey(prior)] = true
@@ -3044,62 +3048,47 @@ func packageNameFromResourceType(token string) string {
 }
 
 // pinnedVersion returns the version the program pins for the provider with
-// the required_providers local name local, or "" when it pins none. The pin
-// reaches the schema loader through the same package map, so a block is type
-// checked against the version its requests carry.
+// the required_providers local name local, or "" when it pins none.
 func (e *Engine) pinnedVersion(local string) string {
-	desc, ok := e.packages[e.providerPackageName(local)]
+	return e.packageVersion(e.providerPackageName(local))
+}
+
+// packageVersion returns the version the program pins for the provider
+// package pkgName, or "" when it pins none. The pin reaches the schema loader
+// through the same package map, so a block is type checked against the
+// version its requests carry.
+func (e *Engine) packageVersion(pkgName string) string {
+	desc, ok := e.packages[pkgName]
 	if !ok || desc.Version == nil {
 		return ""
 	}
 	return desc.Version.String()
 }
 
-// packageRefForType returns the RegisterPackage ref for the given HCL resource type, or empty if none.
-func (e *Engine) packageRefForType(hclToken string) PackageRef {
-	return e.packageRefs[packageNameFromResourceType(hclToken)]
-}
-
-// packageRefForResource returns the registered package ref for a resource. An
-// extension resource's token lives in the base provider's namespace, but its
-// resolved schema names the extension package (e.g. "myext"), which is the one
-// registered as a parameterized package — using it lets the engine record the
+// packageRefForSchema returns the registered package ref for a schema of the
+// package ref that the provider package pkgName serves. An extension's schema
+// names the extension package, whose ref lets the engine record the
 // resource's ExtensionRef.
-func (e *Engine) packageRefForResource(hclToken string, resSchema *schema.Resource) PackageRef {
-	if resSchema != nil && resSchema.PackageReference != nil {
-		if ref, ok := e.packageRefs[resSchema.PackageReference.Name()]; ok {
-			return ref
+func (e *Engine) packageRefForSchema(pkgName string, ref schema.PackageReference) PackageRef {
+	if ref != nil {
+		if pkgRef, ok := e.packageRefs[ref.Name()]; ok {
+			return pkgRef
 		}
 	}
-	return e.packageRefForType(hclToken)
+	return e.packageRefs[pkgName]
 }
 
-// providerPackageName maps a provider's required_providers local name to its
-// Pulumi package name: the basename of the entry's source ("hashicorp/simple"
-// → "simple"), or the local name itself when no entry renames it.
-func providerPackageName(tfBlock *ast.Terraform, local string) string {
-	if tfBlock != nil {
-		if req, ok := tfBlock.RequiredProviders[local]; ok && req.Source != "" {
-			parts := strings.Split(req.Source, "/")
-			return parts[len(parts)-1]
-		}
+// schemaPackage returns the package of a schema of the package ref that the
+// provider package pkgName serves.
+func schemaPackage(pkgName string, ref schema.PackageReference) string {
+	if ref != nil {
+		return ref.Name()
 	}
-	return local
+	return pkgName
 }
 
 func (e *Engine) providerPackageName(local string) string {
-	return providerPackageName(e.config.Terraform, local)
-}
-
-func knownProviders(tfBlock *ast.Terraform) []string {
-	if tfBlock == nil {
-		return nil
-	}
-	providers := make([]string, 0, len(tfBlock.RequiredProviders))
-	for name := range tfBlock.RequiredProviders {
-		providers = append(providers, name)
-	}
-	return providers
+	return packages.ProviderPackage(e.config.Terraform, local)
 }
 
 // nodeOutputs returns the outputs of a block's single (suffixless) instance.
@@ -3603,7 +3592,7 @@ func (e *Engine) readResource(
 // and explicit depends_on, so downstream reads of data.X.Y carry them
 // without a separate dependency map.
 func (e *Engine) invokeDataSourceOnce(
-	ctx context.Context, node *graph.Node, ds *ast.DataSource, funcSchema *schema.Function,
+	ctx context.Context, node *graph.Node, ds *ast.DataSource, bound *packages.BoundDataSource,
 	evalCtx *eval.Context, mi *moduleInstance,
 ) (cty.Value, error) {
 	hclCtx := evalCtx.HCLContext()
@@ -3638,7 +3627,7 @@ func (e *Engine) invokeDataSourceOnce(
 		addURN(urn)
 	}
 
-	dataSourceMapping := e.resolver.DataSourceBodyMapping(ctx, ds.Type)
+	funcSchema, dataSourceMapping := bound.Schema, bound.Mapping
 	timeouts, timeoutsRole, err := evalTimeouts(ds.Timeouts, dataSourceMapping, hclCtx)
 	if err != nil {
 		return cty.NilVal, err
@@ -3667,8 +3656,8 @@ func (e *Engine) invokeDataSourceOnce(
 	invokeReq := InvokeRequest{
 		Token:      funcSchema.Token,
 		Args:       inputs,
-		Version:    e.pinnedVersion(packageNameFromResourceType(ds.Type)),
-		PackageRef: e.packageRefForType(ds.Type),
+		Version:    e.packageVersion(schemaPackage(bound.Package, funcSchema.PackageReference)),
+		PackageRef: e.packageRefForSchema(bound.Package, funcSchema.PackageReference),
 	}
 
 	if ds.Provider != nil {
@@ -3691,7 +3680,7 @@ func (e *Engine) invokeDataSourceOnce(
 			invokeReq.Provider = ref
 		}
 	} else {
-		if ref, ok := e.defaultProviders.Get(packageNameFromResourceType(ds.Type)); ok {
+		if ref, ok := e.defaultProviders.Get(e.providerPackageName(packageNameFromResourceType(ds.Type))); ok {
 			invokeReq.Provider = ref
 		}
 	}
@@ -3844,22 +3833,18 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 
 	// Find the resource or provider being called by logical name
 	var resKey string
-	var resType string
+	var resPkg string
 	var resSchema *schema.Resource
 	var isProviderResource bool // true for resource "pulumi_providers_*" blocks
 
 	for k, res := range e.config.Resources {
 		if res.Name == call.ResourceName {
 			resKey = k
-			resType = res.Type
-			var err error
-			resSchema, err = e.resolver.ResolveResource(ctx, res.Type)
+			bound, err := e.resolver.BindResource(ctx, e.config.Terraform, res)
 			if err != nil {
-				if diag := unknownTokenDiag("resource", res.TypeRange, err); diag != err {
-					return diag
-				}
-				return fmt.Errorf("resolving resource type %s for call: %w", res.Type, err)
+				return unknownTokenDiag("resource", res.TypeRange, res.Type, err)
 			}
+			resPkg, resSchema = bound.Package, bound.Schema
 			isProviderResource = strings.HasPrefix(res.Type, "pulumi_providers_")
 			break
 		}
@@ -3877,9 +3862,9 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 		}
 		if matched != nil {
 			resKey = matched.Key()
-			providerToken := "pulumi_providers_" + e.providerPackageName(matched.Name)
-			resType = providerToken
-			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, knownProviders(e.config.Terraform), providerToken)
+			resPkg = e.providerPackageName(matched.Name)
+			providerToken := "pulumi_providers_" + resPkg
+			pkg, err := packages.ResolvePackage(ctx, e.pkgLoader, packages.KnownProviders(e.config.Terraform), providerToken)
 			if err != nil {
 				return fmt.Errorf("resolving provider package for call: %w", err)
 			}
@@ -3959,7 +3944,7 @@ func (e *Engine) processCall(ctx context.Context, node *graph.Node) error {
 	ret, err := e.callMethod(ctx, CallRequest{
 		Token:      method.Function.Token,
 		Args:       userArgs.Set("__self__", selfRef),
-		PackageRef: e.packageRefForType(resType),
+		PackageRef: e.packageRefForSchema(resPkg, resSchema.PackageReference),
 	})
 	if err != nil {
 		return fmt.Errorf("calling method %s.%s: %w", call.ResourceName, call.MethodName, err)
@@ -4043,7 +4028,7 @@ func (e *Engine) providerFunctionTable(
 				continue
 			}
 		}
-		fns, err := e.resolver.ProviderFunctions(ctx, providerPackageName(config.Terraform, providerName))
+		fns, err := e.resolver.ProviderFunctions(ctx, packages.ProviderPackage(config.Terraform, providerName))
 		if err != nil {
 			if lenient {
 				logging.V(5).Infof("provider functions for %q unavailable: %v", providerName, err)
@@ -4953,8 +4938,7 @@ func (e *Engine) bindPreconditionHooks(
 func (e *Engine) bindPostconditionHooks(
 	ctx context.Context,
 	res *ast.Resource,
-	resSchema *schema.Resource,
-	mapping *bridge.BodyMapping,
+	bound *packages.BoundResource,
 	instance *graph.ExpandedResource,
 	evalCtx *eval.Context,
 	opts *ResourceOptions,
@@ -4974,7 +4958,7 @@ func (e *Engine) bindPostconditionHooks(
 		// adapted the same way as on the registration path: property-level
 		// lowering here, wrapper unboxing after re-expansion.
 		outputs := lowerTerraformDataOutputs(res.Type, args.NewOutputs, opts)
-		return evaluatePostconditions(res.Postconditions, hclSnapshot, outputs, res.Type, resSchema, mapping, dryRun, instance.Key.String())
+		return evaluatePostconditions(res.Postconditions, hclSnapshot, outputs, res.Type, bound, dryRun, instance.Key.String())
 	}
 	if err := e.resmon.RegisterResourceHook(ctx, hookName, callback, ResourceHookOptions{
 		OnDryRun: true,
@@ -4991,9 +4975,9 @@ func (e *Engine) bindPostconditionHooks(
 // is reported.
 func evaluatePostconditions(
 	rules []*ast.CheckRule, hclCtx *hcl.EvalContext, newOutputs property.Map, tfType string,
-	resSchema *schema.Resource, mapping *bridge.BodyMapping, dryRun bool, resourceName string,
+	bound *packages.BoundResource, dryRun bool, resourceName string,
 ) error {
-	outputObj, err := transform.ResourceOutputToCty(newOutputs, resSchema, mapping, dryRun)
+	outputObj, err := transform.ResourceOutputToCty(newOutputs, bound.Schema, bound.Mapping, dryRun)
 	if err != nil {
 		return fmt.Errorf("converting outputs for postconditions on %s: %w", resourceName, err)
 	}
@@ -5145,7 +5129,7 @@ func (e *Engine) evaluateConfigChecks(
 	slices.Sort(names)
 	var errs []error
 	for _, name := range names {
-		errs = append(errs, e.evaluateCheck(ctx, addrPrefix+name, config.Checks[name], evalCtx))
+		errs = append(errs, e.evaluateCheck(ctx, addrPrefix+name, config.Terraform, config.Checks[name], evalCtx))
 	}
 	return errors.Join(errs...)
 }
@@ -5153,11 +5137,13 @@ func (e *Engine) evaluateConfigChecks(
 // evaluateCheck evaluates one check block. Its scoped data source is read into a
 // cloned context so it is visible only to this check's assertions and cannot
 // collide with a top-level data source of the same address.
-func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Check, evalCtx *eval.Context) error {
+func (e *Engine) evaluateCheck(
+	ctx context.Context, name string, module *ast.Terraform, check *ast.Check, evalCtx *eval.Context,
+) error {
 	var errs []error
 	if ds := check.DataResource; ds != nil {
 		evalCtx = evalCtx.Clone()
-		if err := e.readScopedDataSource(ctx, ds, evalCtx); err != nil {
+		if err := e.readScopedDataSource(ctx, module, ds, evalCtx); err != nil {
 			// A scoped data source error is masked as a warning, matching TF.
 			errs = append(errs, e.warnf(ctx, "check %q data %q.%q: %s", name, ds.Type, ds.Name, err))
 		}
@@ -5175,20 +5161,19 @@ func (e *Engine) evaluateCheck(ctx context.Context, name string, check *ast.Chec
 // it available as data.<type>.<name> within that context only. Scoped data
 // sources are single reads: they run after the walk, synchronously, outside
 // the expansion-cell machinery.
-func (e *Engine) readScopedDataSource(ctx context.Context, ds *ast.DataSource, evalCtx *eval.Context) error {
+func (e *Engine) readScopedDataSource(
+	ctx context.Context, module *ast.Terraform, ds *ast.DataSource, evalCtx *eval.Context,
+) error {
 	node := &graph.Node{
 		Key:        graph.NodeKey{ID: "data." + ast.ResourceKey(ds.Type, ds.Name)},
 		Type:       graph.NodeTypeDataSource,
 		DataSource: ds,
 	}
-	funcSchema, err := e.resolver.ResolveFunction(ctx, ds.Type)
+	bound, err := e.resolver.BindDataSource(ctx, module, ds)
 	if err != nil {
-		if diag := unknownTokenDiag("data source", ds.TypeRange, err); diag != err {
-			return diag
-		}
-		return fmt.Errorf("resolving data source type %s: %w", ds.Type, err)
+		return unknownTokenDiag("data source", ds.TypeRange, ds.Type, err)
 	}
-	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, funcSchema, evalCtx, nil)
+	ctyOutputs, err := e.invokeDataSourceOnce(ctx, node, ds, bound, evalCtx, nil)
 	if err != nil {
 		return err
 	}

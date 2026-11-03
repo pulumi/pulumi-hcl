@@ -26,13 +26,16 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/pulumi/pulumi-hcl/pkg/codegen"
+	"github.com/pulumi/pulumi-hcl/pkg/hcl/ast"
 	"github.com/pulumi/pulumi-hcl/pkg/hcl/packages"
 	"github.com/pulumi/pulumi-hcl/tests/testutil/schemaloader"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/convert"
 	pclsyntax "github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/syntax"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/rpcutil"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
@@ -525,10 +528,18 @@ func TestTransformSplatExpr(t *testing.T) {
 			file, diags := hclsyntax.ParseConfig(src, "test.tf", hcl.Pos{})
 			require.False(t, diags.HasErrors(), diags.Error())
 
+			config := ast.NewConfig()
+			resources := map[*ast.Resource]*packages.BoundResource{}
+			for hclType, res := range tt.schemas {
+				block := &ast.Resource{Type: hclType, Name: "source"}
+				config.Resources[ast.ResourceKey(hclType, "source")] = block
+				resources[block] = &packages.BoundResource{Schema: res}
+			}
 			ft := &fileTransformer{
-				sources:         map[string][]byte{"test.tf": src},
-				knownHCLTypes:   map[string]bool{"my_res": true},
-				resourceSchemas: tt.schemas,
+				sources:       map[string][]byte{"test.tf": src},
+				knownHCLTypes: map[string]bool{"my_res": true},
+				modules:       map[string]*ast.Config{".": config},
+				resources:     resources,
 			}
 
 			body := file.Body.(*hclsyntax.Body)
@@ -1557,4 +1568,327 @@ component "child" "./child" {
 
 `
 	assert.Equal(t, expected, string(out.Bytes()))
+}
+
+// A provider function call names the provider by its local name, which the
+// module's required_providers maps to the package that serves the function.
+func TestConvertProviderFunctionOfRenamedProvider(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, schema.PackageSpec{
+		Name: "simple",
+		Functions: map[string]schema.FunctionSpec{"simple:index:joinStr": {
+			MultiArgumentInputs: []string{"left", "right"},
+			Inputs: &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+				"left":  {TypeSpec: schema.TypeSpec{Type: "string"}},
+				"right": {TypeSpec: schema.TypeSpec{Type: "string"}},
+			}},
+			ReturnType: &schema.ReturnTypeSpec{TypeSpec: &schema.TypeSpec{Type: "string"}},
+		}},
+	})
+
+	src := []byte(`terraform {
+  required_providers {
+    myp = {
+      source = "hashicorp/simple"
+    }
+  }
+}
+
+output "joined" {
+  value = provider::myp::join_str("a", "b")
+}
+`)
+	f, parseDiags := hclsyntax.ParseConfig(src, "main.tf", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+	body := f.Body.(*hclsyntax.Body)
+	ft, diags := newProjectTransformer(t.Context(), loader, nil, nil, []*hclsyntax.Body{body},
+		map[string][]byte{"main.tf": src})
+	require.False(t, diags.HasErrors(), diags.Error())
+	out := hclwrite.NewEmptyFile()
+	diags, err := ft.emitFile(t.Context(), src, "main.tf", body, out.Body(), nil)
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	assert.Equal(t, `output "joined" {
+  value = invoke("simple:index:joinStr", "a", "b")
+}
+
+`, string(out.Bytes()))
+}
+
+// A program that does not bind does not convert: the converter reports the
+// parser's errors and the types that do not resolve, as the runtime does.
+func TestConvertReportsProgramsThatDoNotBind(t *testing.T) {
+	t.Parallel()
+
+	loader := schemaloader.New(t, multiFileTestSchema)
+	summaries := func(src string) []string {
+		f, parseDiags := hclsyntax.ParseConfig([]byte(src), "main.tf", hcl.Pos{Line: 1, Column: 1})
+		require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+		_, diags := newProjectTransformer(t.Context(), loader, nil, nil, []*hclsyntax.Body{f.Body.(*hclsyntax.Body)},
+			map[string][]byte{"main.tf": []byte(src)})
+		var out []string
+		for _, d := range diags {
+			out = append(out, d.Summary)
+		}
+		return out
+	}
+
+	assert.Equal(t, []string{"unknown resource type", "unknown data source type"}, summaries(`
+resource "test_missing" "r" {}
+
+data "test_missing" "d" {}
+`))
+	assert.Equal(t, []string{"Duplicate resource"}, summaries(`
+resource "test_item" "r" {}
+
+resource "test_item" "r" {}
+`))
+}
+
+// provAndBetaSchemas returns a loader and a bridge mapping in which the
+// packages prov and prov-beta both serve the types prov_thing and
+// prov_lookup.
+func provAndBetaSchemas(t *testing.T) (schema.ReferenceLoader, routedInfoSource) {
+	thing := schema.ResourceSpec{
+		ObjectTypeSpec: schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+			"thingName": {TypeSpec: schema.TypeSpec{Type: "string"}},
+		}},
+		InputProperties: map[string]schema.PropertySpec{
+			"thingName": {TypeSpec: schema.TypeSpec{Type: "string"}},
+		},
+	}
+	lookup := schema.FunctionSpec{
+		Inputs: &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+			"query": {TypeSpec: schema.TypeSpec{Type: "string"}},
+		}},
+		Outputs: &schema.ObjectTypeSpec{Properties: map[string]schema.PropertySpec{
+			"resultValue": {TypeSpec: schema.TypeSpec{Type: "string"}},
+		}},
+	}
+	loader := schemaloader.New(t,
+		schema.PackageSpec{
+			Name:      "prov",
+			Meta:      &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
+			Resources: map[string]schema.ResourceSpec{"prov:index/thing:Thing": thing},
+			Functions: map[string]schema.FunctionSpec{"prov:index/getLookup:getLookup": lookup},
+		},
+		schema.PackageSpec{
+			Name:      "prov-beta",
+			Meta:      &schema.MetadataSpec{ModuleFormat: bridgeModuleFormat},
+			Resources: map[string]schema.ResourceSpec{"prov-beta:index/thing:Thing": thing},
+			Functions: map[string]schema.FunctionSpec{"prov-beta:index/getLookup:getLookup": lookup},
+		},
+	)
+	info := func(pkg string) *tfbridge.ProviderInfo {
+		return &tfbridge.ProviderInfo{
+			Name:        pkg,
+			Resources:   map[string]*tfbridge.ResourceInfo{"prov_thing": {Tok: tokens.Type(pkg + ":index/thing:Thing")}},
+			DataSources: map[string]*tfbridge.DataSourceInfo{"prov_lookup": {Tok: tokens.ModuleMember(pkg + ":index/getLookup:getLookup")}},
+		}
+	}
+	return loader, routedInfoSource{
+		"prov/prov":      info("prov"),
+		"prov-beta/prov": info("prov-beta"),
+	}
+}
+
+// A provider can serve types whose prefix names another provider. A block
+// converts against the package of the provider that its `provider`
+// meta-argument selects.
+func TestConvertTypeServedByAnotherPackage(t *testing.T) {
+	t.Parallel()
+
+	loader, infoSource := provAndBetaSchemas(t)
+
+	src := []byte(`terraform {
+  required_providers {
+    prov-beta = {
+      source = "hashicorp/prov-beta"
+    }
+  }
+}
+
+
+resource "prov_thing" "beta" {
+  provider   = prov-beta
+  thing_name = "a"
+}
+
+resource "prov_thing" "ga" {
+  thing_name = prov_thing.beta.thing_name
+}
+
+data "prov_lookup" "beta" {
+  provider = prov-beta
+  query    = prov_thing.ga.thing_name
+}
+
+output "result" {
+  value = data.prov_lookup.beta.result_value
+}
+`)
+	f, parseDiags := hclsyntax.ParseConfig(src, "main.tf", hcl.Pos{Line: 1, Column: 1})
+	require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+	body := f.Body.(*hclsyntax.Body)
+	ft, diags := newProjectTransformer(t.Context(), loader, infoSource, nil, []*hclsyntax.Body{body},
+		map[string][]byte{"main.tf": src})
+	require.False(t, diags.HasErrors(), diags.Error())
+	out := hclwrite.NewEmptyFile()
+	diags, err := ft.emitFile(t.Context(), src, "main.tf", body, out.Body(), nil)
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	assert.Equal(t, `resource "beta" "prov-beta:index/thing:Thing" {
+  thingName = "a"
+  options {
+    provider            = prov-beta
+    deleteBeforeReplace = true
+  }
+}
+
+resource "ga" "prov:index/thing:Thing" {
+  thingName = beta.thingName
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+output "result" {
+  value = invoke("prov-beta:index/getLookup:getLookup", {
+    query = ga.thingName
+    }, {
+    provider = prov-beta
+  }).resultValue
+}
+
+`, string(out.Bytes()))
+}
+
+// Each module selects the package of its own blocks, so two modules can
+// declare blocks with the same address that different packages serve.
+func TestConvertSameAddressInModulesOfDifferentPackages(t *testing.T) {
+	t.Parallel()
+
+	loader, infoSource := provAndBetaSchemas(t)
+	sources := map[string][]byte{
+		"beta/main.tf": []byte(`resource "prov_thing" "this" {
+  provider   = prov-beta
+  thing_name = "a"
+}
+
+output "name" {
+  value = prov_thing.this.thing_name
+}
+`),
+		"ga/main.tf": []byte(`resource "prov_thing" "this" {
+  thing_name = "b"
+}
+
+output "name" {
+  value = prov_thing.this.thing_name
+}
+`),
+	}
+	files := []string{"beta/main.tf", "ga/main.tf"}
+	bodies := make([]*hclsyntax.Body, len(files))
+	for i, name := range files {
+		f, parseDiags := hclsyntax.ParseConfig(sources[name], name, hcl.Pos{Line: 1, Column: 1})
+		require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+		bodies[i] = f.Body.(*hclsyntax.Body)
+	}
+	ft, diags := newProjectTransformer(t.Context(), loader, infoSource, nil, bodies, sources)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	emitted := map[string]string{}
+	for i, name := range files {
+		out := hclwrite.NewEmptyFile()
+		diags, err := ft.emitFile(t.Context(), sources[name], name, bodies[i], out.Body(), nil)
+		require.NoError(t, err)
+		require.False(t, diags.HasErrors(), diags.Error())
+		emitted[name] = string(out.Bytes())
+	}
+
+	assert.Equal(t, map[string]string{
+		"beta/main.tf": `resource "this" "prov-beta:index/thing:Thing" {
+  thingName = "a"
+  options {
+    provider            = prov-beta
+    deleteBeforeReplace = true
+  }
+}
+
+output "name" {
+  value = this.thingName
+}
+
+`,
+		"ga/main.tf": `resource "this" "prov:index/thing:Thing" {
+  thingName = "b"
+  options {
+    deleteBeforeReplace = true
+  }
+}
+
+output "name" {
+  value = this.thingName
+}
+
+`,
+	}, emitted)
+}
+
+// An override file replaces the required_providers entries that it declares
+// again.
+func TestConvertOverriddenRequiredProvider(t *testing.T) {
+	t.Parallel()
+
+	loader, infoSource := provAndBetaSchemas(t)
+	sources := map[string][]byte{
+		"main.tf": []byte(`terraform {
+  required_providers {
+    beta = {
+      source = "hashicorp/prov"
+    }
+  }
+}
+
+resource "prov_thing" "this" {
+  provider   = beta
+  thing_name = "a"
+}
+`),
+		"a_override.tf": []byte(`terraform {
+  required_providers {
+    beta = {
+      source = "hashicorp/prov-beta"
+    }
+  }
+}
+`),
+	}
+	files := []string{"a_override.tf", "main.tf"}
+	bodies := make([]*hclsyntax.Body, len(files))
+	for i, name := range files {
+		f, parseDiags := hclsyntax.ParseConfig(sources[name], name, hcl.Pos{Line: 1, Column: 1})
+		require.False(t, parseDiags.HasErrors(), parseDiags.Error())
+		bodies[i] = f.Body.(*hclsyntax.Body)
+	}
+	ft, diags := newProjectTransformer(t.Context(), loader, infoSource, nil, bodies, sources)
+	require.False(t, diags.HasErrors(), diags.Error())
+	out := hclwrite.NewEmptyFile()
+	diags, err := ft.emitFile(t.Context(), sources["main.tf"], "main.tf", bodies[1], out.Body(), nil)
+	require.NoError(t, err)
+	require.False(t, diags.HasErrors(), diags.Error())
+
+	assert.Equal(t, `resource "this" "prov-beta:index/thing:Thing" {
+  thingName = "a"
+  options {
+    provider            = beta
+    deleteBeforeReplace = true
+  }
+}
+
+`, string(out.Bytes()))
 }

@@ -34,7 +34,7 @@ func TestConditionalUnion(t *testing.T) {
 		},
 		ExpectedOutputs: map[string]string{
 			"result": "hello-done",
-			"thing":  `{"id":"timeoutable-id","inputOne":"hello","resourceId":"timeoutable-id","result":"hello-done"}`,
+			"thing":  `{"id":"timeoutable-id","inputOne":"hello","result":"hello-done"}`,
 		},
 	})
 }

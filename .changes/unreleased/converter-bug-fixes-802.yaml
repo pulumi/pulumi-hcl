@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: "Convert a resource or data source against the provider that its `provider` meta-argument selects"
+time: 2026-11-02T12:59:53.000000+01:00
+custom:
+    Component: converter
+    PR: "802"

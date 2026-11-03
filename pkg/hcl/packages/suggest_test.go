@@ -168,7 +168,7 @@ func TestPulumiTokenToHCLRoundtrip(t *testing.T) {
 		for _, r := range pkg.Resources {
 			hclTk, diags := pulumiTokenToHCL(pkg.Reference(), r.Token, false)
 			require.False(t, diags.HasErrors())
-			resolved, err := ResolveResource(t.Context(), schemaloader.New(t, *spec), nil, hclTk)
+			resolved, err := ResolveResource(t.Context(), schemaloader.New(t, *spec), pkg.Name, hclTk)
 			require.NoError(t, err)
 			assert.Equal(t, r.Token, resolved.Token)
 		}
