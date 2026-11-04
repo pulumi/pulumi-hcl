@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Pass a resource to a property typed as a union of resource types as a resource reference, not as its outputs
+time: 2026-11-04T12:00:00.000000-08:00
+custom:
+    Component: runtime
+    PR: "821"
