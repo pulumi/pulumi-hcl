@@ -94,8 +94,13 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 		p.walkTopLevel(body)
 	}
 
-	pclNames := ft.pclNames(bodies)
 	bound := boundNames(ft.dataBlocks)
+	// taken reports whether the module of ref declares name, or whether a
+	// data block binds it.
+	taken := func(ref dataReference, name string) bool {
+		_, used := ft.usedNames[ref.dir][name]
+		return used || bound[name]
+	}
 
 	// The data blocks in source order, so that the local names are
 	// deterministic.
@@ -103,7 +108,7 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 	for _, body := range bodies {
 		for _, block := range body.Blocks {
 			if block.Type == "data" && len(block.Labels) == 2 {
-				order = append(order, dataReference{block.Labels[0], block.Labels[1]})
+				order = append(order, dataReferenceAt(block.Range(), block.Labels[0], block.Labels[1]))
 			}
 		}
 	}
@@ -133,7 +138,7 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 	for changed := true; changed; {
 		for _, ref := range order {
 			if plan := ft.dataPlans[ref]; hoist[ref] && plan.local == "" {
-				plan.local = uniqueName(ref.name, pclNames)
+				plan.local = uniqueName(ref.name, ft.usedNames[ref.dir])
 			}
 		}
 		changed = false
@@ -142,21 +147,20 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 			if hoist[ref] || plan.subst == nil {
 				continue
 			}
-			if pclNames[plan.subst.key] || bound[plan.subst.key] ||
-				pclNames[plan.subst.value] || bound[plan.subst.value] {
+			if taken(ref, plan.subst.key) || taken(ref, plan.subst.value) {
 				hoist[ref], plan.subst, changed = true, nil, true
 			}
 		}
 	}
 
 	// Name the loop variables of the hoisted ranged locals.
-	avoid := func(name string) string {
-		for pclNames[name] || bound[name] {
-			name += "_"
-		}
-		return name
-	}
 	for _, ref := range order {
+		avoid := func(name string) string {
+			for taken(ref, name) {
+				name += "_"
+			}
+			return name
+		}
 		if plan := ft.dataPlans[ref]; hoist[ref] && plan.ranged {
 			plan.subst = &rangeSubst{key: avoid("key"), value: avoid("value"), index: avoid("index")}
 		}
@@ -361,7 +365,7 @@ func (w *refWalker) Enter(n hclsyntax.Node) hcl.Diagnostics {
 	}
 	switch trav.Traversal.RootName() {
 	case "data":
-		ref := dataReference{typeAttr.Name, nameAttr.Name}
+		ref := dataReferenceAt(trav.Range(), typeAttr.Name, nameAttr.Name)
 		if _, ok := w.p.ft.dataBlocks[ref]; !ok {
 			return nil
 		}
@@ -419,39 +423,6 @@ func (w *refWalker) Exit(hclsyntax.Node) hcl.Diagnostics {
 	return nil
 }
 
-// pclNames returns the names that the PCL program declares at the top level.
-func (ft *fileTransformer) pclNames(bodies []*hclsyntax.Body) map[string]bool {
-	names := make(map[string]bool)
-	add := func(name string) {
-		if rewritten, ok := ft.nameRewrites[name]; ok {
-			name = rewritten
-		}
-		names[name] = true
-	}
-	for _, body := range bodies {
-		for name := range body.Attributes {
-			add(name)
-		}
-		for _, block := range body.Blocks {
-			switch block.Type {
-			case "locals":
-				for name := range block.Body.Attributes {
-					add(name)
-				}
-			case "provider":
-				if len(block.Labels) >= 1 {
-					add(providerResourceName(block))
-				}
-			default:
-				if name := blockLogicalName(block); name != "" {
-					add(name)
-				}
-			}
-		}
-	}
-	return names
-}
-
 // boundNames returns the names that a for expression or a dynamic block
 // binds in any data block body. A loop variable with one of these names can
 // be shadowed in the PCL form of a data block body.
@@ -472,13 +443,13 @@ func boundNames(dataBlocks map[dataReference]*hclsyntax.Body) map[string]bool {
 
 // uniqueName returns a valid identifier for name that is not in used, and
 // adds it to used.
-func uniqueName(name string, used map[string]bool) string {
+func uniqueName(name string, used map[string]struct{}) string {
 	if !parser.ValidIdentifier(name) {
 		name = sanitizeIdentifier(name)
 	}
-	for used[name] {
+	for _, ok := used[name]; ok; _, ok = used[name] {
 		name += "_"
 	}
-	used[name] = true
+	used[name] = struct{}{}
 	return name
 }
