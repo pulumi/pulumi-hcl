@@ -1662,7 +1662,6 @@ output "result" {
 	assert.Equal(t, `resource "beta" "prov-beta:index/thing:Thing" {
   thingName = "a"
   options {
-    provider            = prov-beta
     deleteBeforeReplace = true
   }
 }
@@ -1677,8 +1676,6 @@ resource "ga" "prov:index/thing:Thing" {
 output "result" {
   value = invoke("prov-beta:index/getLookup:getLookup", {
     query = ga.thingName
-    }, {
-    provider = prov-beta
   }).resultValue
 }
 
@@ -1804,7 +1801,6 @@ resource "prov_thing" "this" {
 	assert.Equal(t, `resource "this" "prov-beta:index/thing:Thing" {
   thingName = "a"
   options {
-    provider            = beta
     deleteBeforeReplace = true
   }
 }
