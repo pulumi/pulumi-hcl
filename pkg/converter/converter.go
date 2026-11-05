@@ -274,9 +274,6 @@ type fileTransformer struct {
 	// resources and dataSources hold the binding of each block that binds.
 	resources   map[*ast.Resource]*packages.BoundResource
 	dataSources map[*ast.DataSource]*packages.BoundDataSource
-	// providerAliases is the set of "<pkg>.<alias>" pairs declared by
-	// `provider` blocks; used to detect provider references in traversals.
-	providerAliases map[string]bool
 	// defaultProviders is the set of un-aliased `provider` blocks. The
 	// resources and data sources of the package in the same directory use
 	// the block unless they set `provider`.
@@ -345,7 +342,6 @@ func newProjectTransformer(
 		dataSources:       make(map[*ast.DataSource]*packages.BoundDataSource),
 		nameRewrites:      make(map[string]string),
 		providerFunctions: make(map[providerFunctionCall]*schema.Function),
-		providerAliases:   make(map[string]bool),
 		defaultProviders:  make(map[defaultProvider]bool),
 	}
 	// Phase 1: parse and bind each module.
@@ -452,13 +448,6 @@ func (ft *fileTransformer) scanSymbols(body *hclsyntax.Body) {
 			}
 		}
 		if block.Type == "provider" && len(block.Labels) >= 1 {
-			alias := block.Labels[0]
-			if attr, ok := block.Body.Attributes["alias"]; ok {
-				if val, vdiags := attr.Expr.Value(nil); !vdiags.HasErrors() && val.Type() == cty.String {
-					alias = val.AsString()
-				}
-			}
-			ft.providerAliases[block.Labels[0]+"."+alias] = true
 			if _, aliased := block.Body.Attributes["alias"]; !aliased {
 				ft.defaultProviders[defaultProvider{filepath.Dir(block.Range().Filename), block.Labels[0]}] = true
 			}
@@ -769,7 +758,7 @@ func (ft *fileTransformer) emitFile(
 			if pclName != logicalName {
 				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
 			}
-			var rangeExpr, providersExpr hclsyntax.Expression
+			var rangeExpr hclsyntax.Expression
 			var rangeType schema.Type
 			for _, attr := range block.Body.Attributes {
 				switch attr.Name {
@@ -777,22 +766,22 @@ func (ft *fileTransformer) emitFile(
 					rangeExpr = attr.Expr
 				case "for_each":
 					rangeExpr, rangeType = attr.Expr, forEachType
-				case "providers":
-					providersExpr = attr.Expr
 				}
 			}
+			providers, providersDiags := ft.componentProviders(block, logicalName)
+			resultDiags = append(resultDiags, providersDiags...)
 			for _, attr := range inputAttributes(block.Body, isModuleMeta) {
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(blk.Body(), start)
 				blk.Body().SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 			}
-			if rangeExpr != nil || providersExpr != nil {
+			if rangeExpr != nil || providers != nil {
 				optBlk := blk.Body().AppendNewBlock("options", nil)
 				if rangeExpr != nil {
 					optBlk.Body().SetAttributeRaw("range", ft.transformTypedExpr(rangeExpr, rangeType, nil))
 				}
-				if providersExpr != nil {
-					optBlk.Body().SetAttributeRaw("providers", ft.transformExpr(providersExpr))
+				if providers != nil {
+					optBlk.Body().SetAttributeRaw("providers", providers)
 				}
 			}
 			out.AppendNewline()
@@ -842,6 +831,9 @@ func (ft *fileTransformer) emitFile(
 			}
 			var opts []optEntry
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
+				if attr.Name == "provider" && ft.isPassedProviderRef(attr.Expr) {
+					continue
+				}
 				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt && isResourceMeta(attr.Name) {
 					var tokens hclwrite.Tokens
 					if attr.Name == "for_each" {
@@ -1740,9 +1732,9 @@ func (ft *fileTransformer) transformTraversalRef(
 	// Trailing snake_case attrs become camelCase; the synthetic provider
 	// outputs need a casing hint so `URL` doesn't get mangled to `Url`.
 	// Defer to the call-inlining path when the alias names a call block.
-	if ft.isKnownProvider(e.Range(), root) && len(e.Traversal) >= 2 {
+	if len(e.Traversal) >= 2 {
 		if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok &&
-			ft.providerAliases[root+"."+attr.Name] {
+			ft.declaresProvider(e.Range(), root+"."+attr.Name) {
 			isCallMethod := false
 			if len(e.Traversal) >= 3 {
 				if method, ok := e.Traversal[2].(hcl.TraverseAttr); ok {
@@ -2048,9 +2040,88 @@ var providerSyntheticOutputs = []*schema.Property{
 	{Name: "pluginDownloadURL", Type: schema.StringType},
 }
 
-// isKnownProvider reports whether the module of r declares the provider name.
-func (ft *fileTransformer) isKnownProvider(r hcl.Range, name string) bool {
-	return slices.Contains(packages.KnownProviders(ft.moduleTerraform(r)), name)
+// componentProviders returns the PCL `providers` option of the component that
+// the module block named name converts to, or nil when it needs none. PCL
+// keys a component's providers by package, and the resources of the
+// component inherit them. So an entry `<pkg>.<alias> = <ref>` converts to
+// `<pkg> = <ref>`. The converter omits an entry whose value the calling
+// module does not declare: the component inherits it from its own parent.
+func (ft *fileTransformer) componentProviders(block *hclsyntax.Block, name string) (hclwrite.Tokens, hcl.Diagnostics) {
+	config := ft.modules[filepath.Dir(block.Range().Filename)]
+	if config == nil || config.Modules[name] == nil {
+		return nil, nil
+	}
+	passed := config.Modules[name].Providers
+	values := map[string]hcl.Expression{}
+	var diags hcl.Diagnostics
+	for _, key := range slices.Sorted(maps.Keys(passed)) {
+		pkg, _, _ := strings.Cut(key, ".")
+		value := passed[key]
+		if prev, ok := values[pkg]; ok {
+			if !bytes.Equal(ft.srcBytes(prev.Range()), ft.srcBytes(value.Range())) {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "cannot convert providers",
+					Detail: fmt.Sprintf("module %q receives more than one %q provider; "+
+						"a PCL component receives one provider for each package", name, pkg),
+					Subject: value.Range().Ptr(),
+				})
+			}
+			continue
+		}
+		values[pkg] = value
+	}
+	var attrs []hclwrite.ObjectAttrTokens
+	for _, pkg := range slices.Sorted(maps.Keys(values)) {
+		value := values[pkg]
+		if ft.isPassedProviderRef(value) {
+			continue
+		}
+		attrs = append(attrs, hclwrite.ObjectAttrTokens{
+			Name:  hclwrite.TokensForIdentifier(pkg),
+			Value: ft.transformExpr(value.(hclsyntax.Expression)),
+		})
+	}
+	if len(attrs) == 0 {
+		return nil, diags
+	}
+	return hclwrite.TokensForObject(attrs), diags
+}
+
+// declaresProvider reports whether the module of r has a `provider` block
+// with the address addr, as "<name>" or "<name>.<alias>".
+func (ft *fileTransformer) declaresProvider(r hcl.Range, addr string) bool {
+	config := ft.modules[filepath.Dir(r.Filename)]
+	return config != nil && config.Providers[addr] != nil
+}
+
+// providerAddr returns the "<name>" or "<name>.<alias>" address of the
+// provider that the reference trav names.
+func providerAddr(trav hcl.Traversal) string {
+	if len(trav) >= 2 {
+		if attr, ok := trav[1].(hcl.TraverseAttr); ok {
+			return trav.RootName() + "." + attr.Name
+		}
+	}
+	return trav.RootName()
+}
+
+// isPassedProviderRef reports whether the `provider` meta-argument expr
+// names a required provider that its module has no `provider` block for. The
+// module call passes such a provider in, or the default provider of the
+// package serves it. PCL has no name for either: a component resource
+// inherits the `providers` of its component, so the converter omits the
+// reference.
+func (ft *fileTransformer) isPassedProviderRef(expr hcl.Expression) bool {
+	config := ft.modules[filepath.Dir(expr.Range().Filename)]
+	if config == nil || config.Terraform == nil {
+		return false
+	}
+	trav, diags := hcl.AbsTraversalForExpr(expr)
+	if diags.HasErrors() || config.Terraform.RequiredProviders[trav.RootName()] == nil {
+		return false
+	}
+	return !ft.declaresProvider(expr.Range(), providerAddr(trav))
 }
 
 // rewriteTraversalRoot replaces the root name of a traversal if the name has
@@ -2119,6 +2190,9 @@ func (ft *fileTransformer) invokeExprTokens(r hcl.Range, hclType, dsName string)
 			})
 		}
 		for _, attr := range sortedAttributes(body.Attributes) {
+			if attr.Name == "provider" && ft.isPassedProviderRef(attr.Expr) {
+				continue
+			}
 			if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt && isDataMeta(attr.Name) {
 				optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
 					Name:  hclwrite.TokensForIdentifier(pclName),
