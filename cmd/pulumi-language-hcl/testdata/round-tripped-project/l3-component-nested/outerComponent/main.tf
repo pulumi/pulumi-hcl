@@ -12,7 +12,7 @@ variable "input" {
   description = "An input passed to the outer component"
 }
 module "innerComponent" {
-  source = "./innerComponent"
+  source = "../innerComponent"
   pulumi {
     name ="${pulumi.module.name}-innerComponent"
   }
