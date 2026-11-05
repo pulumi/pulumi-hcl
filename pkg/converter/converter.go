@@ -252,13 +252,21 @@ func (ft *fileTransformer) defaultProviderRef(hclType string, body *hclsyntax.Bo
 	if !ft.defaultProviders[defaultProvider{filepath.Dir(body.SrcRange.Filename), pkg}] {
 		return nil
 	}
-	return hclwrite.TokensForIdentifier(pkg)
+	return hclwrite.TokensForIdentifier(ft.pclName(body.SrcRange, symProvider, pkg, pkg))
 }
 
-// dataReference identifies a data block by HCL type and logical name.
+// dataReference identifies a data block by module directory, HCL type and
+// logical name.
 type dataReference struct {
+	dir     string
 	hclType string
 	name    string
+}
+
+// dataReferenceAt returns the reference to the data block hclType.name in
+// the module of r.
+func dataReferenceAt(r hcl.Range, hclType, name string) dataReference {
+	return dataReference{filepath.Dir(r.Filename), hclType, name}
 }
 
 // fileTransformer holds context for converting a single HCL file to PCL.
@@ -268,7 +276,6 @@ type fileTransformer struct {
 	// correctly when expressions from one file are inlined into another.
 	sources       map[string][]byte
 	knownHCLTypes map[string]bool // set of HCL type labels used in resource blocks
-	stackRefNames map[string]bool // set of logical names of pulumi_stackreference resources
 	// modules holds the configuration of each module, keyed by its directory.
 	modules map[string]*ast.Config
 	// resources and dataSources hold the binding of each block that binds.
@@ -285,7 +292,11 @@ type fileTransformer struct {
 	// providerFunctions holds the schema of each provider-defined function
 	// call; nil marks a call that falls back to notImplemented.
 	providerFunctions map[providerFunctionCall]*schema.Function
-	nameRewrites      map[string]string // logical name → sanitized PCL identifier (only for invalid names)
+	// symbolNames holds the PCL name of each top-level declaration.
+	symbolNames map[symbol]string
+	// usedNames holds, for each module directory, the names that the PCL
+	// program of the module declares at the top level.
+	usedNames map[string]map[string]bool
 	// dataPlans records, for each data block, if its invoke is inlined or
 	// hoisted to a local.
 	dataPlans map[dataReference]*dataPlan
@@ -331,7 +342,6 @@ func newProjectTransformer(
 	ft := &fileTransformer{
 		sources:           sources,
 		knownHCLTypes:     make(map[string]bool),
-		stackRefNames:     make(map[string]bool),
 		callBlocks:        make(map[callReference]*hclsyntax.Body),
 		dataBlocks:        make(map[dataReference]*hclsyntax.Body),
 		dataPlans:         make(map[dataReference]*dataPlan),
@@ -340,7 +350,8 @@ func newProjectTransformer(
 		modules:           make(map[string]*ast.Config),
 		resources:         make(map[*ast.Resource]*packages.BoundResource),
 		dataSources:       make(map[*ast.DataSource]*packages.BoundDataSource),
-		nameRewrites:      make(map[string]string),
+		symbolNames:       make(map[symbol]string),
+		usedNames:         make(map[string]map[string]bool),
 		providerFunctions: make(map[providerFunctionCall]*schema.Function),
 		defaultProviders:  make(map[defaultProvider]bool),
 	}
@@ -358,10 +369,10 @@ func newProjectTransformer(
 	for _, body := range bodies {
 		diags = append(diags, ft.scanProviderFunctions(ctx, body)...)
 	}
-	// Phase 3: compute name rewrites against the union of declarations.
-	ft.computeNameRewrites(bodies)
+	// Phase 3: give each top-level declaration a unique PCL name.
+	ft.nameSymbols(bodies)
 	// Phase 4: decide which data blocks are inlined and which are hoisted to
-	// locals. This needs the name rewrites to pick unused local names.
+	// locals. This needs the used names to pick unused local names.
 	ft.planDataBlocks(bodies)
 	return ft, diags
 }
@@ -443,9 +454,6 @@ func (ft *fileTransformer) scanSymbols(body *hclsyntax.Body) {
 	for _, block := range body.Blocks {
 		if block.Type == "resource" && len(block.Labels) >= 1 {
 			ft.knownHCLTypes[block.Labels[0]] = true
-			if block.Labels[0] == "pulumi_stackreference" && len(block.Labels) >= 2 {
-				ft.stackRefNames[block.Labels[1]] = true
-			}
 		}
 		if block.Type == "provider" && len(block.Labels) >= 1 {
 			if _, aliased := block.Body.Attributes["alias"]; !aliased {
@@ -458,7 +466,7 @@ func (ft *fileTransformer) scanSymbols(body *hclsyntax.Body) {
 		if block.Type == "data" && len(block.Labels) == 2 {
 			hclType := block.Labels[0]
 			name := block.Labels[1]
-			ft.dataBlocks[dataReference{hclType, name}] = block.Body
+			ft.dataBlocks[dataReferenceAt(block.Range(), hclType, name)] = block.Body
 		}
 	}
 }
@@ -506,54 +514,6 @@ func (ft *fileTransformer) scanProviderFunctions(ctx context.Context, body *hcls
 
 // blockLogicalName returns the referenceable name label of a resource,
 // variable, output, or module block, or "" for other block types.
-func blockLogicalName(block *hclsyntax.Block) string {
-	switch block.Type {
-	case "resource":
-		if len(block.Labels) >= 2 {
-			return block.Labels[1]
-		}
-	case "variable", "output", "module":
-		if len(block.Labels) >= 1 {
-			return block.Labels[0]
-		}
-	}
-	return ""
-}
-
-func (ft *fileTransformer) computeNameRewrites(bodies []*hclsyntax.Body) {
-	usedNames := make(map[string]bool)
-	// First pass: collect all names that are already valid identifiers.
-	for _, body := range bodies {
-		for _, block := range body.Blocks {
-			if name := blockLogicalName(block); name != "" && parser.ValidIdentifier(name) {
-				usedNames[name] = true
-			}
-		}
-	}
-	// Second pass: generate sanitized names for invalid identifiers.
-	for _, body := range bodies {
-		for _, block := range body.Blocks {
-			// Outputs are never referenced in expressions, so they don't need rewriting.
-			if block.Type == "output" {
-				continue
-			}
-			name := blockLogicalName(block)
-			if name == "" || parser.ValidIdentifier(name) {
-				continue
-			}
-			if _, seen := ft.nameRewrites[name]; seen {
-				continue
-			}
-			sanitized := sanitizeIdentifier(name)
-			for usedNames[sanitized] {
-				sanitized = sanitized + "_"
-			}
-			usedNames[sanitized] = true
-			ft.nameRewrites[name] = sanitized
-		}
-	}
-}
-
 // sanitizeIdentifier converts a string into a valid HCL identifier by replacing
 // invalid characters with underscores.
 func sanitizeIdentifier(name string) string {
@@ -658,7 +618,7 @@ func (ft *fileTransformer) emitFile(
 			if len(block.Labels) != 2 {
 				continue
 			}
-			plan := ft.dataPlans[dataReference{block.Labels[0], block.Labels[1]}]
+			plan := ft.dataPlans[dataReferenceAt(block.Range(), block.Labels[0], block.Labels[1])]
 			if plan == nil || plan.local == "" {
 				continue
 			}
@@ -670,10 +630,7 @@ func (ft *fileTransformer) emitFile(
 				continue
 			}
 			name := block.Labels[0]
-			pclName := name
-			if rewritten, ok := ft.nameRewrites[name]; ok {
-				pclName = rewritten
-			}
+			pclName := ft.pclName(block.Range(), symVariable, "", name)
 			labels := []string{pclName}
 
 			if typeAttr, ok := block.Body.Attributes["type"]; ok {
@@ -701,7 +658,8 @@ func (ft *fileTransformer) emitFile(
 			for _, attr := range sortedAttributes(block.Body.Attributes) {
 				start := attr.Range().Start.Byte
 				ft.emitLeadingComments(out, start)
-				out.SetAttributeRaw(attr.Name, ft.withTrailing(ft.transformExpr(attr.Expr), start))
+				pclName := ft.pclName(block.Range(), symLocal, "", attr.Name)
+				out.SetAttributeRaw(pclName, ft.withTrailing(ft.transformExpr(attr.Expr), start))
 				out.AppendNewline()
 			}
 
@@ -726,10 +684,7 @@ func (ft *fileTransformer) emitFile(
 				continue
 			}
 			logicalName := block.Labels[0]
-			pclName := logicalName
-			if rewritten, ok := ft.nameRewrites[logicalName]; ok {
-				pclName = rewritten
-			}
+			pclName := ft.pclName(block.Range(), symModule, "", logicalName)
 			sourceAttr, ok := block.Body.Attributes["source"]
 			if !ok {
 				resultDiags = append(resultDiags, &hcl.Diagnostic{
@@ -798,10 +753,7 @@ func (ft *fileTransformer) emitFile(
 			}
 			hclType := block.Labels[0]
 			logicalName := block.Labels[1]
-			pclName := logicalName
-			if rewritten, ok := ft.nameRewrites[logicalName]; ok {
-				pclName = rewritten
-			}
+			pclName := ft.pclName(block.Range(), symResource, hclType, logicalName)
 
 			// bindModules reported a resource type that does not bind.
 			bound := ft.boundResource(block.Range(), hclType, logicalName)
@@ -836,9 +788,14 @@ func (ft *fileTransformer) emitFile(
 				}
 				if pclName, isOpt := resourceOptionHCLToPCL[attr.Name]; isOpt && isResourceMeta(attr.Name) {
 					var tokens hclwrite.Tokens
-					if attr.Name == "for_each" {
+					switch attr.Name {
+					case "for_each":
 						tokens = ft.transformForEachExpr(attr.Expr)
-					} else {
+					case "provider":
+						tokens = ft.transformProviderRef(attr.Expr)
+					case "providers":
+						tokens = ft.transformProviders(attr.Expr)
+					default:
 						tokens = ft.transformExpr(attr.Expr)
 					}
 					opts = append(opts, optEntry{pclName, tokens})
@@ -954,7 +911,8 @@ func (ft *fileTransformer) emitFile(
 			pkgName := block.Labels[0]
 			providerToken := "pulumi:providers:" + pkgName
 
-			resourceName := providerResourceName(block)
+			logicalName := providerResourceName(block)
+			pclName := ft.pclName(block.Range(), symProvider, pkgName, logicalName)
 
 			pkg, perr := packages.ResolvePackage(
 				ctx, ft.loader, packages.KnownProviders(ft.moduleTerraform(block.Range())), "pulumi_providers_"+pkgName)
@@ -978,7 +936,10 @@ func (ft *fileTransformer) emitFile(
 				continue
 			}
 
-			blk := out.AppendNewBlock("resource", []string{resourceName, providerToken})
+			blk := out.AppendNewBlock("resource", []string{pclName, providerToken})
+			if pclName != logicalName {
+				blk.Body().SetAttributeRaw("__logicalName", hclwrite.TokensForValue(cty.StringVal(logicalName)))
+			}
 
 			type optEntry struct {
 				name   string
@@ -1364,7 +1325,7 @@ func (ft *fileTransformer) transformIndexExpr(e *hclsyntax.IndexExpr) hclwrite.T
 		typeAttr, ok1 := coll.Traversal[1].(hcl.TraverseAttr)
 		nameAttr, ok2 := coll.Traversal[2].(hcl.TraverseAttr)
 		if ok1 && ok2 {
-			if plan := ft.dataPlans[dataReference{typeAttr.Name, nameAttr.Name}]; plan != nil &&
+			if plan := ft.dataPlans[dataReferenceAt(e.Range(), typeAttr.Name, nameAttr.Name)]; plan != nil &&
 				plan.ranged && plan.local == "" {
 				if plan.subst != nil {
 					saved := ft.rangeSubst
@@ -1744,7 +1705,7 @@ func (ft *fileTransformer) transformTraversalRef(
 				}
 			}
 			if !isCallMethod {
-				stripped := stripRoot(e.Traversal)
+				stripped := renameRoot(stripRoot(e.Traversal), ft.pclName(e.Range(), symProvider, root, attr.Name))
 				for i := 1; i < len(stripped); i++ {
 					if a, ok := stripped[i].(hcl.TraverseAttr); ok {
 						name, _ := transform.PulumiCaseFromSnakeCase(a.Name, providerSyntheticOutputs)
@@ -1759,15 +1720,14 @@ func (ft *fileTransformer) transformTraversalRef(
 	// Resource traversal: strip the HCL type prefix (e.g., "pulumi_stash.myRes.prop" → "myRes.prop"),
 	// and convert property attribute names from snake_case to camelCase.
 	if ft.knownHCLTypes[root] {
-		stripped := ft.rewriteTraversalRoot(stripRoot(e.Traversal))
+		stripped := stripRoot(e.Traversal)
+		stripped = renameRoot(stripped, ft.pclName(e.Range(), symResource, root, stripped.RootName()))
 		// StackReference: <type>.<name>.outputs["key"] → getOutput(<name>, "key")
-		if len(stripped) == 3 {
-			logicalName, ok1 := stripped[0].(hcl.TraverseRoot)
-			attr, ok2 := stripped[1].(hcl.TraverseAttr)
-			idx, ok3 := stripped[2].(hcl.TraverseIndex)
-			if ok1 && ok2 && ok3 && attr.Name == "outputs" &&
-				ft.stackRefNames[logicalName.Name] && idx.Key.Type() == cty.String {
-				refTokens := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: logicalName.Name}})
+		if root == "pulumi_stackreference" && len(stripped) == 3 {
+			attr, ok1 := stripped[1].(hcl.TraverseAttr)
+			idx, ok2 := stripped[2].(hcl.TraverseIndex)
+			if ok1 && ok2 && attr.Name == "outputs" && idx.Key.Type() == cty.String {
+				refTokens := hclwrite.TokensForTraversal(stripped[:1])
 				keyTokens := hclwrite.TokensForValue(idx.Key)
 				return hclwrite.TokensForFunctionCall("getOutput", refTokens, keyTokens), nil
 			}
@@ -1784,7 +1744,7 @@ func (ft *fileTransformer) transformTraversalRef(
 			typeAttr, ok1 := e.Traversal[1].(hcl.TraverseAttr)
 			nameAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
 			if ok1 && ok2 {
-				ref := dataReference{typeAttr.Name, nameAttr.Name}
+				ref := dataReferenceAt(e.Range(), typeAttr.Name, nameAttr.Name)
 				idx, steps := ft.dataSteps(ref, e.Traversal)
 				var tokens hclwrite.Tokens
 				if plan := ft.dataPlans[ref]; plan != nil && plan.local != "" {
@@ -1809,7 +1769,7 @@ func (ft *fileTransformer) transformTraversalRef(
 			resAttr, ok1 := e.Traversal[1].(hcl.TraverseAttr)
 			methodAttr, ok2 := e.Traversal[2].(hcl.TraverseAttr)
 			if ok1 && ok2 {
-				tokens := ft.callExprTokens(resAttr.Name, methodAttr.Name)
+				tokens := ft.callExprTokens(e.Range(), resAttr.Name, methodAttr.Name)
 				for _, step := range e.Traversal[3:] {
 					if attr, ok := step.(hcl.TraverseAttr); ok {
 						tokens = append(tokens,
@@ -1852,7 +1812,15 @@ func (ft *fileTransformer) transformTraversalRef(
 		copy(trav[1:], e.Traversal[1:])
 		return hclwrite.TokensForTraversal(trav), nil
 	case "var", "local", "module":
-		return hclwrite.TokensForTraversal(ft.rewriteTraversalRoot(stripRoot(e.Traversal))), nil
+		stripped := stripRoot(e.Traversal)
+		kind := symVariable
+		switch root {
+		case "local":
+			kind = symLocal
+		case "module":
+			kind = symModule
+		}
+		return hclwrite.TokensForTraversal(renameRoot(stripped, ft.pclName(e.Range(), kind, "", stripped.RootName()))), nil
 	case "pulumi":
 		if len(e.Traversal) >= 2 {
 			if attr, ok := e.Traversal[1].(hcl.TraverseAttr); ok {
@@ -2079,7 +2047,7 @@ func (ft *fileTransformer) componentProviders(block *hclsyntax.Block, name strin
 		}
 		attrs = append(attrs, hclwrite.ObjectAttrTokens{
 			Name:  hclwrite.TokensForIdentifier(pkg),
-			Value: ft.transformExpr(value.(hclsyntax.Expression)),
+			Value: ft.transformProviderRef(value.(hclsyntax.Expression)),
 		})
 	}
 	if len(attrs) == 0 {
@@ -2124,26 +2092,46 @@ func (ft *fileTransformer) isPassedProviderRef(expr hcl.Expression) bool {
 	return !ft.declaresProvider(expr.Range(), providerAddr(trav))
 }
 
-// rewriteTraversalRoot replaces the root name of a traversal if the name has
-// a rewrite mapping (i.e. it was not a valid PCL identifier).
-func (ft *fileTransformer) rewriteTraversalRoot(trav hcl.Traversal) hcl.Traversal {
-	if len(trav) == 0 {
-		return trav
+// transformProviderRef converts the value of a `provider` meta-argument. A
+// bare <pkg> refers to the un-aliased provider block of the package, when the
+// module has one.
+func (ft *fileTransformer) transformProviderRef(expr hclsyntax.Expression) hclwrite.Tokens {
+	if st, ok := expr.(*hclsyntax.ScopeTraversalExpr); ok && len(st.Traversal) == 1 {
+		pkg := st.Traversal.RootName()
+		if ft.defaultProviders[defaultProvider{filepath.Dir(st.SrcRange.Filename), pkg}] {
+			return hclwrite.TokensForIdentifier(ft.pclName(st.SrcRange, symProvider, pkg, pkg))
+		}
 	}
-	if rewritten, ok := ft.nameRewrites[trav.RootName()]; ok {
-		result := make(hcl.Traversal, len(trav))
-		copy(result, trav)
-		result[0] = hcl.TraverseRoot{Name: rewritten}
-		return result
+	return ft.transformExpr(expr)
+}
+
+// transformProviders converts the `providers` meta-argument of a resource, a
+// list of provider references.
+func (ft *fileTransformer) transformProviders(expr hclsyntax.Expression) hclwrite.Tokens {
+	tuple, ok := expr.(*hclsyntax.TupleConsExpr)
+	if !ok {
+		return ft.transformExpr(expr)
 	}
-	return trav
+	elems := make([]hclwrite.Tokens, 0, len(tuple.Exprs))
+	for _, elem := range tuple.Exprs {
+		elems = append(elems, ft.transformProviderRef(elem))
+	}
+	return hclwrite.TokensForTuple(elems)
+}
+
+// renameRoot returns trav with its root name replaced by name.
+func renameRoot(trav hcl.Traversal, name string) hcl.Traversal {
+	result := slices.Clone(trav)
+	result[0] = hcl.TraverseRoot{Name: name, SrcRange: trav[0].SourceRange()}
+	return result
 }
 
 // callExprTokens generates PCL tokens for call(resourceName, "camelMethod", {args...}).
-// It looks up the matching call block to extract the argument object.
-func (ft *fileTransformer) callExprTokens(resourceName, snakeMethod string) hclwrite.Tokens {
+// It looks up the matching call block to extract the argument object. r is
+// the range of the reference to the call.
+func (ft *fileTransformer) callExprTokens(r hcl.Range, resourceName, snakeMethod string) hclwrite.Tokens {
 	camelMethod, _ := transform.PulumiCaseFromSnakeCase(snakeMethod, nil)
-	resTokens := hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: resourceName}})
+	resTokens := hclwrite.TokensForIdentifier(ft.callTargetName(r, resourceName))
 	methodTokens := hclwrite.TokensForValue(cty.StringVal(camelMethod))
 
 	var argsTokens hclwrite.Tokens
@@ -2181,7 +2169,7 @@ func (ft *fileTransformer) invokeExprTokens(r hcl.Range, hclType, dsName string)
 	tokenTokens := hclwrite.TokensForValue(cty.StringVal(token))
 
 	var argAttrs, optAttrs []hclwrite.ObjectAttrTokens
-	if body, ok := ft.dataBlocks[dataReference{hclType, dsName}]; ok {
+	if body, ok := ft.dataBlocks[dataReferenceAt(r, hclType, dsName)]; ok {
 		for _, attr := range inputAttributes(body, isDataMeta) {
 			name, prop, nested := lookupProperty(attr.Name, inputProps, mapping)
 			argAttrs = append(argAttrs, hclwrite.ObjectAttrTokens{
@@ -2194,9 +2182,15 @@ func (ft *fileTransformer) invokeExprTokens(r hcl.Range, hclType, dsName string)
 				continue
 			}
 			if pclName, isOpt := invokeOptionHCLToPCL[attr.Name]; isOpt && isDataMeta(attr.Name) {
+				var value hclwrite.Tokens
+				if attr.Name == "provider" {
+					value = ft.transformProviderRef(attr.Expr)
+				} else {
+					value = ft.transformExpr(attr.Expr)
+				}
 				optAttrs = append(optAttrs, hclwrite.ObjectAttrTokens{
 					Name:  hclwrite.TokensForIdentifier(pclName),
-					Value: ft.transformExpr(attr.Expr),
+					Value: value,
 				})
 			}
 		}

@@ -94,8 +94,12 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 		p.walkTopLevel(body)
 	}
 
-	pclNames := ft.pclNames(bodies)
 	bound := boundNames(ft.dataBlocks)
+	// usedNames returns the names that the PCL program of the module of a
+	// data block declares.
+	usedNames := func(ref dataReference) map[string]bool {
+		return ft.usedNames[ref.dir]
+	}
 
 	// The data blocks in source order, so that the local names are
 	// deterministic.
@@ -103,7 +107,7 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 	for _, body := range bodies {
 		for _, block := range body.Blocks {
 			if block.Type == "data" && len(block.Labels) == 2 {
-				order = append(order, dataReference{block.Labels[0], block.Labels[1]})
+				order = append(order, dataReferenceAt(block.Range(), block.Labels[0], block.Labels[1]))
 			}
 		}
 	}
@@ -133,7 +137,7 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 	for changed := true; changed; {
 		for _, ref := range order {
 			if plan := ft.dataPlans[ref]; hoist[ref] && plan.local == "" {
-				plan.local = uniqueName(ref.name, pclNames)
+				plan.local = uniqueName(ref.name, usedNames(ref))
 			}
 		}
 		changed = false
@@ -142,21 +146,23 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 			if hoist[ref] || plan.subst == nil {
 				continue
 			}
-			if pclNames[plan.subst.key] || bound[plan.subst.key] ||
-				pclNames[plan.subst.value] || bound[plan.subst.value] {
+			used := usedNames(ref)
+			if used[plan.subst.key] || bound[plan.subst.key] ||
+				used[plan.subst.value] || bound[plan.subst.value] {
 				hoist[ref], plan.subst, changed = true, nil, true
 			}
 		}
 	}
 
 	// Name the loop variables of the hoisted ranged locals.
-	avoid := func(name string) string {
-		for pclNames[name] || bound[name] {
-			name += "_"
-		}
-		return name
-	}
 	for _, ref := range order {
+		used := usedNames(ref)
+		avoid := func(name string) string {
+			for used[name] || bound[name] {
+				name += "_"
+			}
+			return name
+		}
 		if plan := ft.dataPlans[ref]; hoist[ref] && plan.ranged {
 			plan.subst = &rangeSubst{key: avoid("key"), value: avoid("value"), index: avoid("index")}
 		}
@@ -361,7 +367,7 @@ func (w *refWalker) Enter(n hclsyntax.Node) hcl.Diagnostics {
 	}
 	switch trav.Traversal.RootName() {
 	case "data":
-		ref := dataReference{typeAttr.Name, nameAttr.Name}
+		ref := dataReferenceAt(trav.Range(), typeAttr.Name, nameAttr.Name)
 		if _, ok := w.p.ft.dataBlocks[ref]; !ok {
 			return nil
 		}
@@ -417,39 +423,6 @@ func (w *refWalker) wrapped(ref dataReference, trav *hclsyntax.ScopeTraversalExp
 func (w *refWalker) Exit(hclsyntax.Node) hcl.Diagnostics {
 	w.frames = w.frames[:len(w.frames)-1]
 	return nil
-}
-
-// pclNames returns the names that the PCL program declares at the top level.
-func (ft *fileTransformer) pclNames(bodies []*hclsyntax.Body) map[string]bool {
-	names := make(map[string]bool)
-	add := func(name string) {
-		if rewritten, ok := ft.nameRewrites[name]; ok {
-			name = rewritten
-		}
-		names[name] = true
-	}
-	for _, body := range bodies {
-		for name := range body.Attributes {
-			add(name)
-		}
-		for _, block := range body.Blocks {
-			switch block.Type {
-			case "locals":
-				for name := range block.Body.Attributes {
-					add(name)
-				}
-			case "provider":
-				if len(block.Labels) >= 1 {
-					add(providerResourceName(block))
-				}
-			default:
-				if name := blockLogicalName(block); name != "" {
-					add(name)
-				}
-			}
-		}
-	}
-	return names
 }
 
 // boundNames returns the names that a for expression or a dynamic block
