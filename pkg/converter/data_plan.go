@@ -95,10 +95,11 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 	}
 
 	bound := boundNames(ft.dataBlocks)
-	// usedNames returns the names that the PCL program of the module of a
-	// data block declares.
-	usedNames := func(ref dataReference) map[string]bool {
-		return ft.usedNames[ref.dir]
+	// taken reports whether the module of ref declares name, or whether a
+	// data block binds it.
+	taken := func(ref dataReference, name string) bool {
+		_, used := ft.usedNames[ref.dir][name]
+		return used || bound[name]
 	}
 
 	// The data blocks in source order, so that the local names are
@@ -137,7 +138,7 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 	for changed := true; changed; {
 		for _, ref := range order {
 			if plan := ft.dataPlans[ref]; hoist[ref] && plan.local == "" {
-				plan.local = uniqueName(ref.name, usedNames(ref))
+				plan.local = uniqueName(ref.name, ft.usedNames[ref.dir])
 			}
 		}
 		changed = false
@@ -146,9 +147,7 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 			if hoist[ref] || plan.subst == nil {
 				continue
 			}
-			used := usedNames(ref)
-			if used[plan.subst.key] || bound[plan.subst.key] ||
-				used[plan.subst.value] || bound[plan.subst.value] {
+			if taken(ref, plan.subst.key) || taken(ref, plan.subst.value) {
 				hoist[ref], plan.subst, changed = true, nil, true
 			}
 		}
@@ -156,9 +155,8 @@ func (ft *fileTransformer) planDataBlocks(bodies []*hclsyntax.Body) {
 
 	// Name the loop variables of the hoisted ranged locals.
 	for _, ref := range order {
-		used := usedNames(ref)
 		avoid := func(name string) string {
-			for used[name] || bound[name] {
+			for taken(ref, name) {
 				name += "_"
 			}
 			return name
@@ -445,13 +443,13 @@ func boundNames(dataBlocks map[dataReference]*hclsyntax.Body) map[string]bool {
 
 // uniqueName returns a valid identifier for name that is not in used, and
 // adds it to used.
-func uniqueName(name string, used map[string]bool) string {
+func uniqueName(name string, used map[string]struct{}) string {
 	if !parser.ValidIdentifier(name) {
 		name = sanitizeIdentifier(name)
 	}
-	for used[name] {
+	for _, ok := used[name]; ok; _, ok = used[name] {
 		name += "_"
 	}
-	used[name] = true
+	used[name] = struct{}{}
 	return name
 }

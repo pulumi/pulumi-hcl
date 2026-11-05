@@ -94,20 +94,21 @@ func (ft *fileTransformer) nameSymbols(bodies []*hclsyntax.Body) {
 	for _, body := range bodies {
 		dir := filepath.Dir(body.SrcRange.Filename)
 		if ft.usedNames[dir] == nil {
-			ft.usedNames[dir] = make(map[string]bool)
+			ft.usedNames[dir] = make(map[string]struct{})
 		}
 		for _, block := range body.Blocks {
 			// The PCL form of a terraform block with attributes is a pulumi
 			// block, which has a fixed name.
 			if block.Type == "terraform" && len(block.Body.Attributes) > 0 {
-				ft.usedNames[dir][pcl.PulumiBlockName] = true
+				ft.usedNames[dir][pcl.PulumiBlockName] = struct{}{}
 			}
 			syms = append(syms, declaredSymbols(block)...)
 		}
 	}
 	for _, s := range syms {
-		if used := ft.usedNames[s.dir]; parser.ValidIdentifier(s.name) && !used[s.name] {
-			used[s.name] = true
+		used := ft.usedNames[s.dir]
+		if _, taken := used[s.name]; parser.ValidIdentifier(s.name) && !taken {
+			used[s.name] = struct{}{}
 			ft.symbolNames[s] = s.name
 		}
 	}

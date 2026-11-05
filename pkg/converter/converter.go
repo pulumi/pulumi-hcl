@@ -296,7 +296,7 @@ type fileTransformer struct {
 	symbolNames map[symbol]string
 	// usedNames holds, for each module directory, the names that the PCL
 	// program of the module declares at the top level.
-	usedNames map[string]map[string]bool
+	usedNames map[string]map[string]struct{}
 	// dataPlans records, for each data block, if its invoke is inlined or
 	// hoisted to a local.
 	dataPlans map[dataReference]*dataPlan
@@ -351,7 +351,7 @@ func newProjectTransformer(
 		resources:         make(map[*ast.Resource]*packages.BoundResource),
 		dataSources:       make(map[*ast.DataSource]*packages.BoundDataSource),
 		symbolNames:       make(map[symbol]string),
-		usedNames:         make(map[string]map[string]bool),
+		usedNames:         make(map[string]map[string]struct{}),
 		providerFunctions: make(map[providerFunctionCall]*schema.Function),
 		defaultProviders:  make(map[defaultProvider]bool),
 	}
