@@ -11,7 +11,7 @@ variable "name" {
   type = string
 }
 module "inner" {
-  source = "./inner"
+  source = "../inner"
   pulumi {
     name ="${pulumi.module.name}-inner"
   }
