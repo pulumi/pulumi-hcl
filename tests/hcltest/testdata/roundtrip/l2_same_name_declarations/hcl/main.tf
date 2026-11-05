@@ -38,8 +38,22 @@ module "r" {
   source = "./r"
   value  = data.simple_lookup.r______.prefix_result
 }
+# The key names the aliased provider of the child module. The value names the
+# provider `r` of this module, which the round trip renames.
+module "passed" {
+  source = "./passed"
+  providers = {
+    simple = simple.r
+  }
+}
 output "r" {
   value = module.r.value
+}
+output "passed" {
+  value = module.passed.value
+}
+output "nested_passed" {
+  value = module.r.passed
 }
 output "variable" {
   value = var.r

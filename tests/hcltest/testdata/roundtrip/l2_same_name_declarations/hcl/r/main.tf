@@ -21,6 +21,7 @@ resource "simple_resource" "r" {
     name ="${pulumi.module.name}-r"
   }
   provider  = simple
+  providers = [simple]
   input_one = data.simple_lookup.r_.prefix_result
 }
 variable "value" {
@@ -29,6 +30,20 @@ variable "value" {
 # The local and the default provider are both named `simple`.
 locals {
   simple ="${var.value}-child"
+}
+# The value names the default provider of this module, which the round trip
+# renames.
+module "passed" {
+  source = "./passed"
+  pulumi {
+    name ="${pulumi.module.name}-passed"
+  }
+  providers = {
+    simple = simple
+  }
+}
+output "passed" {
+  value = module.passed.value
 }
 output "value" {
   value ="${simple_resource.r.prefix_result}|${data.simple_lookup.r_.prefix_result}"

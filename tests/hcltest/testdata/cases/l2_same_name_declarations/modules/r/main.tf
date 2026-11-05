@@ -24,7 +24,21 @@ data "simple_lookup" "r" {
 
 resource "simple_resource" "r" {
   provider  = simple
+  providers = [simple]
   input_one = data.simple_lookup.r.prefix_result
+}
+
+# The value names the default provider of this module, which the round trip
+# renames.
+module "passed" {
+  source = "../passed"
+  providers = {
+    simple.east = simple
+  }
+}
+
+output "passed" {
+  value = module.passed.value
 }
 
 output "value" {

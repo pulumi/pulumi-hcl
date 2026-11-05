@@ -37,8 +37,26 @@ component "r_____" "./modules/r" {
   value         = r______.prefixResult
 }
 
+# The key names the aliased provider of the child module. The value names the
+# provider `r` of this module, which the round trip renames.
+component "passed" "./modules/passed" {
+  options {
+    providers = {
+      simple = r__
+    }
+  }
+}
+
 output "r" {
   value = r_____.value
+}
+
+output "passed" {
+  value = passed.value
+}
+
+output "nested_passed" {
+  value = r_____.passed
 }
 
 output "variable" {

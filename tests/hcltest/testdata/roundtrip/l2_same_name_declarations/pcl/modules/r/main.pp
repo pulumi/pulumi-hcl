@@ -20,8 +20,23 @@ resource "r" "simple:index/resource:Resource" {
   inputOne = r_.prefixResult
   options {
     provider            = simple_
+    providers           = [simple_]
     deleteBeforeReplace = true
   }
+}
+
+# The value names the default provider of this module, which the round trip
+# renames.
+component "passed" "../passed" {
+  options {
+    providers = {
+      simple = simple_
+    }
+  }
+}
+
+output "passed" {
+  value = passed.value
 }
 
 output "value" {

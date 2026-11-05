@@ -33,12 +33,14 @@ func TestL2SameNameDeclarations(t *testing.T) {
 			{Name: "blocky", Factory: providers.BlockyProvider},
 		},
 		ExpectedOutputs: map[string]string{
-			"r":          "c-c-p-v-local-false-child|c-p-v-local-false-child",
-			"variable":   "v",
-			"local":      "v-local",
-			"resource":   "p-v-local",
-			"other_type": "blocky-single-id",
-			"data":       "p-v-local-false",
+			"r":             "c-c-p-v-local-false-child|c-p-v-local-false-child",
+			"variable":      "v",
+			"local":         "v-local",
+			"resource":      "p-v-local",
+			"other_type":    "blocky-single-id",
+			"data":          "p-v-local-false",
+			"passed":        "p-passed",
+			"nested_passed": "c-passed",
 		},
 	})
 }
