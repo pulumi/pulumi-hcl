@@ -8,7 +8,7 @@ terraform {
 }
 
 module "child" {
-  source = "./child"
+  source = "../child"
   pulumi {
     name ="${pulumi.module.name}-child"
   }

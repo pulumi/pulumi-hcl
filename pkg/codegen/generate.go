@@ -17,6 +17,7 @@ package codegen
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -49,14 +50,22 @@ type generateProgramOptions struct {
 	skipRequiredProvidersVersion   bool
 	skipDefaultCreateBeforeDestroy bool
 	insideComponent                bool
+	componentDirs                  map[string]string
 }
 
 // insideComponentSource marks the generated program as a component's module
 // source: every resource and nested module call pins its Pulumi logical name
 // (prefixed via pulumi.module.name) so instances keep the "<parent>-<child>"
 // names PCL codegen produces in every other language.
-func insideComponentSource() GenerateProgramOption {
-	return func(o *generateProgramOptions) { o.insideComponent = true }
+//
+// componentDirs is the output of componentOutputDirs for the root program.
+// The root program writes every module, so the program does not write the
+// modules that it calls.
+func insideComponentSource(componentDirs map[string]string) GenerateProgramOption {
+	return func(o *generateProgramOptions) {
+		o.insideComponent = true
+		o.componentDirs = componentDirs
+	}
 }
 
 // SkipRequiredProvidersVersion omits the `version` attribute from each entry
@@ -102,6 +111,13 @@ func GenerateProgram(
 
 	var diags hcl.Diagnostics
 
+	var components map[string]*pcl.Component
+	componentDirs := o.componentDirs
+	if !o.insideComponent {
+		components = program.CollectComponents()
+		componentDirs = componentOutputDirs(components)
+	}
+
 	gen := &generator{
 		program:                        program,
 		mappings:                       mappings,
@@ -109,6 +125,7 @@ func GenerateProgram(
 		skipRequiredProvidersVersion:   o.skipRequiredProvidersVersion,
 		skipDefaultCreateBeforeDestroy: o.skipDefaultCreateBeforeDestroy,
 		insideComponent:                o.insideComponent,
+		componentDirs:                  componentDirs,
 		resourceMappings:               map[*pcl.Resource]*bridge.BodyMapping{},
 		invokeMappings:                 map[*model.FunctionCallExpression]*bridge.BodyMapping{},
 	}
@@ -223,18 +240,39 @@ func GenerateProgram(
 		files["main.tf"] = nil
 	}
 
-	for componentDir, component := range program.CollectComponents() {
-		subFiles, d, err := GenerateProgram(ctx, component.Program, mappings, insideComponentSource())
+	for componentDir, component := range components {
+		subFiles, d, err := GenerateProgram(ctx, component.Program, mappings, insideComponentSource(componentDirs))
 		diags = append(diags, d...)
 		if err != nil {
 			return nil, diags, err
 		}
-		subDirName := filepath.Base(componentDir)
 		for name, content := range subFiles {
-			files[filepath.Join(subDirName, name)] = content
+			files[filepath.Join(componentDirs[componentDir], name)] = content
 		}
 	}
 	return files, diags, nil
+}
+
+// componentOutputDirs gives each component directory of a program, at any
+// depth, a unique output directory at the root of the generated program.
+// The keys of components are the component directories, as given by
+// pcl.Program.CollectComponents. The output directory is the base name of the
+// component directory. If two component directories have the same base name,
+// a numeric suffix makes the output directory unique.
+func componentOutputDirs(components map[string]*pcl.Component) map[string]string {
+	dirs := slices.Sorted(maps.Keys(components))
+	used := make(map[string]bool, len(dirs))
+	out := make(map[string]string, len(dirs))
+	for _, dir := range dirs {
+		base := filepath.Base(dir)
+		name := base
+		for i := 2; used[name]; i++ {
+			name = fmt.Sprintf("%s_%d", base, i)
+		}
+		used[name] = true
+		out[dir] = name
+	}
+	return out
 }
 
 // orderedSourceFiles returns source filenames in a deterministic order:
@@ -368,6 +406,9 @@ type generator struct {
 	// insideComponent marks this program as a component's module source.
 	// See insideComponentSource.
 	insideComponent bool
+	// componentDirs maps each component directory to its output directory
+	// at the root of the generated program. See componentOutputDirs.
+	componentDirs map[string]string
 	// resourceMappings and invokeMappings hold the bridge mapping of each
 	// resource and spilled invoke of the program, or nil when it has none.
 	// See collectMappings.
@@ -2072,7 +2113,17 @@ func (g *generator) genModule(body *hclwrite.Body, c *pcl.Component) hcl.Diagnos
 	defer func() { g.currentRangeKind = rangeKindNone }()
 
 	block := body.AppendNewBlock("module", []string{c.LogicalName()})
-	source := "./" + filepath.Base(c.DirPath())
+	dir, ok := g.componentDirs[c.DirPath()]
+	if !ok {
+		// A component without a program has no output directory.
+		dir = filepath.Base(c.DirPath())
+	}
+	// Every module is a directory at the root of the generated program, so a
+	// module that calls a module sources a sibling directory.
+	source := "./" + dir
+	if g.insideComponent {
+		source = "../" + dir
+	}
 	block.Body().SetAttributeValue("source", cty.StringVal(source))
 	var diags hcl.Diagnostics
 

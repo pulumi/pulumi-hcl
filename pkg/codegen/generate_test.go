@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen/hcl2/model"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/pcl"
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,4 +148,21 @@ func TestPickUnionVariantFromObjectExpr_NonStringDiscriminator(t *testing.T) {
 	picked := pickUnionVariantFromObjectExpr(u, expr)
 	require.NotNil(t, picked)
 	assert.Same(t, v2, picked)
+}
+
+func TestComponentOutputDirs(t *testing.T) {
+	t.Parallel()
+
+	got := componentOutputDirs(map[string]*pcl.Component{
+		"modules/mid":   nil,
+		"modules/child": nil,
+		"a/child":       nil,
+		"b/child_2":     nil,
+	})
+	assert.Equal(t, map[string]string{
+		"a/child":       "child",
+		"b/child_2":     "child_2",
+		"modules/child": "child_3",
+		"modules/mid":   "mid",
+	}, got)
 }

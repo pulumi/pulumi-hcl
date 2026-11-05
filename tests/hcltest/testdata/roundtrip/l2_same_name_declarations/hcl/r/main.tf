@@ -34,7 +34,7 @@ locals {
 # The value names the default provider of this module, which the round trip
 # renames.
 module "passed" {
-  source = "./passed"
+  source = "../passed"
   pulumi {
     name ="${pulumi.module.name}-passed"
   }
