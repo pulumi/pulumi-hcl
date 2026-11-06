@@ -17,6 +17,8 @@ package run
 import (
 	"testing"
 
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -240,6 +242,43 @@ func TestWrapTerraformDataInputs(t *testing.T) {
 
 			got := wrapTerraformDataInputs(tt.resType, tt.inputs, tt.evaluated)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestWrapTerraformDataInputsAssets(t *testing.T) {
+	t.Parallel()
+
+	textAsset, err := asset.FromText("hello")
+	require.NoError(t, err)
+	assetsArchive, err := archive.FromAssets(map[string]any{"a": textAsset})
+	require.NoError(t, err)
+	assetVal := cty.CapsuleVal(eval.AssetCapsuleType, textAsset)
+
+	tests := []struct {
+		name  string
+		attr  string
+		value cty.Value
+		prop  property.Value
+	}{
+		{"asset in input", "input", assetVal, property.New(textAsset)},
+		{"asset in triggers_replace", "triggers_replace", assetVal, property.New(textAsset)},
+		{"archive", "input", cty.CapsuleVal(eval.ArchiveCapsuleType, assetsArchive), property.New(assetsArchive)},
+		{"nested asset", "input", cty.ListVal([]cty.Value{assetVal}), property.New([]property.Value{property.New(textAsset)})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inputs := property.NewMap(map[string]property.Value{tt.attr: tt.prop})
+			got := wrapTerraformDataInputs(packages.TerraformDataType, inputs, map[string]cty.Value{tt.attr: tt.value})
+
+			want := property.NewMap(map[string]property.Value{tt.attr: property.New(map[string]property.Value{
+				"type":  property.New(`"dynamic"`),
+				"value": tt.prop,
+			})})
+			assert.Equal(t, want, got)
 		})
 	}
 }

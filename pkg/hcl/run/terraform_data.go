@@ -136,7 +136,11 @@ func wrapTerraformDataInputs(resType string, inputs property.Map, evaluated map[
 		if !ok {
 			continue
 		}
-		inputs = inputs.Set(name, packages.WrapTerraformDataValue(src.Type(), v))
+		t := src.Type()
+		if _, err := ctyjson.MarshalType(t); err != nil {
+			t = cty.DynamicPseudoType
+		}
+		inputs = inputs.Set(name, packages.WrapTerraformDataValue(t, v))
 	}
 	return inputs
 }
