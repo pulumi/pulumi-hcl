@@ -1022,6 +1022,12 @@ func ctyToResourcePropertyValue(path string, val cty.Value, prop schema.Type, ex
 		}
 		return property.New(m), nil
 	case *schema.UnionType:
+		// A whole-resource reference to a union of resource types (for example
+		// `oneOf` GitHubSource or GitLabSource) keeps its identity: val has
+		// already been unmarked, so recursing would send the outputs object.
+		if isResRef && val.Type().IsObjectType() && unionHasResourceType(prop, string(resRefURN.Type())) {
+			return property.New(resourceReferenceFromOutputs(resRefURN, val.AsValueMap())), nil
+		}
 		if chosen, err := selectUnionMemberByConst(val, prop); err != nil {
 			summary := fmt.Sprintf("cannot determine union variant for %q", path)
 			if expr != nil {
@@ -2451,6 +2457,16 @@ func valueMatchesType(v property.Value, typ schema.Type) bool {
 					return false
 				}
 			}
+			return true
+		}
+	}
+	return false
+}
+
+// unionHasResourceType reports whether u has a resource member of type token.
+func unionHasResourceType(u *schema.UnionType, token string) bool {
+	for _, t := range u.ElementTypes {
+		if r, ok := codegen.UnwrapType(t).(*schema.ResourceType); ok && r.Token == token {
 			return true
 		}
 	}
