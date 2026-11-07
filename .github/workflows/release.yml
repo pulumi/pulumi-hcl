@@ -52,7 +52,7 @@ jobs:
       - name: Authenticate with Pulumi Cloud
         id: pulumi-auth
         if: steps.check-release.outputs.exists == 'false'
-        uses: pulumi/auth-actions@159c3e431aab767d4519b96f3f784d7d3d725622 # v2.1.1
+        uses: pulumi/auth-actions@273044cc19e63ea565285da8edd4e059126a0bdb # v2.1.2
         with:
           organization: pulumi
           requested-token-type: urn:pulumi:token-type:access_token:organization
@@ -117,7 +117,7 @@ jobs:
     steps:
       - name: Authenticate with Pulumi Cloud
         id: pulumi-auth
-        uses: pulumi/auth-actions@159c3e431aab767d4519b96f3f784d7d3d725622 # v2.1.1
+        uses: pulumi/auth-actions@273044cc19e63ea565285da8edd4e059126a0bdb # v2.1.2
         with:
           organization: pulumi
           requested-token-type: urn:pulumi:token-type:access_token:organization
@@ -160,7 +160,7 @@ jobs:
     steps:
       - name: Authenticate with Pulumi Cloud
         id: pulumi-auth
-        uses: pulumi/auth-actions@159c3e431aab767d4519b96f3f784d7d3d725622 # v2.1.1
+        uses: pulumi/auth-actions@273044cc19e63ea565285da8edd4e059126a0bdb # v2.1.2
         with:
           organization: pulumi
           requested-token-type: urn:pulumi:token-type:access_token:organization
@@ -405,7 +405,7 @@ jobs:
     steps:
       - name: Authenticate with Pulumi Cloud
         id: pulumi-auth
-        uses: pulumi/auth-actions@159c3e431aab767d4519b96f3f784d7d3d725622 # v2.1.1
+        uses: pulumi/auth-actions@273044cc19e63ea565285da8edd4e059126a0bdb # v2.1.2
         with:
           organization: pulumi
           requested-token-type: urn:pulumi:token-type:access_token:organization
@@ -468,7 +468,7 @@ jobs:
     steps:
       - name: Authenticate with Pulumi Cloud
         id: pulumi-auth
-        uses: pulumi/auth-actions@159c3e431aab767d4519b96f3f784d7d3d725622 # v2.1.1
+        uses: pulumi/auth-actions@273044cc19e63ea565285da8edd4e059126a0bdb # v2.1.2
         with:
           organization: pulumi
           requested-token-type: urn:pulumi:token-type:access_token:organization

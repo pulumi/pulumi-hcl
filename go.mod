@@ -29,8 +29,8 @@ require (
 	github.com/pulumi/providertest v0.7.0
 	github.com/pulumi/pulumi-go-provider v1.8.0
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.142.1-0.20261102104139-2c2d43eabd53
-	github.com/pulumi/pulumi/pkg/v3 v3.273.1-0.20261103120535-689c528b859d
-	github.com/pulumi/pulumi/sdk/v3 v3.273.1-0.20261101155800-3743f12e0193
+	github.com/pulumi/pulumi/pkg/v3 v3.274.1
+	github.com/pulumi/pulumi/sdk/v3 v3.274.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.42.0
@@ -146,7 +146,7 @@ require (
 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
 	github.com/go-git/go-billy/v6 v6.0.0-beta.1 // indirect
 	github.com/go-git/go-git/v6 v6.0.0-beta.1 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.8 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
@@ -243,7 +243,7 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
 	github.com/pulumi/inflector v0.2.1 // indirect
-	github.com/pulumi/pulumi-cloud-sdk/go v1.20261102.1427 // indirect
+	github.com/pulumi/pulumi-cloud-sdk/go v1.20261106.0 // indirect
 	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.117.0 // indirect
 	github.com/pulumi/pulumi-java v1.39.0 // indirect
 	github.com/pulumi/pulumi-yaml v1.38.16 // indirect
