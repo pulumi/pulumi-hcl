@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Give unique PCL names to declarations that share a name in HCL
-time: 2026-11-05T11:20:38.855432+01:00
-custom:
-    Component: converter
-    PR: "822"

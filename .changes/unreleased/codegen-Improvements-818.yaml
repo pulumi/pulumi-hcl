@@ -1,6 +1,0 @@
-kind: Improvements
-body: Add the `SkipDefaultCreateBeforeDestroy` option to omit the default `create_before_destroy` from generated HCL
-time: 2026-11-03T12:56:28.000000+01:00
-custom:
-    Component: codegen
-    PR: "818"

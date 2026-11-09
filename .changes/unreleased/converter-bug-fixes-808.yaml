@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Import the Terraform state of a provider whose name is not the prefix of its resource types
-time: 2026-11-02T19:00:00.000000+01:00
-custom:
-    Component: converter
-    PR: "808"
