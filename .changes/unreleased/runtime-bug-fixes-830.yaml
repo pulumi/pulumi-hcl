@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Fix a panic when `terraform_data` holds an asset or archive
+time: 2026-11-06T11:30:55.288371-08:00
+custom:
+    Component: runtime
+    PR: "830"
