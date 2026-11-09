@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Convert calls to the provider functions of a provider with a renamed local name
-time: 2026-11-02T18:00:00.000000+01:00
-custom:
-    Component: converter
-    PR: "807"

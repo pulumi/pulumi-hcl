@@ -1,6 +1,0 @@
-kind: bug-fixes
-body: Resolve the block types of a provider whose local name is not its package name
-time: 2026-11-03T12:00:00.000000+01:00
-custom:
-    Component: runtime
-    PR: "809"
