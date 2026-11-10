@@ -9,7 +9,7 @@ from setuptools.command.install import install
 from subprocess import check_call
 
 
-VERSION = "0.19.1"
+VERSION = "0.20.0"
 def readme():
     try:
         with open('README.md', encoding='utf-8') as f:
@@ -37,7 +37,7 @@ setup(name='pulumi_hcl',
       },
       install_requires=[
           'packaging>=24.0',
-          'pulumi>=3.231.0,<4.0.0',
+          'pulumi>=3.269.0,<4.0.0',
           'semver>=2.8.1',
           'typing-extensions>=4.11,<5; python_version < "3.11"'
       ],
