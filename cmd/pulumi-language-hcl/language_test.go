@@ -184,6 +184,8 @@ var expectedFailures = map[string]string{
 	"l2-invoke-provider-inheritance": "the runtime does not give a data source the explicit provider" +
 		" of its pulumi.parent: Default provider for 'simple-invoke' disabled." +
 		" 'simple-invoke:index:myInvoke' must use an explicit provider (added in pulumi/pulumi#25403)",
+	"l2-component-output-value-input-deps": "the runtime does not support output value dependencies" +
+		" in component inputs: refs.x is not an OutputValue (added in v3.275.0)",
 }
 
 // expectedEjectFailures lists tests whose eject (HCL→PCL conversion) step is
