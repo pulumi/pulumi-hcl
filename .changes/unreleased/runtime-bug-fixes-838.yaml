@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Accept block syntax for a list or set of objects attribute, such as the `ingress` and `egress` of `aws_security_group`
+time: 2026-11-13T12:11:20.574276+01:00
+custom:
+    Component: runtime
+    PR: "838"
