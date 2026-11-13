@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Convert splat references through TypeSet MaxItems=1 blocks with one() per element
+time: 2026-11-12T04:50:00.000000Z
+custom:
+    Component: converter
+    PR: "789"
