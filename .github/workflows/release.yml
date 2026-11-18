@@ -22,6 +22,9 @@ jobs:
     env:
       ESC_ACTION_ENVIRONMENT: pulumi/imports/github-secrets
       ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: 'false'
+      # Use actions/setup-go for the latest Go 1.26 patch and security fixes,
+      # rather than the possibly older Go version pinned in mise
+      MISE_DISABLE_TOOLS: go
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
