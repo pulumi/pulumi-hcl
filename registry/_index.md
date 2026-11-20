@@ -20,7 +20,7 @@ The following program instantiates the community
 [`terraform-aws-modules/vpc/aws`](https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws)
 module and exports the resulting VPC id.
 
-{{< chooser language "typescript,python,go,csharp,java,yaml" / >}}
+{{< chooser language "typescript,python,go,csharp,java,yaml,hcl" / >}}
 
 {{% choosable language typescript %}}
 
@@ -166,6 +166,29 @@ resources:
         cidr: 10.0.0.0/16
 outputs:
   vpcId: ${vpc.outputs["vpc_id"]}
+```
+
+{{% /choosable %}}
+
+{{% choosable language hcl %}}
+
+Pulumi HCL programs don't need this package: a `module` block instantiates the
+module as a component resource directly. See
+[Modules](https://www.pulumi.com/docs/iac/languages-sdks/hcl/hcl-language-reference/#modules)
+in the Pulumi HCL reference.
+
+```hcl
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.0.0"
+
+  name = "example-vpc"
+  cidr = "10.0.0.0/16"
+}
+
+output "vpcId" {
+  value = module.vpc.vpc_id
+}
 ```
 
 {{% /choosable %}}
