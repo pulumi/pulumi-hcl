@@ -97,6 +97,7 @@ func (p *pfxProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &pfxMatrix{} },
 		func() resource.Resource { return &pfxFlat{} },
 		func() resource.Resource { return &pfxAnon{} },
+		func() resource.Resource { return &pfxGroup{} },
 	}
 }
 
@@ -501,6 +502,64 @@ func (r *pfxFlat) Update(ctx context.Context, req resource.UpdateRequest, resp *
 }
 
 func (r *pfxFlat) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
+
+// pfxGroup carries a list attribute with an object element type. TF accepts
+// block syntax for it, as for the `ingress` of `aws_security_group`: an SDKv2
+// `ConfigMode: SchemaConfigModeAttr` block is the same list of objects
+// attribute on the wire.
+type pfxGroup struct{}
+
+var _ resource.Resource = (*pfxGroup)(nil)
+
+type pfxGroupModel struct {
+	ID   types.String `tfsdk:"id"`
+	Rule types.List   `tfsdk:"rule"`
+}
+
+func (r *pfxGroup) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_group"
+}
+
+func (r *pfxGroup) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = rschema.Schema{
+		Attributes: map[string]rschema.Attribute{
+			"id": rschema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"rule": rschema.ListAttribute{
+				Optional: true,
+				ElementType: types.ObjectType{AttrTypes: map[string]attr.Type{
+					"port":        types.Int64Type,
+					"cidr_blocks": types.ListType{ElemType: types.StringType},
+				}},
+			},
+		},
+	}
+}
+
+func (r *pfxGroup) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan pfxGroupModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.ID = types.StringValue("pfx-group-id")
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxGroup) Read(_ context.Context, _ resource.ReadRequest, _ *resource.ReadResponse) {}
+
+func (r *pfxGroup) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan pfxGroupModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *pfxGroup) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {}
 
 // pfxObjLookup is the data-source counterpart of pfxObj: an object-typed
 // input attribute whose `item` field is a list of strings (bridged as

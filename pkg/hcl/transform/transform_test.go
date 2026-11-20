@@ -716,6 +716,119 @@ resource "fake" "f" {
 	assert.Equal(t, 4, diags[0].Subject.Start.Line)
 }
 
+// A list or set of objects attribute, such as the `ingress` of
+// `aws_security_group`, takes block syntax and `dynamic` blocks as well as
+// attribute syntax. The argument keeps precedence when both appear.
+func TestAttributeAsBlocks(t *testing.T) {
+	t.Parallel()
+
+	r := &schema.Resource{
+		Token: "fake:index:F",
+		InputProperties: []*schema.Property{{
+			Name: "ingresses",
+			Type: &schema.ArrayType{ElementType: &schema.ObjectType{
+				Properties: []*schema.Property{
+					{Name: "fromPort", Type: &schema.OptionalType{ElementType: schema.IntType}},
+					{Name: "cidrBlocks", Type: &schema.OptionalType{
+						ElementType: &schema.ArrayType{ElementType: schema.StringType},
+					}},
+				},
+			}},
+		}},
+	}
+	nested := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"from_port":   {TFName: "from_port", PulumiName: "fromPort"},
+		"cidr_blocks": {TFName: "cidr_blocks", PulumiName: "cidrBlocks"},
+	}}
+	attrMapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"ingress": {TFName: "ingress", PulumiName: "ingresses", TFSet: true, Nested: nested},
+	}}
+	blockMapping := &bridge.BodyMapping{Fields: map[string]*bridge.FieldMapping{
+		"ingress": {TFName: "ingress", PulumiName: "ingresses", TFSet: true, TFBlock: true, Nested: nested},
+	}}
+
+	bodyOf := func(t *testing.T, src string) hcl.Body {
+		file, diags := hclsyntax.ParseConfig([]byte(src), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+		require.False(t, diags.HasErrors(), diags.Error())
+		return file.Body.(*hclsyntax.Body).Blocks[0].Body
+	}
+	evalFn := func(_ string, expr hcl.Expression, extraVars map[string]cty.Value) (cty.Value, hcl.Diagnostics) {
+		return expr.Value(&hcl.EvalContext{Variables: extraVars})
+	}
+
+	attribute := `
+resource "fake" "f" {
+  ingress = [
+    { from_port = 22, cidr_blocks = ["10.0.0.0/8"] },
+    { from_port = 443, cidr_blocks = [] },
+  ]
+}`
+	blocks := `
+resource "fake" "f" {
+  ingress {
+    from_port   = 22
+    cidr_blocks = ["10.0.0.0/8"]
+  }
+  ingress {
+    from_port   = 443
+    cidr_blocks = []
+  }
+}`
+	dynamic := `
+resource "fake" "f" {
+  dynamic "ingress" {
+    for_each = { 22 = ["10.0.0.0/8"], 443 = [] }
+    content {
+      from_port   = ingress.key
+      cidr_blocks = ingress.value
+    }
+  }
+}`
+
+	want, _, diags := EvalResourceWithSchema(bodyOf(t, attribute), r, attrMapping, evalFn)
+	require.False(t, diags.HasErrors(), diags.Error())
+	require.Equal(t, 1, want.Len())
+
+	for name, src := range map[string]string{"blocks": blocks, "dynamic": dynamic} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, _, diags := EvalResourceWithSchema(bodyOf(t, src), r, attrMapping, evalFn)
+			require.False(t, diags.HasErrors(), diags.Error())
+			assert.Equal(t, want, got)
+		})
+	}
+
+	t.Run("argument and blocks", func(t *testing.T) {
+		t.Parallel()
+		_, _, diags := EvalResourceWithSchema(bodyOf(t, `
+resource "fake" "f" {
+  ingress = []
+  ingress {
+    from_port = 22
+  }
+}`), r, attrMapping, evalFn)
+		require.Len(t, diags, 1)
+		assert.Equal(t, "Unsupported block type", diags[0].Summary)
+	})
+
+	t.Run("body schema", func(t *testing.T) {
+		t.Parallel()
+		dynamicHeader := hcl.BlockHeaderSchema{Type: "dynamic", LabelNames: []string{"type"}}
+
+		body := inputBodyFromProperties(bodyOf(t, attribute), r.InputProperties, attrMapping)
+		assert.Equal(t, []hcl.AttributeSchema{{Name: "ingress", Required: true}}, body.Attributes)
+		assert.Empty(t, body.Blocks)
+
+		body = inputBodyFromProperties(bodyOf(t, blocks), r.InputProperties, attrMapping)
+		assert.Empty(t, body.Attributes)
+		assert.Equal(t, []hcl.BlockHeaderSchema{{Type: "ingress"}, dynamicHeader}, body.Blocks)
+
+		body = inputBodyFromProperties(bodyOf(t, attribute), r.InputProperties, blockMapping)
+		assert.Empty(t, body.Attributes)
+		assert.Equal(t, []hcl.BlockHeaderSchema{{Type: "ingress"}, dynamicHeader}, body.Blocks)
+	})
+}
+
 func TestCtyToPropertyValue_Primitives(t *testing.T) {
 	t.Parallel()
 

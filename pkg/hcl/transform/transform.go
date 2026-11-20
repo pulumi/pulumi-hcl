@@ -144,7 +144,7 @@ func (e *rangedDiagError) Error() string {
 // optional mapping overrides which TF names are blocks vs attributes and
 // supplies non-conventional TF→Pulumi name renames.
 func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bridge.BodyMapping, eval EvalFunc) (cty.Value, map[string]hcl.Expression, hcl.Diagnostics) {
-	body, diags := config.Content(inputBodyFromProperties(props, mapping))
+	body, diags := config.Content(inputBodyFromProperties(config, props, mapping))
 	if diags.HasErrors() {
 		return cty.Value{}, nil, diags
 	}
@@ -237,15 +237,17 @@ func evalBlockWithSchema(config hcl.Body, props []*schema.Property, mapping *bri
 // outer container is a list-shaped block (Array<Object>). For Object-typed
 // Pulumi props (the bridge's MaxItemsOne flattening), the inner Properties
 // are still the block's contents and isList is false. It returns nil props
-// when the property is not a block. fm is the bridge mapping of the
+// when the property takes no block syntax. fm is the bridge mapping of the
 // property, or nil.
 func blockPropertiesOf(typ schema.Type, fm *bridge.FieldMapping) (props []*schema.Property, isList bool) {
+	if obj, ok := AsHCLBlockType(typ); ok {
+		return obj.Properties, true
+	}
 	obj, ok := HCLBlockType(typ, fm)
 	if !ok {
 		return nil, false
 	}
-	_, isList = codegen.UnwrapType(typ).(*schema.ArrayType)
-	return obj.Properties, isList
+	return obj.Properties, false
 }
 
 // dynamicBlockSchema is the body schema for the inside of a dynamic block.
@@ -651,7 +653,10 @@ func HCLBlockType(typ schema.Type, fm *bridge.FieldMapping) (*schema.ObjectType,
 	return obj, ok
 }
 
-func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) *hcl.BodySchema {
+// inputBodyFromProperties builds the body schema of the properties r for
+// config. A list of objects attribute that config writes with block syntax
+// enters the schema as a block type, as Terraform reads it.
+func inputBodyFromProperties(config hcl.Body, r []*schema.Property, mapping *bridge.BodyMapping) *hcl.BodySchema {
 	body := new(hcl.BodySchema)
 
 	// pulumiNameForTF resolves a TF (snake_case) name to the matching Pulumi
@@ -683,7 +688,12 @@ func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) 
 			}
 		}
 
-		if _, ok := HCLBlockType(p.Type, mapping.Lookup(typeName)); ok {
+		_, isBlock := HCLBlockType(p.Type, mapping.Lookup(typeName))
+		if !isBlock {
+			_, isBlock = AsHCLBlockType(p.Type)
+			isBlock = isBlock && writtenAsBlocks(config, typeName)
+		}
+		if isBlock {
 			body.Blocks = append(body.Blocks, hcl.BlockHeaderSchema{Type: typeName})
 			addedBlocks[typeName] = true
 			hasBlockTypes = true
@@ -715,6 +725,31 @@ func inputBodyFromProperties(r []*schema.Property, mapping *bridge.BodyMapping) 
 		})
 	}
 	return body
+}
+
+// writtenAsBlocks reports whether config writes the list or set of objects
+// attribute name with block syntax: `name { ... }` blocks or a `dynamic
+// "name"` block, and no `name = ...` argument. Terraform reads the blocks as
+// the elements of such an attribute, and keeps the argument when both appear.
+func writtenAsBlocks(config hcl.Body, name string) bool {
+	content, _, _ := config.PartialContent(&hcl.BodySchema{
+		Attributes: []hcl.AttributeSchema{{Name: name}},
+	})
+	if _, ok := content.Attributes[name]; ok {
+		return false
+	}
+	content, _, _ = config.PartialContent(&hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{Type: name},
+			{Type: "dynamic", LabelNames: []string{"type"}},
+		},
+	})
+	for _, block := range content.Blocks {
+		if block.Type == name || block.Labels[0] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func ctyToResourceInputs(val cty.Value, r *schema.Resource, attrExprs map[string]hcl.Expression, mapping *bridge.BodyMapping) (property.Map, error) {
