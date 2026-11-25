@@ -742,12 +742,12 @@ github.com/pulumi/providertest v0.8.0 h1:vaywtm+Yd85GnblY0z9gMPCL9qnXTRCij6bNDrL
 github.com/pulumi/providertest v0.8.0/go.mod h1:jQptJqNGdkfopfc1l6P1uf/cWKw3pJ33wBk3Zml9VfY=
 github.com/pulumi/pulumi-cloud-sdk/go v1.20261124.0 h1:mc06BQmz8eZtBSadpDgrYDhM3ri6Ti9SmaL6ZxngyQk=
 github.com/pulumi/pulumi-cloud-sdk/go v1.20261124.0/go.mod h1:aMwd3130zrFnJzpXi0X+Jd9DidPGT2I5zwGOhqqQ/GA=
-github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.120.1 h1:WXS/lCIhibmywLDJ3VjhNna9X+b+gMPO5KV85m28Lbw=
-github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.120.1/go.mod h1:WhDgw/5uytP3Aeexzy7YKkFN9xrl8hN+uJUywEUJ3aU=
+github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.121.0 h1:obJ0vnTUzQ4+PkO4blKThgUAnrsIKNd09fdyl3it5Eg=
+github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.121.0/go.mod h1:WhDgw/5uytP3Aeexzy7YKkFN9xrl8hN+uJUywEUJ3aU=
 github.com/pulumi/pulumi-go-provider v1.8.1 h1:64PqnrbPa/Q5K3sJeBL/nuRltdh3TBzk987Gr0HP+ls=
 github.com/pulumi/pulumi-go-provider v1.8.1/go.mod h1:PLIQfFhbKhJk4qtfJFv3iqZNFgNb6uo8PEmGAmmq7DM=
-github.com/pulumi/pulumi-java v1.40.3 h1:7MELFk5CRS31bZlwszPuKjnjp7TtZ8/rcrJRY4jF0IU=
-github.com/pulumi/pulumi-java v1.40.3/go.mod h1:uRLLBiQukjuPEFc8RFv5v8XMD085HLvHnIeb5Ncepxk=
+github.com/pulumi/pulumi-java v1.40.4 h1:+XUptgmCdsZ3qce1SZ2y3IADUChmy8MhPFCHJZ+jOIY=
+github.com/pulumi/pulumi-java v1.40.4/go.mod h1:3ljHfLeVFkMNuiWhyh+9ggQtWSgzqnkwo9qdOa0sQV4=
 github.com/pulumi/pulumi-terraform-bridge/v3 v3.143.1-0.20261124170342-7f8afdddeb60 h1:soba2bmui4fcrIMyzVLWWLeyL3HMm2GBKmsEHBjxjEI=
 github.com/pulumi/pulumi-terraform-bridge/v3 v3.143.1-0.20261124170342-7f8afdddeb60/go.mod h1:TElAR8f/0IbEWnAjh5IQAvMRKTit+A/uWfSO66pMHIU=
 github.com/pulumi/pulumi-yaml v1.39.2 h1:PaGamOi53WHcjv9zvXpWHIISM3f3/EZxHv15HVxCd6s=
