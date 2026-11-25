@@ -27,7 +27,7 @@ require (
 	github.com/opentofu/registry-address/v2 v2.0.0-20250611143131-d0a99bd8acdd
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/pulumi/providertest v0.8.0
-	github.com/pulumi/pulumi-go-provider v1.8.0
+	github.com/pulumi/pulumi-go-provider v1.8.1
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.143.1-0.20261124170342-7f8afdddeb60
 	github.com/pulumi/pulumi/pkg/v3 v3.278.0
 	github.com/pulumi/pulumi/sdk/v3 v3.278.0
@@ -324,5 +324,3 @@ tool (
 	github.com/iwahbe/helpmakego
 	github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language
 )
-
-replace github.com/pulumi/pulumi-go-provider => github.com/VenelinMartinov/pulumi-go-provider v1.8.1-0.20261125132249-d0d5935c04a4

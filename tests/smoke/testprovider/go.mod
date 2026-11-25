@@ -3,7 +3,7 @@ module github.com/pulumi/pulumi-hcl/tests/smoke/testprovider
 go 1.26.6
 
 require (
-	github.com/pulumi/pulumi-go-provider v1.8.0
+	github.com/pulumi/pulumi-go-provider v1.8.1
 	github.com/pulumi/pulumi/sdk/v3 v3.278.0
 )
 
@@ -125,5 +125,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/frand v1.5.1 // indirect
 )
-
-replace github.com/pulumi/pulumi-go-provider => github.com/VenelinMartinov/pulumi-go-provider v1.8.1-0.20261125132249-d0d5935c04a4
