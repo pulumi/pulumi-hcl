@@ -243,9 +243,9 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/pulumi/appdash v0.0.0-20231130102222-75f619a67231 // indirect
 	github.com/pulumi/inflector v0.2.1 // indirect
-	github.com/pulumi/pulumi-cloud-sdk/go v1.20261117.1636 // indirect
-	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.120.0 // indirect
-	github.com/pulumi/pulumi-java v1.40.2 // indirect
+	github.com/pulumi/pulumi-cloud-sdk/go v1.20261124.0 // indirect
+	github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3 v3.120.1 // indirect
+	github.com/pulumi/pulumi-java v1.40.3 // indirect
 	github.com/pulumi/pulumi-yaml v1.39.2 // indirect
 	github.com/pulumi/terraform-diff-reader v0.0.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
