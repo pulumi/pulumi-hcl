@@ -26,11 +26,11 @@ require (
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/opentofu/registry-address/v2 v2.0.0-20250611143131-d0a99bd8acdd
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
-	github.com/pulumi/providertest v0.7.0
+	github.com/pulumi/providertest v0.8.0
 	github.com/pulumi/pulumi-go-provider v1.8.0
-	github.com/pulumi/pulumi-terraform-bridge/v3 v3.142.1-0.20261102104139-2c2d43eabd53
-	github.com/pulumi/pulumi/pkg/v3 v3.276.0
-	github.com/pulumi/pulumi/sdk/v3 v3.276.0
+	github.com/pulumi/pulumi-terraform-bridge/v3 v3.143.1-0.20261124170342-7f8afdddeb60
+	github.com/pulumi/pulumi/pkg/v3 v3.278.0
+	github.com/pulumi/pulumi/sdk/v3 v3.278.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.42.0
@@ -304,7 +304,6 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	gocloud.dev v0.46.1-0.20260810195832-b5401c07b5f1 // indirect
-	golang.org/x/crypto/openpgp v0.1.0-deprecated // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
@@ -325,3 +324,5 @@ tool (
 	github.com/iwahbe/helpmakego
 	github.com/pulumi/pulumi/pkg/v3/testing/pulumi-test-language
 )
+
+replace github.com/pulumi/pulumi-go-provider => github.com/VenelinMartinov/pulumi-go-provider v1.8.1-0.20261125132249-d0d5935c04a4

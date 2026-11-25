@@ -747,7 +747,7 @@ func (s *ModuleSchema) InputsToHCL(inputs property.Map) property.Map {
 // fields at every depth. Map keys are left unchanged.
 func (s *ModuleSchema) OutputsToPulumi(outputs property.Map) property.Map {
 	out := make(map[string]property.Value, outputs.Len())
-	for snake, v := range outputs.All {
+	for snake, v := range outputs.All() {
 		out[pulumiCase(snake)] = convertPropertyNames(v, s.OutputProperties[snake], true)
 	}
 	return property.NewMap(out)
@@ -783,14 +783,14 @@ func convertPropertyNames(v property.Value, spec *PropertySpec, toPulumi bool) p
 	case spec.AdditionalProperties != nil && v.IsMap():
 		obj := v.AsMap()
 		out := make(map[string]property.Value, obj.Len())
-		for k, mv := range obj.All {
+		for k, mv := range obj.All() {
 			out[k] = convertPropertyNames(mv, spec.AdditionalProperties, toPulumi)
 		}
 		return property.WithGoValue(v, out)
 	case spec.Items != nil && v.IsArray():
 		arr := v.AsArray()
 		out := make([]property.Value, arr.Len())
-		for i, e := range arr.All {
+		for i, e := range arr.All() {
 			out[i] = convertPropertyNames(e, spec.Items, toPulumi)
 		}
 		return property.WithGoValue(v, out)

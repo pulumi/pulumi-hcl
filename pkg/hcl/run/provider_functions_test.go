@@ -113,7 +113,7 @@ func concatInvokeHandler(ctx context.Context, req run.InvokeRequest) (*run.Invok
 		return scalar(first + second), nil
 	case "simple:index/joinStr:joinStr":
 		var parts []string
-		for _, p := range req.Args.Get("parts").AsArray().All {
+		for _, p := range req.Args.Get("parts").AsArray().All() {
 			parts = append(parts, p.AsString())
 		}
 		return scalar(strings.Join(parts, req.Args.Get("separator").AsString())), nil

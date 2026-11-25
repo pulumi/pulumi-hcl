@@ -1904,7 +1904,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 		converted, err := propertyValueToCtyWithMapping(path, v.WithDependencies(nil), typ, mapping, dryRun)
 		return converted.WithMarks(eval.DepMarks(deps)), err
 	}
-	if v.Secret() {
+	if v.IsSecret() {
 		computedV, err := propertyValueToCtyWithMapping(path, v.WithSecret(false), typ, mapping, dryRun)
 		return computedV.Mark(eval.SensitiveMark), err
 	}
@@ -1976,7 +1976,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			elemType = typ.ElementType
 		}
 		m := make(map[string]cty.Value, v.AsMap().Len())
-		for k, v := range v.AsMap().All {
+		for k, v := range v.AsMap().All() {
 			convertedV, err := propertyValueToCtyWithMapping(fmt.Sprintf("%s[%q]", path, k), v, elemType, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
@@ -2013,7 +2013,7 @@ func propertyValueToCtyWithMapping(path string, v property.Value, typ schema.Typ
 			elemType = arr.ElementType
 		}
 		arr := make([]cty.Value, v.AsArray().Len())
-		for i, v := range v.AsArray().All {
+		for i, v := range v.AsArray().All() {
 			convertedV, err := propertyValueToCtyWithMapping(fmt.Sprintf("%s[%d]", path, i), v, elemType, mapping, dryRun)
 			if err != nil {
 				return cty.Value{}, err
@@ -2056,7 +2056,7 @@ func PropertyValueToCty(pv property.Value) cty.Value {
 	if deps := pv.Dependencies(); len(deps) > 0 {
 		return PropertyValueToCty(pv.WithDependencies(nil)).WithMarks(eval.DepMarks(deps))
 	}
-	if pv.Secret() {
+	if pv.IsSecret() {
 		return PropertyValueToCty(pv.WithSecret(false)).
 			WithMarks(cty.NewValueMarks(eval.SensitiveMark))
 	}
@@ -2085,7 +2085,7 @@ func PropertyValueToCty(pv property.Value) cty.Value {
 			return cty.ListValEmpty(cty.DynamicPseudoType)
 		}
 		vals := make([]cty.Value, arr.Len())
-		for i, elem := range arr.All {
+		for i, elem := range arr.All() {
 			vals[i] = PropertyValueToCty(elem)
 		}
 		return cty.TupleVal(vals)
@@ -2096,7 +2096,7 @@ func PropertyValueToCty(pv property.Value) cty.Value {
 			return cty.EmptyObjectVal
 		}
 		vals := make(map[string]cty.Value)
-		for k, v := range obj.All {
+		for k, v := range obj.All() {
 			vals[string(k)] = PropertyValueToCty(v)
 		}
 		return cty.ObjectVal(vals)
@@ -2125,7 +2125,7 @@ func PropertyMapToCty(pm property.Map) cty.Value {
 	}
 
 	vals := make(map[string]cty.Value)
-	for k, v := range pm.All {
+	for k, v := range pm.All() {
 		vals[string(k)] = PropertyValueToCty(v)
 	}
 	return cty.ObjectVal(vals)
@@ -2418,7 +2418,7 @@ func valueMatchesType(v property.Value, typ schema.Type) bool {
 		if !ok {
 			return false
 		}
-		for _, e := range v.AsArray().All {
+		for _, e := range v.AsArray().All() {
 			if !valueMatchesType(e, arr.ElementType) {
 				return false
 			}
@@ -2432,7 +2432,7 @@ func valueMatchesType(v property.Value, typ schema.Type) bool {
 			for _, p := range typ.Properties {
 				props[p.Name] = p
 			}
-			for k, e := range m.All {
+			for k, e := range m.All() {
 				p, ok := props[string(k)]
 				if !ok {
 					return false
@@ -2452,7 +2452,7 @@ func valueMatchesType(v property.Value, typ schema.Type) bool {
 			}
 			return true
 		case *schema.MapType:
-			for _, e := range m.All {
+			for _, e := range m.All() {
 				if !valueMatchesType(e, typ.ElementType) {
 					return false
 				}

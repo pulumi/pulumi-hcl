@@ -190,7 +190,7 @@ func unwrapTerraformDataValue(pv property.Value) (cty.Value, bool, error) {
 	if converted, err := convert.Convert(inner, recorded); err == nil {
 		inner = converted
 	}
-	if pv.Secret() {
+	if pv.IsSecret() {
 		inner = inner.Mark(eval.SensitiveMark)
 	}
 	return inner, true, nil

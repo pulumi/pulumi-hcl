@@ -500,7 +500,7 @@ func RequirementSpecs(
 // `validation` blocks) are caught later by the engine.
 func validateModuleInputs(inputs property.Map, config *ast.Config) error {
 	var unknown []string
-	for k := range inputs.All {
+	for k := range inputs.All() {
 		if _, ok := config.Variables[k]; !ok {
 			unknown = append(unknown, k)
 		}
@@ -524,7 +524,7 @@ func validateModuleInputs(inputs property.Map, config *ast.Config) error {
 // structure, unknowns, and marks are preserved across the component boundary.
 func moduleConfig(project string, inputs property.Map) map[string]run.ConfigValue {
 	config := make(map[string]run.ConfigValue, inputs.Len())
-	for k, v := range inputs.All {
+	for k, v := range inputs.All() {
 		config[project+":"+string(k)] = run.TypedConfigValue(transform.PropertyValueToCty(v))
 	}
 	return config
