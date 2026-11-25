@@ -130,6 +130,8 @@ func runTestingHost(t *testing.T) (string, testingrpc.LanguageTestClient) {
 }
 
 var expectedFailures = map[string]string{
+	"provider-resource-component": "the runtime does not send a caller stack trace when it registers" +
+		" a component: expected a caller stack for the component (added in pulumi/pulumi#25754)",
 	"l2-plain": "unsupported in HCL:" +
 		" requires that HCL can distinguish between an empty and null List<Object>" +
 		" - not compatible with block syntax",

@@ -1497,10 +1497,7 @@ func (e *Engine) registerProviderInContext(
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating provider %s config: %s", provider.Name, diags.Error())
 	}
-	inputs := make(map[string]property.Value, inputsMap.Len())
-	for k, v := range inputsMap.AllStable() {
-		inputs[k] = v
-	}
+	inputs := maps.Collect(inputsMap.All())
 
 	logicalName := provider.Alias
 	if logicalName == "" {
