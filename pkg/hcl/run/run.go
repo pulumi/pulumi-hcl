@@ -1439,18 +1439,18 @@ func PropertyDependencies(m property.Map) map[property.Path][]urn.URN {
 		}
 		switch {
 		case v.IsArray():
-			for i, elem := range v.AsArray().All {
+			for i, elem := range v.AsArray().All() {
 				walk(path.AppendIndex(i), elem)
 			}
 		case v.IsMap():
-			for k, elem := range v.AsMap().All {
+			for k, elem := range v.AsMap().All() {
 				walk(path.AppendKey(k), elem)
 			}
 		case v.IsResourceReference():
 			walk(path, v.AsResourceReference().ID)
 		}
 	}
-	for k, v := range m.All {
+	for k, v := range m.All() {
 		walk(property.Path{}.AppendKey(k), v)
 	}
 	return deps
@@ -1497,11 +1497,7 @@ func (e *Engine) registerProviderInContext(
 	if diags.HasErrors() {
 		return fmt.Errorf("evaluating provider %s config: %s", provider.Name, diags.Error())
 	}
-	inputs := make(map[string]property.Value, inputsMap.Len())
-	inputsMap.AllStable(func(k string, v property.Value) bool {
-		inputs[k] = v
-		return true
-	})
+	inputs := maps.Collect(inputsMap.All())
 
 	logicalName := provider.Alias
 	if logicalName == "" {
@@ -1550,12 +1546,11 @@ func (e *Engine) registerProviderInContext(
 		}
 		if mappings.IsMap() {
 			req.EnvVarMappings = make(map[string]string)
-			mappings.AsMap().AllStable(func(k string, v property.Value) bool {
+			for k, v := range mappings.AsMap().AllStable() {
 				if v.IsString() {
 					req.EnvVarMappings[k] = v.AsString()
 				}
-				return true
-			})
+			}
 		}
 	}
 

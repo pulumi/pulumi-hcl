@@ -96,7 +96,7 @@ func TestModuleConstructSecretFlow(t *testing.T) {
 	require.True(t, ok, "module should expose a connection output")
 	require.Equal(t, "conn:hunter2", connection.AsString(),
 		"the secret input value should reach the module intact")
-	require.True(t, connection.Secret(),
+	require.True(t, connection.IsSecret(),
 		"a value derived from the secret should come back out marked secret")
 
 	sensitive, ok := out.GetOk("password_is_sensitive")

@@ -97,7 +97,7 @@ func lowerRemoteStateInvoke(tfType string, req InvokeRequest) (InvokeRequest, pr
 	args := map[string]property.Value{}
 	var unexpected []string
 	if cfg, ok := req.Args.GetOk("config"); ok && cfg.IsMap() {
-		for k, v := range cfg.AsMap().All {
+		for k, v := range cfg.AsMap().All() {
 			if argKey, ok := fields[k]; ok {
 				args[argKey] = v
 			} else {
@@ -177,9 +177,9 @@ func applyRemoteStateDefaults(defaults, ret property.Map) property.Map {
 	if defaults.Len() == 0 {
 		return ret
 	}
-	merged := maps.Collect(defaults.All)
+	merged := maps.Collect(defaults.All())
 	if out, ok := ret.GetOk("outputs"); ok && out.IsMap() {
-		maps.Insert(merged, out.AsMap().All)
+		maps.Insert(merged, out.AsMap().All())
 	}
 	return ret.Set("outputs", property.New(merged))
 }

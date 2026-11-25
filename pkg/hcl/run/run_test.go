@@ -1505,7 +1505,7 @@ output "region_value" {
 
 	regionOutput, ok := mock.StackOutputs.GetOk("region_value")
 	require.True(t, ok, "expected region_value output")
-	require.True(t, regionOutput.Secret(),
+	require.True(t, regionOutput.IsSecret(),
 		"a secret config value should make the variable, and a value derived from it, secret")
 	require.Equal(t, "us-west-2", regionOutput.AsString(),
 		"the secret value should reach the program intact")
@@ -4644,7 +4644,7 @@ resource "test_resource" "consumer" {
 	require.True(t, ok, "consumer should receive the value input")
 	require.Equal(t, "secret-val", value.AsString(),
 		"the field should resolve to the referenced resource's fetched state")
-	require.True(t, value.Secret(),
+	require.True(t, value.IsSecret(),
 		"a value derived from a secret resource reference must stay secret")
 }
 

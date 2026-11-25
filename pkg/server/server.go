@@ -1913,7 +1913,7 @@ func propertyDependenciesToProto(
 // resource when the map has no entry for it.
 func keyDependencies(m property.Map) map[string][]string {
 	deps := make(map[string][]string, m.Len())
-	for k := range m.All {
+	for k := range m.All() {
 		deps[k] = []string{}
 	}
 	for path, urns := range run.PropertyDependencies(m) {

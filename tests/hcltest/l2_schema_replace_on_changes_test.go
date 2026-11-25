@@ -65,7 +65,7 @@ func rocProvider() gp.Provider {
 		},
 		Diff: func(_ context.Context, req gp.DiffRequest) (gp.DiffResponse, error) {
 			detailed := map[string]gp.PropertyDiff{}
-			for k, v := range req.Inputs.All {
+			for k, v := range req.Inputs.All() {
 				if old, ok := req.State.GetOk(k); !ok || !old.Equals(v) {
 					detailed[k] = gp.PropertyDiff{Kind: gp.Update, InputDiff: true}
 				}
