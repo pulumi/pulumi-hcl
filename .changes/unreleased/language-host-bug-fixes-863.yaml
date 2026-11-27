@@ -1,0 +1,6 @@
+kind: bug-fixes
+body: Find installed `sdks` when `Pulumi.yaml` sets `main`
+time: 2026-11-26T00:10:00+01:00
+custom:
+  Component: language-host
+  PR: "863"

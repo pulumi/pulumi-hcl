@@ -212,7 +212,8 @@ func (host *LanguageHost) GetRequiredPackages(
 ) (*pulumirpc.GetRequiredPackagesResponse, error) {
 	logging.V(5).Infof("GetRequiredPackages: program=%s", req.Info.ProgramDirectory)
 
-	sdks, err := readSDKInfos(req.Info.ProgramDirectory)
+	// The CLI writes sdks/ next to Pulumi.yaml, not into the `main` subdirectory.
+	sdks, err := readSDKInfos(req.Info.RootDirectory)
 	if err != nil {
 		return &pulumirpc.GetRequiredPackagesResponse{}, fmt.Errorf("unable to read SDKs folder: %w", err)
 	}
@@ -851,7 +852,7 @@ func (host *LanguageHost) Run(
 		return nil, fmt.Errorf("unable to acquire gRPC schema loader: %w", err)
 	}
 
-	sdkInfos, err := readSDKInfos(req.Info.ProgramDirectory)
+	sdkInfos, err := readSDKInfos(req.Info.RootDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read parameterization: %w", err)
 	}
@@ -1311,7 +1312,7 @@ func (host *LanguageHost) GenerateProject(
 		if desc.Parameterization == nil && desc.ExtensionParameterization == nil {
 			continue
 		}
-		sdkDir := filepath.Join(programDir, "sdks", alias)
+		sdkDir := filepath.Join(req.TargetDirectory, "sdks", alias)
 		if err := os.MkdirAll(sdkDir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating sdk dir for %s: %w", alias, err)
 		}

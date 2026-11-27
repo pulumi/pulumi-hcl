@@ -278,6 +278,54 @@ resource "tls-self-signed-cert_self_signed_certificate" "cert" {
 	}}, resp.Packages)
 }
 
+// With `main` set in Pulumi.yaml, the program lives in a subdirectory but
+// `pulumi install` and `pulumi package add` still write sdks/ next to
+// Pulumi.yaml, so the SDK descriptors must be read from the RootDirectory.
+func TestGetRequiredPackages_MainSubdirectoryReadsRootSDKs(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	programDir := filepath.Join(rootDir, "subdir")
+	sdkDir := filepath.Join(rootDir, "sdks", "pulumi-tls-self-signed-cert")
+	require.NoError(t, os.MkdirAll(programDir, 0o755))
+	require.NoError(t, os.MkdirAll(sdkDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sdkDir, "hcl.sdk.json"), []byte(`{
+		"Name": "tls-self-signed-cert",
+		"Kind": "resource",
+		"Version": "0.0.0-x52a8a71555d964542b308da197755c64dbe63352",
+		"PluginDownloadURL": "git://github.com/pulumi/component-test-providers/test-provider"
+	}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(programDir, "main.tf"), []byte(`terraform {
+  required_providers {
+    tls-self-signed-cert = {
+      source = "pulumi/tls-self-signed-cert"
+    }
+  }
+}
+
+resource "tls-self-signed-cert_self_signed_certificate" "cert" {
+  dns_name = "example.com"
+}
+`), 0o600))
+
+	host := &LanguageHost{}
+	resp, err := host.GetRequiredPackages(t.Context(), &pulumirpc.GetRequiredPackagesRequest{
+		Info: &pulumirpc.ProgramInfo{
+			ProgramDirectory: programDir,
+			RootDirectory:    rootDir,
+			EntryPoint:       ".",
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Specs)
+	assert.Equal(t, []*pulumirpc.PackageDependency{{
+		Name:    "tls-self-signed-cert",
+		Version: "0.0.0-x52a8a71555d964542b308da197755c64dbe63352",
+		Kind:    "resource",
+		Server:  "git://github.com/pulumi/component-test-providers/test-provider",
+	}}, resp.Packages)
+}
+
 func TestSDKDescriptors_KeyedByPackageName(t *testing.T) {
 	t.Parallel()
 
