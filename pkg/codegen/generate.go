@@ -3547,12 +3547,25 @@ func (g *generator) splatTokens(expr *model.SplatExpression) (hclwrite.Tokens, h
 		// TODO[https://github.com/pulumi/pulumi-hcl/issues/729]: A splat whose
 		// elements end on a MaxItems=1 block reads a list of objects in PCL,
 		// where HCL reads a list of lists.
-		//
-		// TODO[https://github.com/pulumi/pulumi-hcl/issues/789]: The steps of
-		// a splat cannot call one(), so a step into a TypeSet MaxItems=1 block
-		// gets a [0], which HCL cannot read.
-		tokens, _ = schemaAwareRewriteTraversal(props, mapping, tokens, eachTraversal, indexElem)
-		return tokens, diags
+		needsFor := false
+		rewritten, _ := schemaAwareRewriteTraversal(props, mapping, tokens, eachTraversal,
+			func(tokens hclwrite.Tokens) hclwrite.Tokens {
+				needsFor = true
+				return indexElem(tokens)
+			})
+		if !needsFor {
+			return rewritten, diags
+		}
+
+		// A splat step cannot call one(). Rewrite the traversal for each
+		// element in a comprehension instead. Keep [*] on the collection
+		// to preserve the splat's handling of null and singleton objects.
+		value, _ := schemaAwareRewriteTraversal(props, mapping,
+			hclwrite.TokensForTraversal(hcl.Traversal{hcl.TraverseRoot{Name: "v"}}),
+			eachTraversal, oneElem)
+		return forExprWrapperTokens(&model.ForExpression{
+			ValueVariable: &model.Variable{Name: "v"},
+		}, tokens, value), diags
 	}
 	return append(tokens, traversalStepsToTokens(naiveRewriteTraversal(eachTraversal))...), diags
 }
